@@ -422,6 +422,9 @@ VisualSections.ESP:AddToggle('ESPWeapon', {Text = 'Weapon ESP', Default = false}
 VisualSections.ESP:AddToggle('ESPChams', {Text = 'Chams', Default = false})
 
 
+VisualSections.ESP:AddDropdown('ESPFont', {Values = { 'UI', 'System', 'Plex', 'Monospace' }, Default = 'UI', Text = 'Font'})
+
+
 -- Chams transparency
 VisualSections.ESP:AddSlider('ESPChamsTransparency', {Text = 'Chams transparency', Default = 35, Min = 0, Max = 100, Rounding = 0})
 
@@ -2500,6 +2503,9 @@ local function createSquare(Thickness, Color)
 end
 
 
+local FontMap = { UI = Drawing.Fonts.UI, System = Drawing.Fonts.System, Plex = Drawing.Fonts.Plex, Monospace = Drawing.Fonts.Monospace }
+
+
 -- Create text
 local function createText(Size)
     local Text = Drawing.new("Text")
@@ -2508,7 +2514,7 @@ local function createText(Size)
     Text.Outline = true
     Text.Transparency = 1
     Text.Size = Size
-    Text.Font = Drawing.Fonts.Plex
+    Text.Font = FontMap[Options.ESPFont.Value] or Drawing.Fonts.UI
     return Text
 end
 
@@ -2591,7 +2597,7 @@ local function getDrawingSet(Player)
         Rect = nil,
         HealthBarOutline = createSquare(2, Color3.fromRGB(0, 0, 0)),
         HealthBarFill = createSquare(1, Color3.fromRGB(0, 255, 0)),
-        HealthText = createText(13),
+        HealthText = createText(16),
     }
 
     EspRuntime.Drawings[Player] = DrawingSet
@@ -2746,6 +2752,8 @@ local function updatePlayerEsp(Player)
     DrawingSet.Box.Color = BoxColor
     DrawingSet.Box.Visible = ShowBox
 
+    local CurrentFont = FontMap[Options.ESPFont.Value] or Drawing.Fonts.UI
+    DrawingSet.Name.Font = CurrentFont
     DrawingSet.Name.Text = Player.Name
     DrawingSet.Name.Position = Vector2.new(CenterX, Top - 15)
     DrawingSet.Name.Color = NameColor
@@ -2757,6 +2765,7 @@ local function updatePlayerEsp(Player)
     if Character and Character:FindFirstChild("EquippedTool") then
         WeaponName = tostring(Character.EquippedTool.Value)
     end
+    DrawingSet.Weapon.Font = CurrentFont
     DrawingSet.Weapon.Text = WeaponName
     DrawingSet.Weapon.Position = Vector2.new(CenterX, Bottom + 5)
     DrawingSet.Weapon.Color = WeaponColor
@@ -2785,8 +2794,9 @@ local function updatePlayerEsp(Player)
 
         local hp = math.floor(Humanoid.Health)
         if hp < 100 then
+            DrawingSet.HealthText.Font = CurrentFont
             DrawingSet.HealthText.Text = tostring(hp)
-            DrawingSet.HealthText.Position = Vector2.new(barX - 15, barY)
+            DrawingSet.HealthText.Position = Vector2.new(barX - 8, barY)
             DrawingSet.HealthText.Color = Color3.fromRGB(255, 255, 255)
             DrawingSet.HealthText.Visible = true
         else
