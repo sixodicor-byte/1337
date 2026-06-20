@@ -1,6 +1,6 @@
 -- FPS unlock
 setfpscap(500)
-
+Print("123")
 
 -- Library load
 local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/bdimka251212-del/NewLib/refs/heads/main/NewLib.lua"))()
