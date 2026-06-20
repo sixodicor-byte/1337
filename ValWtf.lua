@@ -3143,4 +3143,5 @@ end)
 -- Build coАnfig
 SaveManager:BuildConfigSection(Tabs.Config)
 ThemeManager:ApplyToTab(Tabs.Config)
-Print("13")
+
+print("123")
