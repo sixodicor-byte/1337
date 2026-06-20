@@ -440,6 +440,7 @@ VisualSections.ESP:AddLabel('Health bar color'):AddColorPicker('ESPHealthBarColo
 
 -- Menu UI
 VisualSections.Menu:AddToggle('MenuBindList', {Text = 'Bind list', Default = true, Callback = function(Value) if Library.KeybindFrame then Library.KeybindFrame.Visible = Value end end})
+VisualSections.Menu:AddToggle('MenuWatermark', {Text = 'Watermark', Default = true, Callback = function(Value) Library:SetWatermarkVisibility(Value) end})
 
 
 -- Removals UI
@@ -496,13 +497,6 @@ local EspRuntime = {
 }
 
 
--- Grenade runtime
-local GrenadeRuntime = {
-    Predictions = {},
-    Connections = {},
-}
-
-
 -- Aim runtime
 local AimRuntime = {
     FovLines = {},
@@ -524,6 +518,18 @@ local AimHitboxFallbacks = {
     Head = { "HeadHB", "Head", "FakeHead" },
     Body = { "UpperTorso", "LowerTorso", "Torso", "HumanoidRootPart" },
 }
+
+-- Real body hitbox names (no weapons, accessories, C4, etc.)
+local RealHitboxNames = {
+    "Head", "HeadHB", "FakeHead",
+    "UpperTorso", "LowerTorso", "HumanoidRootPart",
+    "LeftUpperArm", "LeftLowerArm", "LeftHand",
+    "RightUpperArm", "RightLowerArm", "RightHand",
+    "LeftUpperLeg", "LeftLowerLeg", "LeftFoot",
+    "RightUpperLeg", "RightLowerLeg", "RightFoot",
+}
+local RealHitboxLookup = {}
+for _, name in ipairs(RealHitboxNames) do RealHitboxLookup[name] = true end
 
 
 -- Triggerbot state
@@ -559,6 +565,9 @@ local TracerTextureMap = {
     ["Cartoony Eletric"] = "rbxassetid://18722421816",
 }
 
+
+-- Forward declaration (getOptionColor is defined later)
+local getOptionColor
 
 -- Draw bullet tracer beam
 local function drawBulletTracer(startPos, endPos)
@@ -1027,7 +1036,7 @@ local function getAimHitboxPart(Character, Humanoid)
     if SelectedHitbox == "Nearest" then
         local AllParts = {}
         for _, part in ipairs(Character:GetChildren()) do
-            if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
+            if part:IsA("BasePart") and RealHitboxLookup[part.Name] then
                 table.insert(AllParts, part)
             end
         end
@@ -1157,21 +1166,16 @@ end
 
 
 -- Strict visibility check
+local RayIgnoreList = {Camera, nil, nil}
 local function isStrictRayVisible(TargetPart)
     if not TargetPart or not TargetPart.Parent then return false end
 
     local Origin = Camera.CFrame.Position
     local Direction = TargetPart.Position - Origin
 
-    local ignoreList = {Camera}
-    if LocalPlayer.Character then
-        table.insert(ignoreList, LocalPlayer.Character)
-    end
-    local RayIgnore = Workspace:FindFirstChild("Ray_Ignore")
-    if RayIgnore then
-        table.insert(ignoreList, RayIgnore)
-    end
-    VisibilityParams.FilterDescendantsInstances = ignoreList
+    RayIgnoreList[2] = LocalPlayer.Character
+    RayIgnoreList[3] = Workspace:FindFirstChild("Ray_Ignore")
+    VisibilityParams.FilterDescendantsInstances = RayIgnoreList
 
     getgenv().IgnoreRaycastHook = true
     local RaycastResult = Workspace:Raycast(Origin, Direction, VisibilityParams)
@@ -1208,9 +1212,7 @@ local function isVisibleTarget(Character)
     for _, PartName in ipairs(Fallbacks) do
         local Part = findCharacterPart(Character, PartName)
         if Part then
-            if isStrictRayVisible(Part) then
-                return true
-            end
+            return isStrictRayVisible(Part)
         end
     end
 
@@ -1320,9 +1322,6 @@ local function isPartTargetable(TargetPart, ScreenCenter, FovRadius)
     if not Humanoid or Humanoid.Health <= 0 then return false end
 
     if getAimFov() >= 180 then
-        if shouldUseVisibleCheck() and not isVisibleTarget(Character) then
-            return false
-        end
         return true
     end
 
@@ -1332,20 +1331,38 @@ local function isPartTargetable(TargetPart, ScreenCenter, FovRadius)
     local DistanceFromCrosshair = (Vector2.new(ScreenPoint.X, ScreenPoint.Y) - ScreenCenter).Magnitude
     if DistanceFromCrosshair > (FovRadius * 1.15) then return false end
 
-    if shouldUseVisibleCheck() and not isVisibleTarget(Character) then
-        return false
-    end
-
     return true
+end
+
+
+-- Ragebot FOV radius (moved before updateFovCircle)
+local function getRagebotFovRadius()
+    local FovValue = Options.RagebotFOV and Options.RagebotFOV.Value
+    if type(FovValue) ~= "number" then
+        FovValue = 1
+    end
+    FovValue = math.clamp(FovValue, 1, 180)
+
+    local Viewport = Camera.ViewportSize
+    local HalfViewport = Viewport.Y * 0.5
+    local CamFovHalfRad = math.rad(Camera.FieldOfView * 0.5)
+    local AimFovHalfRad = math.rad(FovValue * 0.5)
+
+    if FovValue >= 180 then
+        return 999999
+    end
+    return (math.tan(AimFovHalfRad) / math.tan(CamFovHalfRad)) * HalfViewport
 end
 
 
 -- Update FOV circle
 local function updateFovCircle()
     local ShowAimFov = Toggles.AimbotShowFOV and Toggles.AimbotShowFOV.Value
+    local ShowRageFov = Toggles.RagebotShowFOV and Toggles.RagebotShowFOV.Value
     local RadiusAim = ShowAimFov and getAimFovRadius() or 0
+    local RadiusRage = ShowRageFov and getRagebotFovRadius() or 0
 
-    if not Camera or not ShowAimFov then
+    if not Camera or (not ShowAimFov and not ShowRageFov) then
         for _, Line in ipairs(AimRuntime.FovLines) do
             Line.Visible = false
         end
@@ -1357,6 +1374,7 @@ local function updateFovCircle()
     local PartLines = math.floor(#AimRuntime.FovLines / 2)
     local Cos, Sin = math.cos, math.sin
 
+    -- Aimbot FOV (first half of lines)
     if ShowAimFov and RadiusAim > 0 then
         local Step = (math.pi * 2) / PartLines
         local White = Color3.fromRGB(255, 255, 255)
@@ -1373,6 +1391,28 @@ local function updateFovCircle()
     else
         for i = 1, PartLines do
             AimRuntime.FovLines[i].Visible = false
+        end
+    end
+
+    -- Ragebot FOV (second half of lines)
+    if ShowRageFov and RadiusRage > 0 then
+        local Step = (math.pi * 2) / PartLines
+        local White = Color3.fromRGB(255, 255, 255)
+        for i = 1, PartLines do
+            local Line = AimRuntime.FovLines[PartLines + i]
+            local Angle = (i - 1) * Step
+            local NextAngle = Angle + Step
+
+            Line.From = Vector2.new(Center.X + Cos(Angle) * RadiusRage, Center.Y + Sin(Angle) * RadiusRage)
+            Line.To = Vector2.new(Center.X + Cos(NextAngle) * RadiusRage, Center.Y + Sin(NextAngle) * RadiusRage)
+            Line.Color = White
+            Line.Visible = true
+        end
+    else
+        for i = 1, PartLines do
+            if AimRuntime.FovLines[PartLines + i] then
+                AimRuntime.FovLines[PartLines + i].Visible = false
+            end
         end
     end
 end
@@ -1574,26 +1614,6 @@ local function isRagebotBaimKeyActive()
 end
 
 
--- Ragebot FOV radius
-local function getRagebotFovRadius()
-    local FovValue = Options.RagebotFOV and Options.RagebotFOV.Value
-    if type(FovValue) ~= "number" then
-        FovValue = 1
-    end
-    FovValue = math.clamp(FovValue, 1, 180)
-
-    local Viewport = Camera.ViewportSize
-    local HalfViewport = Viewport.Y * 0.5
-    local CamFovHalfRad = math.rad(Camera.FieldOfView * 0.5)
-    local AimFovHalfRad = math.rad(FovValue * 0.5)
-
-    if FovValue >= 180 then
-        return 999999
-    end
-    return (math.tan(AimFovHalfRad) / math.tan(CamFovHalfRad)) * HalfViewport
-end
-
-
 -- Get ragebot target
 local function getRagebotTarget()
     local BestPart = nil
@@ -1657,41 +1677,47 @@ local function getRagebotTarget()
                 end
             end
         else
-            local SelectedHitbox = Options.RagebotHitbox and Options.RagebotHitbox.Value or "Head"
-            
-            if SelectedHitbox == "Nearest" then
-                local AllParts = {}
-                for _, part in ipairs(Character:GetChildren()) do
-                    if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
-                        table.insert(AllParts, part)
-                    end
+            -- Head priority: try head hitboxes first
+            local headParts = { "HeadHB", "Head", "FakeHead" }
+            for _, hName in ipairs(headParts) do
+                local hPart = findCharacterPart(Character, hName)
+                if hPart then
+                    TargetPart = hPart
+                    break
                 end
-                
+            end
+
+            -- If no head found, fall back to priority hierarchy: body/arms → legs
+            if not TargetPart then
+                local ScreenCenter = Vector2.new(Camera.ViewportSize.X * 0.5, Camera.ViewportSize.Y * 0.5)
                 local BestPart = nil
                 local BestDistance = math.huge
-                local ScreenCenter = Vector2.new(Camera.ViewportSize.X * 0.5, Camera.ViewportSize.Y * 0.5)
-                
-                for _, part in ipairs(AllParts) do
-                    local screenPoint = Camera:WorldToViewportPoint(part.Position)
-                    if screenPoint.Z > 0 then
-                        local distance = (Vector2.new(screenPoint.X, screenPoint.Y) - ScreenCenter).Magnitude
-                        if distance < BestDistance then
-                            BestDistance = distance
-                            BestPart = part
+
+                local priorityGroups = {
+                    { "UpperTorso", "LowerTorso", "HumanoidRootPart", "LeftUpperArm", "LeftLowerArm", "LeftHand", "RightUpperArm", "RightLowerArm", "RightHand" },
+                    { "LeftUpperLeg", "LeftLowerLeg", "LeftFoot", "RightUpperLeg", "RightLowerLeg", "RightFoot" },
+                }
+
+                for _, group in ipairs(priorityGroups) do
+                    BestPart = nil
+                    BestDistance = math.huge
+                    for _, partName in ipairs(group) do
+                        local part = findCharacterPart(Character, partName)
+                        if part then
+                            local screenPoint = Camera:WorldToViewportPoint(part.Position)
+                            if screenPoint.Z > 0 then
+                                local distance = (Vector2.new(screenPoint.X, screenPoint.Y) - ScreenCenter).Magnitude
+                                if distance < BestDistance then
+                                    BestDistance = distance
+                                    BestPart = part
+                                end
+                            end
                         end
                     end
+                    if BestPart then break end
                 end
-                
+
                 TargetPart = BestPart
-            else
-                local Fallbacks = AimHitboxFallbacks[SelectedHitbox] or AimHitboxFallbacks.Head
-                for _, PartName in ipairs(Fallbacks) do
-                    local Part = findCharacterPart(Character, PartName)
-                    if Part then
-                        TargetPart = Part
-                        break
-                    end
-                end
             end
         end
 
@@ -2163,12 +2189,9 @@ ConfigSection:AddButton('Unload', function()
     end
 
     -- Cleanup Grenade Prediction
-    for _, line in pairs(GrenadeRuntime.Predictions) do
-        if line and line.Remove then
-            pcall(function() line:Remove() end)
-        end
+    if GrenadeRuntime and GrenadeRuntime.Folder then
+        pcall(function() GrenadeRuntime.Folder:Destroy() end)
     end
-    table.clear(GrenadeRuntime.Predictions)
 
     -- Cleanup Hit Chams
     if HitChamsState.ChamsFolder then
@@ -2420,8 +2443,10 @@ local function updateTriggerbot()
             local hum = Character:FindFirstChildOfClass("Humanoid")
             if not hum or hum.Health <= 0 then continue end
 
-            for _, part in ipairs(Character:GetChildren()) do
-                if part:IsA("BasePart") then
+            local magnetHitboxes = {"Head", "HeadHB", "HumanoidRootPart", "UpperTorso", "Torso"}
+            for _, partName in ipairs(magnetHitboxes) do
+                local part = Character:FindFirstChild(partName)
+                if part and part:IsA("BasePart") then
                     local screenPoint = Camera:WorldToViewportPoint(part.Position)
                     if screenPoint.Z > 0 then
                         local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - MousePos).Magnitude
@@ -2575,7 +2600,7 @@ end
 
 
 -- Get option color
-local function getOptionColor(OptionName, Fallback)
+function getOptionColor(OptionName, Fallback)
     local Option = Options[OptionName]
     if type(Option) == "table" and Option.Value then
         return Option.Value
@@ -2833,87 +2858,258 @@ local function updateThirdPerson()
 end
 
 
--- Grenade Prediction
-local function updateGrenadePrediction()
-    if not Toggles.GrenadesPrediction or not Toggles.GrenadesPrediction.Value then
-        for _, line in pairs(GrenadeRuntime.Predictions) do
-            if line and line.Remove then
-                pcall(function() line:Remove() end)
-            end
+-- Grenade Prediction (3D Beam-based, ported from Main_script.lua)
+
+-- Grenade runtime
+local GrenadeRuntime = {
+    Folder = nil,
+    Attachments = {},
+    Beams = {},
+    Sphere = nil,
+    PulseDir = 1,
+    PulseVal = 1.0,
+    LmbDown = false,
+    RmbDown = false,
+}
+
+-- Create prediction objects
+do
+    local PredictionFolder = Instance.new("Folder")
+    PredictionFolder.Name = "CW_GrenadePredictor"
+    GrenadeRuntime.Folder = PredictionFolder
+    pcall(function() PredictionFolder.Parent = workspace.Terrain end)
+
+    for i = 1, 40 do
+        local att = Instance.new("Attachment", PredictionFolder)
+        GrenadeRuntime.Attachments[i] = att
+        if i > 1 then
+            local beam = Instance.new("Beam", PredictionFolder)
+            beam.Attachment0 = GrenadeRuntime.Attachments[i-1]
+            beam.Attachment1 = att
+            beam.Width0 = 0.2
+            beam.Width1 = 0.2
+            beam.FaceCamera = true
+            beam.Segments = 1
+            beam.LightEmission = 1
+            beam.LightInfluence = 0
+            beam.Transparency = NumberSequence.new(0.2)
+            beam.Enabled = false
+            GrenadeRuntime.Beams[i-1] = beam
         end
-        table.clear(GrenadeRuntime.Predictions)
+    end
+
+    local sphere = Instance.new("Part")
+    sphere.Shape = Enum.PartType.Ball
+    sphere.Size = Vector3.new(1.2, 1.2, 1.2)
+    sphere.Material = Enum.Material.Neon
+    sphere.Anchored = true
+    sphere.CanCollide = false
+    sphere.Parent = PredictionFolder
+    sphere.CastShadow = false
+    sphere.Transparency = 1
+    GrenadeRuntime.Sphere = sphere
+end
+
+-- Grenade helpers
+local function isHoldingNade()
+    local lp = LocalPlayer
+    if not lp or not lp.Character then return false end
+    local gun = lp.Character:FindFirstChild("Gun")
+    if gun and gun:FindFirstChild("Grenade") then return true end
+    local eqVal = lp.Character:FindFirstChild("EquippedTool")
+    if eqVal and type(eqVal.Value) == "string" then
+        local weaponDef = ReplicatedStorage:FindFirstChild("Weapons")
+        if weaponDef then
+            local w = weaponDef:FindFirstChild(eqVal.Value)
+            if w and w:FindFirstChild("Grenade") then return true end
+        end
+        local n = eqVal.Value:lower()
+        if n:find("flash") or n:find("hegren") or n:find("smoke") or n:find("molotov") or n:find("incen") or n:find("decoy") or n:find("grenade") or n:find("nade") then
+            return true
+        end
+    end
+    return false
+end
+
+local function getNadePosition()
+    return (Camera.CFrame * CFrame.new(0.1, -0.4, -2.5)).Position
+end
+
+local function getNadeType()
+    local lp = LocalPlayer
+    if not lp or not lp.Character then return "default" end
+    local eqVal = lp.Character:FindFirstChild("EquippedTool")
+    if not eqVal or type(eqVal.Value) ~= "string" then return "default" end
+    local v = eqVal.Value
+    if v == "Molotov" or v == "Incendiary Grenade" then return "molotov" end
+    if v == "HE Grenade" then return "he" end
+    if v == "Smoke Grenade" then return "smoke" end
+    if v == "Flashbang" then return "flash" end
+    if v == "Decoy Grenade" then return "decoy" end
+    local lv = v:lower()
+    if lv:find("molotov") or lv:find("incen") then return "molotov" end
+    if lv:find("hegren") or lv == "he grenade" then return "he" end
+    if lv:find("smoke") then return "smoke" end
+    if lv:find("flash") then return "flash" end
+    if lv:find("decoy") then return "decoy" end
+    return "default"
+end
+
+-- Input tracking for grenade prediction
+EspRuntime.Connections.GrenadeInputBegan = UserInputService.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then GrenadeRuntime.LmbDown = true end
+    if input.UserInputType == Enum.UserInputType.MouseButton2 then GrenadeRuntime.RmbDown = true end
+end)
+EspRuntime.Connections.GrenadeInputEnded = UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then GrenadeRuntime.LmbDown = false end
+    if input.UserInputType == Enum.UserInputType.MouseButton2 then GrenadeRuntime.RmbDown = false end
+end)
+
+local function updateGrenadePrediction(dt)
+    if not Toggles.GrenadesPrediction or not Toggles.GrenadesPrediction.Value then
+        for _, b in pairs(GrenadeRuntime.Beams) do b.Enabled = false end
+        GrenadeRuntime.Sphere.Transparency = 1
         return
     end
 
-    local character = LocalPlayer.Character
-    if not character then return end
-
-    local tool = character:FindFirstChildOfClass("Tool")
-    if not tool then return end
-
-    local grenade = tool:FindFirstChild("Handle") or tool:FindFirstChild("Mesh")
-    if not grenade then return end
-
-    local startPos = grenade.Position
-    local startVel = grenade.AssemblyLinearVelocity or Vector3.new(0, 0, 0)
-    
-    if startVel.Magnitude < 1 then return end
-
-    local gravity = Vector3.new(0, -workspace.Gravity, 0)
-    local steps = 30
-    local dt = 0.05
-    
-    local points = {}
-    local currentPos = startPos
-    local currentVel = startVel
-    
-    for i = 1, steps do
-        table.insert(points, currentPos)
-        currentVel = currentVel + gravity * dt
-        currentPos = currentPos + currentVel * dt
+    if not isHoldingNade() or not (GrenadeRuntime.LmbDown or GrenadeRuntime.RmbDown) then
+        for _, b in pairs(GrenadeRuntime.Beams) do b.Enabled = false end
+        GrenadeRuntime.Sphere.Transparency = 1
+        return
     end
 
-    local color = Options.GrenadesPredictionColor and Options.GrenadesPredictionColor.Value or Color3.fromRGB(255, 0, 0)
-    local lineCount = 0
+    local rgb = Options.GrenadesPredictionColor and Options.GrenadesPredictionColor.Value or Color3.fromRGB(255, 50, 50)
+    local c3 = typeof(rgb) == "Color3" and rgb or Color3.new(1, 0.2, 0.2)
 
-    for i = 1, #points - 1 do
-        local p1 = points[i]
-        local p2 = points[i + 1]
-        
-        local screen1 = Camera:WorldToViewportPoint(p1)
-        local screen2 = Camera:WorldToViewportPoint(p2)
-        
-        if screen1.Z > 0 and screen2.Z > 0 then
-            lineCount = lineCount + 1
-            local line = GrenadeRuntime.Predictions[lineCount]
-            if not line then
-                line = createLine(2, color)
-                GrenadeRuntime.Predictions[lineCount] = line
+    for _, b in pairs(GrenadeRuntime.Beams) do
+        b.Color = ColorSequence.new(c3)
+        b.Enabled = true
+    end
+    GrenadeRuntime.Sphere.Color = c3
+
+    GrenadeRuntime.PulseVal = GrenadeRuntime.PulseVal + (GrenadeRuntime.PulseDir * (dt or 0.016) * 2.5)
+    if GrenadeRuntime.PulseVal >= 1.6 then GrenadeRuntime.PulseDir = -1 end
+    if GrenadeRuntime.PulseVal <= 0.7 then GrenadeRuntime.PulseDir = 1 end
+    GrenadeRuntime.Sphere.Size = Vector3.new(GrenadeRuntime.PulseVal, GrenadeRuntime.PulseVal, GrenadeRuntime.PulseVal)
+
+    local lp = LocalPlayer
+    local hrp = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+    local plrVel = hrp and hrp.AssemblyLinearVelocity or Vector3.new()
+    local nadeType = getNadeType()
+    local LOOK_SPEED = 100
+    local PLR_FACTOR = 1.0
+    local UP_BIAS = 12
+    local maxBounces, bounceDamping = 3, 0.42
+    if nadeType == "molotov" then
+        maxBounces, bounceDamping = 5, 0.4
+    elseif nadeType == "he" then
+        maxBounces, bounceDamping = 4, 0.55
+    elseif nadeType == "smoke" then
+        maxBounces, bounceDamping = 3, 0.38
+    elseif nadeType == "flash" then
+        maxBounces, bounceDamping = 4, 0.55
+    elseif nadeType == "decoy" then
+        maxBounces, bounceDamping = 3, 0.42
+    end
+    local velocity = Camera.CFrame.LookVector * LOOK_SPEED + plrVel * PLR_FACTOR + Vector3.new(0, UP_BIAS, 0)
+    local startPos = getNadePosition()
+    local grav = Vector3.new(0, -workspace.Gravity, 0)
+
+    local tStep = 1/60
+    local maxSteps = 240
+    local currentPos = startPos
+    local rp = RaycastParams.new()
+    local filterList = {lp.Character, workspace:FindFirstChild("Ray_Ignore"), GrenadeRuntime.Folder}
+    local mapObj = workspace:FindFirstChild("Map")
+    if mapObj then
+        local clips = mapObj:FindFirstChild("Clips")
+        if clips then table.insert(filterList, clips) end
+    end
+    rp.FilterDescendantsInstances = filterList
+    rp.FilterType = Enum.RaycastFilterType.Exclude
+
+    local bounces = 0
+    local pointCount = 1
+    GrenadeRuntime.Attachments[1].WorldPosition = startPos
+
+    local samplePeriod = 3
+    local stepIdx = 0
+    for s = 1, maxSteps do
+        local nextVel = velocity + (grav * tStep)
+        local moveDelta = (velocity + nextVel) * 0.5 * tStep
+        local nextPos = currentPos + moveDelta
+
+        local ray = workspace:Raycast(currentPos, nextPos - currentPos, rp)
+        if ray then
+            bounces = bounces + 1
+            nextPos = ray.Position + ray.Normal * 0.05
+            local normal = ray.Normal
+            local reflected = nextVel - (2 * nextVel:Dot(normal) * normal)
+            velocity = reflected * bounceDamping
+            local isFloor = normal.Y > 0.6
+            if (nadeType == "molotov" and isFloor) or bounces >= maxBounces or velocity.Magnitude < 5 then
+                pointCount = pointCount + 1
+                if pointCount <= 40 then
+                    GrenadeRuntime.Attachments[pointCount].WorldPosition = nextPos
+                    GrenadeRuntime.Beams[pointCount-1].Transparency = NumberSequence.new(0.15 + (pointCount/40)*0.85)
+                end
+                currentPos = nextPos
+                break
             end
-            line.Color = color
-            line.From = Vector2.new(screen1.X, screen1.Y)
-            line.To = Vector2.new(screen2.X, screen2.Y)
-            line.Visible = true
+        else
+            velocity = nextVel
+        end
+
+        currentPos = nextPos
+        stepIdx = stepIdx + 1
+        if stepIdx % samplePeriod == 0 or ray then
+            pointCount = pointCount + 1
+            if pointCount > 40 then break end
+            GrenadeRuntime.Attachments[pointCount].WorldPosition = nextPos
+            GrenadeRuntime.Beams[pointCount-1].Transparency = NumberSequence.new(0.15 + (pointCount/40)*0.85)
         end
     end
 
-    for i = lineCount + 1, #GrenadeRuntime.Predictions do
-        local line = GrenadeRuntime.Predictions[i]
-        if line then line.Visible = false end
+    for j = pointCount, 39 do
+        if GrenadeRuntime.Beams[j] then GrenadeRuntime.Beams[j].Enabled = false end
     end
+
+    GrenadeRuntime.Sphere.CFrame = CFrame.new(currentPos)
+    GrenadeRuntime.Sphere.Transparency = 0.3
 end
 
 
 -- Main loop
 local lastEspUpdate = 0
+local watermarkFps = 0
+local watermarkFrames = 0
+local watermarkLastUpdate = 0
 
-EspRuntime.Connections.RenderStepped = RunService.RenderStepped:Connect(function()
+EspRuntime.Connections.RenderStepped = RunService.RenderStepped:Connect(function(dt)
     local now = tick()
+    watermarkFrames = watermarkFrames + 1
+
     if now - lastEspUpdate >= (1 / 180) then
         lastEspUpdate = now
         local plist = Players:GetPlayers()
         for i = 1, #plist do
             updatePlayerEsp(plist[i])
+        end
+    end
+
+    -- Update watermark every 0.5s
+    if Toggles.MenuWatermark and Toggles.MenuWatermark.Value then
+        if now - watermarkLastUpdate >= 0.3 then
+            watermarkFps = math.floor(watermarkFrames / (now - watermarkLastUpdate))
+            watermarkFrames = 0
+            watermarkLastUpdate = now
+
+            local ping = 0
+            local ok, stats = pcall(function() return LocalPlayer:GetNetworkPing() end)
+            if ok and type(stats) == "number" then ping = math.floor(stats * 1000) end
+
+            local timeStr = os.date("%H:%M:%S")
+            Library:SetWatermark(string.format("Valenok  |  %d fps  |  %d ms  |  %s", watermarkFps, ping, timeStr))
         end
     end
 
@@ -2931,7 +3127,7 @@ EspRuntime.Connections.RenderStepped = RunService.RenderStepped:Connect(function
     updateNoScope()
     updateNoFlash()
     updateNoSmoke()
-    updateGrenadePrediction()
+    updateGrenadePrediction(dt)
     updateHitChams()
 end)
 
