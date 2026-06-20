@@ -2395,26 +2395,22 @@ local function updateTriggerbot()
         if hitChar then
             local hitPlayer = Players:GetPlayerFromCharacter(hitChar)
             
-            -- Сначала проверяем, существует ли вообще такой игрок
-            if hitPlayer then
-                -- Team check
-                if Toggles.TriggerbotTeamCheck and Toggles.TriggerbotTeamCheck.Value then
-                    local MyTeam, TheirTeam = LocalPlayer.Team, hitPlayer.Team
-                    local MyTeamColor, TheirTeamColor = LocalPlayer.TeamColor, hitPlayer.TeamColor
-                    
-                    if (MyTeam ~= nil and TheirTeam ~= nil and TheirTeam == MyTeam) or
-                       (MyTeamColor ~= nil and TheirTeamColor ~= nil and TheirTeamColor == MyTeamColor) then
-                        return
-                    end
-                end
+            -- Team check
+            if Toggles.TriggerbotTeamCheck and Toggles.TriggerbotTeamCheck.Value then
+                local MyTeam, TheirTeam = LocalPlayer.Team, hitPlayer.Team
+                local MyTeamColor, TheirTeamColor = LocalPlayer.TeamColor, hitPlayer.TeamColor
                 
-                -- Проверка на врага и видимость
-                if isTriggerEnemy(hitPlayer) then
-                    local hum = hitChar:FindFirstChildOfClass("Humanoid")
-                    if hum and hum.Health > 0 then
-                        if isStrictRayVisible(hitInstance) then
-                            targetPart = hitInstance
-                        end
+                if (MyTeam ~= nil and TheirTeam ~= nil and TheirTeam == MyTeam) or
+                   (MyTeamColor ~= nil and TheirTeamColor ~= nil and TheirTeamColor == MyTeamColor) then
+                    return
+                end
+            end
+            
+            if hitPlayer and isTriggerEnemy(hitPlayer) then
+                local hum = hitChar:FindFirstChildOfClass("Humanoid")
+                if hum and hum.Health > 0 then
+                    if isStrictRayVisible(hitInstance) then
+                        targetPart = hitInstance
                     end
                 end
             end
@@ -2536,7 +2532,6 @@ local function hideDrawingSet(DrawingSet, ResetRect)
 
     DrawingSet.Box.Visible = false
     DrawingSet.Name.Visible = false
-    DrawingSet.Distance.Visible = false
     DrawingSet.Weapon.Visible = false
     DrawingSet.HealthBarOutline.Visible = false
     DrawingSet.HealthBarFill.Visible = false
@@ -2591,13 +2586,12 @@ local function getDrawingSet(Player)
 
     DrawingSet = {
         Box = createSquare(1, Color3.fromRGB(255, 255, 255)),
-        Name = createText(12.5),
-        Distance = createText(12.5),
-        Weapon = createText(12.5),
+        Name = createText(16),
+        Weapon = createText(16),
         Rect = nil,
         HealthBarOutline = createSquare(2, Color3.fromRGB(0, 0, 0)),
         HealthBarFill = createSquare(1, Color3.fromRGB(0, 255, 0)),
-        HealthText = createText(10),
+        HealthText = createText(13),
     }
 
     EspRuntime.Drawings[Player] = DrawingSet
@@ -2743,11 +2737,9 @@ local function updatePlayerEsp(Player)
 
     local ShowBox = Toggles.ESPBox and Toggles.ESPBox.Value
     local ShowName = Toggles.ESPName and Toggles.ESPName.Value
-    local ShowDistance = Toggles.ESPDistance and Toggles.ESPDistance.Value
 
     local BoxColor = getOptionColor("ESPBoxColor", Color3.fromRGB(255, 255, 255))
     local NameColor = getOptionColor("ESPNameColor", Color3.fromRGB(255, 255, 255))
-    local DistanceColor = getOptionColor("ESPDistanceColor", Color3.fromRGB(255, 255, 255))
 
     DrawingSet.Box.Position = Vector2.new(Left, Top)
     DrawingSet.Box.Size = Vector2.new(Width, Height)
@@ -2758,16 +2750,6 @@ local function updatePlayerEsp(Player)
     DrawingSet.Name.Position = Vector2.new(CenterX, Top - 15)
     DrawingSet.Name.Color = NameColor
     DrawingSet.Name.Visible = ShowName
-
-    local distText = ""
-    if ShowDistance and RootPart then
-        local dist = (RootPart.Position - Camera.CFrame.Position).Magnitude
-        distText = string.format("[%d m]", math.floor(dist))
-    end
-    DrawingSet.Distance.Text = distText
-    DrawingSet.Distance.Position = Vector2.new(CenterX, Top - 30)
-    DrawingSet.Distance.Color = DistanceColor
-    DrawingSet.Distance.Visible = ShowDistance
 
     local ShowWeapon = Toggles.ESPWeapon and Toggles.ESPWeapon.Value
     local WeaponColor = getOptionColor("ESPWeaponColor", Color3.fromRGB(255, 255, 255))
