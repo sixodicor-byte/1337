@@ -3139,9 +3139,10 @@ EspRuntime.Connections.KillAllHeartbeat = RunService.Heartbeat:Connect(function(
     end
 end)
 
+print("123")
 
 -- Build coАnfig
 SaveManager:BuildConfigSection(Tabs.Config)
 ThemeManager:ApplyToTab(Tabs.Config)
 
-print("[Valenok] Menu opens on END key")
+
