@@ -1,3 +1,6 @@
+local print = function() end
+local warn = function() end
+
 -- FPS unlock
 setfpscap(300)
 
@@ -162,6 +165,7 @@ local VisualSections = {
 local MovementSections = {
     Bhop = Tabs.Movement:AddLeftGroupbox('Bhop'),
     Movement = Tabs.Movement:AddRightGroupbox('Movement'),
+    Strafe = Tabs.Movement:AddLeftGroupbox('Strafe'),
 }
 
 -- Bhop UI
@@ -180,6 +184,13 @@ MovementSections.Movement:AddDropdown('MovementFastWalkMode', {Values = { 'Legit
 
 
 MovementSections.Movement:AddToggle('MovementEdgeJump', {Text = 'Edge jump', Default = false})
+
+
+-- Strafe UI
+MovementSections.Strafe:AddToggle('StrafeEnable', {Text = 'Strafe', Default = false})
+
+
+MovementSections.Strafe:AddToggle('AirStrafeEnable', {Text = 'Air strafe', Default = false})
 
 
 -- Ragebot UI
@@ -1954,6 +1965,69 @@ local function updateBhop()
 end
 
 
+-- Strafe helpers
+local function updateStrafe()
+    if not Toggles.StrafeEnable or not Toggles.StrafeEnable.Value then return end
+    if Toggles.BhopEnable and Toggles.BhopEnable.Value and UserInputService:IsKeyDown(Enum.KeyCode.Space) then return end
+
+    local character = LocalPlayer.Character
+    if not character then return end
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if not (rootPart and humanoid) or humanoid.Health <= 0 then return end
+    if humanoid.FloorMaterial == Enum.Material.Air then return end
+
+    local camLook = Camera.CFrame.LookVector
+    local camRight = Camera.CFrame.RightVector
+    local mx, mz = 0, 0
+    if UserInputService:IsKeyDown(Enum.KeyCode.W) then mx = mx + camLook.X; mz = mz + camLook.Z end
+    if UserInputService:IsKeyDown(Enum.KeyCode.S) then mx = mx - camLook.X; mz = mz - camLook.Z end
+    if UserInputService:IsKeyDown(Enum.KeyCode.A) then mx = mx - camRight.X; mz = mz - camRight.Z end
+    if UserInputService:IsKeyDown(Enum.KeyCode.D) then mx = mx + camRight.X; mz = mz + camRight.Z end
+
+    local currentVel = rootPart.AssemblyLinearVelocity
+    local mag = math.sqrt(mx * mx + mz * mz)
+    if mag > 0 then
+        local targetSpeed = humanoid.WalkSpeed
+        local inv = targetSpeed / mag
+        rootPart.AssemblyLinearVelocity = Vector3.new(mx * inv, currentVel.Y, mz * inv)
+    else
+        rootPart.AssemblyLinearVelocity = Vector3.new(0, currentVel.Y, 0)
+    end
+end
+
+
+local function updateAirStrafe()
+    if not Toggles.AirStrafeEnable or not Toggles.AirStrafeEnable.Value then return end
+    if Toggles.BhopEnable and Toggles.BhopEnable.Value and UserInputService:IsKeyDown(Enum.KeyCode.Space) then return end
+
+    local character = LocalPlayer.Character
+    if not character then return end
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if not (rootPart and humanoid) or humanoid.Health <= 0 then return end
+    if humanoid.FloorMaterial ~= Enum.Material.Air then return end
+
+    local camLook = Camera.CFrame.LookVector
+    local camRight = Camera.CFrame.RightVector
+    local mx, mz = 0, 0
+    if UserInputService:IsKeyDown(Enum.KeyCode.W) then mx = mx + camLook.X; mz = mz + camLook.Z end
+    if UserInputService:IsKeyDown(Enum.KeyCode.S) then mx = mx - camLook.X; mz = mz - camLook.Z end
+    if UserInputService:IsKeyDown(Enum.KeyCode.A) then mx = mx - camRight.X; mz = mz - camRight.Z end
+    if UserInputService:IsKeyDown(Enum.KeyCode.D) then mx = mx + camRight.X; mz = mz + camRight.Z end
+
+    local currentVel = rootPart.AssemblyLinearVelocity
+    local mag = math.sqrt(mx * mx + mz * mz)
+    if mag > 0 then
+        local targetSpeed = humanoid.WalkSpeed
+        local inv = targetSpeed / mag
+        rootPart.AssemblyLinearVelocity = Vector3.new(mx * inv, currentVel.Y, mz * inv)
+    else
+        rootPart.AssemblyLinearVelocity = Vector3.new(0, currentVel.Y, 0)
+    end
+end
+
+
 -- Kill All helpers
 local function isKillAllKeyActive()
     local KeybindState = Options.ExploitKillAllKeybind
@@ -3159,6 +3233,8 @@ EspRuntime.Connections.RenderStepped = RunService.RenderStepped:Connect(function
     updateAntiAim()
     updateBhop()
     updateFastWalk()
+    updateStrafe()
+    updateAirStrafe()
     updateNoScope()
     updateNoFlash()
     updateNoSmoke()
