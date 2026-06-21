@@ -1,5 +1,5 @@
 -- FPS unlock
-setfpscap(500)
+setfpscap(300)
 
 
 -- Library load
@@ -64,12 +64,15 @@ local Tabs = {
 -- Rage sections
 local RageSections = {
     Ragebot = Tabs.Rage:AddLeftGroupbox('Ragebot'),
-    PeekAssist = Tabs.Rage:AddLeftGroupbox('Peek assist'),
+    PeekAssist = Tabs.Rage:AddRightGroupbox('Peek assist'),
     AntiAim = Tabs.Rage:AddLeftGroupbox('Anti aim'),
     GunMods = Tabs.Rage:AddRightGroupbox('Gun mods'),
     Misc = Tabs.Rage:AddRightGroupbox('Misc'),
     Exploit = Tabs.Rage:AddRightGroupbox('Exploit'),
 }
+
+
+
 
 
 -- Legit sections
@@ -243,17 +246,10 @@ RageSections.AntiAim:AddDropdown('AntiAimPitchMode', {Values = { 'None', 'Up', '
 RageSections.AntiAim:AddToggle('AntiAimYaw', {Text = 'Yaw', Default = false})
 
 
-RageSections.AntiAim:AddDropdown('AntiAimYawMode', {Values = { 'Local', 'At target' }, Default = 'Local', Text = 'Yaw mode'})
+RageSections.AntiAim:AddDropdown('AntiAimYawMode', {Values = { 'Local', 'At target', 'Random' }, Default = 'Local', Text = 'Yaw mode'})
 
 
 RageSections.AntiAim:AddSlider('AntiAimYawValue', {Text = 'Yaw value', Default = 0, Min = -180, Max = 180, Rounding = 0})
-
-
--- Manual Anti Aim
-RageSections.AntiAim:AddToggle('AntiAimManual', {Text = 'Manual Anti aim', Default = false})
-
-
-RageSections.AntiAim:AddDropdown('AntiAimManualDirection', {Values = { 'Right', 'Left' }, Default = 'Right', Text = 'Manual direction'})
 
 
 -- Gun Mods UI
@@ -422,7 +418,13 @@ VisualSections.ESP:AddToggle('ESPWeapon', {Text = 'Weapon ESP', Default = false}
 VisualSections.ESP:AddToggle('ESPChams', {Text = 'Chams', Default = false})
 
 
-VisualSections.ESP:AddDropdown('ESPFont', {Values = { 'UI', 'System', 'Plex', 'Monospace' }, Default = 'UI', Text = 'Font'})
+VisualSections.ESP:AddToggle('ESPChamsOutline', {Text = 'Chams outline', Default = false})
+
+
+VisualSections.ESP:AddLabel('Chams outline color'):AddColorPicker('ESPChamsOutlineColor', {Default = Color3.fromRGB(255, 255, 255), Title = 'Chams outline color'})
+
+
+VisualSections.ESP:AddDropdown('ESPFont', {Values = { 'UI', 'System', 'Plex', 'Monospace' }, Default = 'Plex', Text = 'Font'})
 
 
 -- Chams transparency
@@ -618,7 +620,7 @@ local function drawBulletTracer(startPos, endPos)
         beam.Parent = holderPart
 
         task.spawn(function()
-            task.wait(0.5)
+            task.wait(1)
             for i = 30, 100, 4 do
                 task.wait()
                 if beam and holderPart then
@@ -1324,6 +1326,10 @@ local function isPartTargetable(TargetPart, ScreenCenter, FovRadius)
     local Humanoid = Character:FindFirstChildOfClass("Humanoid")
     if not Humanoid or Humanoid.Health <= 0 then return false end
 
+    if shouldUseVisibleCheck() and not isVisibleTarget(Character) then
+        return false
+    end
+
     if getAimFov() >= 180 then
         return true
     end
@@ -1512,6 +1518,20 @@ local function updateNoFlash()
     local blnd = LocalPlayer.PlayerGui and LocalPlayer.PlayerGui:FindFirstChild("Blnd")
     if blnd then
         blnd.Enabled = not (Toggles.RemovalsNoFlash and Toggles.RemovalsNoFlash.Value)
+    end
+end
+
+
+-- Update FOV
+local OriginalFOV = Camera.FieldOfView
+local LastFOV = Camera.FieldOfView
+local function updateFOV()
+    local target = (Toggles.SelfFOVEnable and Toggles.SelfFOVEnable.Value)
+        and (Options.SelfFOV and Options.SelfFOV.Value or 70)
+        or OriginalFOV
+    if target ~= LastFOV then
+        Camera.FieldOfView = target
+        LastFOV = target
     end
 end
 
@@ -1760,16 +1780,20 @@ local function updateRagebot()
             local humanoid = character and character:FindFirstChildOfClass("Humanoid")
             if character and humanoid and humanoid.Health > 0 then
                 local now = tick()
-                if now >= RagebotState.NextFireTime then
-                    local Mouse = LocalPlayer:GetMouse()
-                    local mouseX = Mouse.X
-                    local mouseY = Mouse.Y
-                    pcall(function()
-                        VirtualInputManager:SendMouseButtonEvent(mouseX, mouseY, 0, true, game, 1)
-                        task.wait(0.01)
-                        VirtualInputManager:SendMouseButtonEvent(mouseX, mouseY, 0, false, game, 1)
+                if now >= RagebotState.NextFireTime and not RagebotState.Firing then
+                    RagebotState.NextFireTime = now + 0.13
+                    RagebotState.Firing = true
+                    task.spawn(function()
+                        local Mouse = LocalPlayer:GetMouse()
+                        local mouseX = Mouse.X
+                        local mouseY = Mouse.Y
+                        pcall(function()
+                            VirtualInputManager:SendMouseButtonEvent(mouseX, mouseY, 0, true, game, 1)
+                            task.wait(0.1)
+                            VirtualInputManager:SendMouseButtonEvent(mouseX, mouseY, 0, false, game, 1)
+                        end)
+                        RagebotState.Firing = false
                     end)
-                    RagebotState.NextFireTime = now + 0.05
                 end
             end
         end
@@ -1786,10 +1810,8 @@ local originalWalkSpeed = 16
 local function updateAntiAim()
     local PitchEnabled = Toggles.AntiAimPitch and Toggles.AntiAimPitch.Value
     local YawEnabled = Toggles.AntiAimYaw and Toggles.AntiAimYaw.Value
-    local ManualEnabled = Toggles.AntiAimManual and Toggles.AntiAimManual.Value
     local YawMode = Options.AntiAimYawMode and Options.AntiAimYawMode.Value or "Local"
     local YawValue = Options.AntiAimYawValue and Options.AntiAimYawValue.Value or 0
-    local ManualDirection = Options.AntiAimManualDirection and Options.AntiAimManualDirection.Value or "Right"
     local PitchMode = Options.AntiAimPitchMode and Options.AntiAimPitchMode.Value or "None"
 
     local character = LocalPlayer.Character
@@ -1798,7 +1820,7 @@ local function updateAntiAim()
     local rootPart = character:FindFirstChild("HumanoidRootPart")
     if not (humanoid and rootPart) or humanoid.Health <= 0 then return end
 
-    if not PitchEnabled and not YawEnabled and not ManualEnabled then
+    if not PitchEnabled and not YawEnabled then
         humanoid.AutoRotate = true
         getgenv().ValenokPitchDownEnabled = false
         return
@@ -1871,6 +1893,14 @@ local function updateAntiAim()
                 local camLook = Camera.CFrame.LookVector
                 lookVector = Vector3.new(camLook.X, 0, camLook.Z).Unit
             end
+        elseif YawMode == "Random" then
+            if tick() - (getgenv().LastRandomYaw or 0) > 0.1 then
+                getgenv().LastRandomYaw = tick()
+                getgenv().RandomYawValue = math.random(-180, 180)
+            end
+            yawRad = math.rad(getgenv().RandomYawValue or 0)
+            local camLook = Camera.CFrame.LookVector
+            lookVector = Vector3.new(camLook.X, 0, camLook.Z).Unit
         else
             local camLook = Camera.CFrame.LookVector
             lookVector = Vector3.new(camLook.X, 0, camLook.Z).Unit
@@ -1883,16 +1913,6 @@ local function updateAntiAim()
         humanoid.AutoRotate = true
     end
 
-    if ManualEnabled then
-        humanoid.AutoRotate = false
-        local manualYaw = ManualDirection == "Right" and 90 or -90
-        local manualYawRad = math.rad(manualYaw)
-        local camLook = Camera.CFrame.LookVector
-        local lookVector = Vector3.new(camLook.X, 0, camLook.Z).Unit
-        if lookVector.Magnitude > 0 then
-            rootPart.CFrame = CFrame.lookAt(rootPart.Position, rootPart.Position + lookVector) * CFrame.Angles(0, manualYawRad, 0)
-        end
-    end
 end
 
 -- Bhop helpers
@@ -2283,7 +2303,7 @@ Library.KeybindFrame.Visible = true
 
 
 -- Drawing helpers
-local DrawingFont = Drawing.Fonts.UI
+local DrawingFont = Drawing.Fonts.Plex
 
 -- Triggerbot helpers
 local function isTriggerEnemy(Player)
@@ -2321,7 +2341,7 @@ local function fireSingleShot()
     
     pcall(function()
         VirtualInputManager:SendMouseButtonEvent(mouseX, mouseY, 0, true, game, 1)
-        task.wait(0.005)
+        task.wait(0.1)
         VirtualInputManager:SendMouseButtonEvent(mouseX, mouseY, 0, false, game, 1)
     end)
     TriggerbotState.NextFireTime = tick() + 0.01
@@ -2374,7 +2394,7 @@ local function updateTriggerbot()
         local hrp = character:FindFirstChild("HumanoidRootPart")
         if hrp then
             local velocity = hrp.AssemblyLinearVelocity
-            if velocity and velocity.Magnitude >= 6 then
+            if velocity and velocity.Magnitude >= 10 then
                 TriggerbotState.WasMoving = true
                 TriggerbotState.StopTime = 0
                 return
@@ -2382,7 +2402,7 @@ local function updateTriggerbot()
                 if TriggerbotState.StopTime == 0 then
                     TriggerbotState.StopTime = now
                     return
-                elseif now - TriggerbotState.StopTime < 0.008 then
+                elseif now - TriggerbotState.StopTime < 0.002 then
                     return
                 end
             end
@@ -2397,9 +2417,9 @@ local function updateTriggerbot()
         local hitChar = hitInstance:FindFirstAncestorOfClass("Model")
         if hitChar then
             local hitPlayer = Players:GetPlayerFromCharacter(hitChar)
-            
+
             -- Team check
-            if Toggles.TriggerbotTeamCheck and Toggles.TriggerbotTeamCheck.Value then
+            if hitPlayer and Toggles.TriggerbotTeamCheck and Toggles.TriggerbotTeamCheck.Value then
                 local MyTeam, TheirTeam = LocalPlayer.Team, hitPlayer.Team
                 local MyTeamColor, TheirTeamColor = LocalPlayer.TeamColor, hitPlayer.TeamColor
                 
@@ -2503,9 +2523,6 @@ local function createSquare(Thickness, Color)
 end
 
 
-local FontMap = { UI = Drawing.Fonts.UI, System = Drawing.Fonts.System, Plex = Drawing.Fonts.Plex, Monospace = Drawing.Fonts.Monospace }
-
-
 -- Create text
 local function createText(Size)
     local Text = Drawing.new("Text")
@@ -2513,8 +2530,8 @@ local function createText(Size)
     Text.Center = true
     Text.Outline = true
     Text.Transparency = 1
-    Text.Size = Size
-    Text.Font = FontMap[Options.ESPFont.Value] or Drawing.Fonts.UI
+    Text.Size = 13
+    Text.Font = Drawing.Fonts.Plex
     return Text
 end
 
@@ -2537,6 +2554,7 @@ local function hideDrawingSet(DrawingSet, ResetRect)
     end
 
     DrawingSet.Box.Visible = false
+    DrawingSet.BoxOutline.Visible = false
     DrawingSet.Name.Visible = false
     DrawingSet.Weapon.Visible = false
     DrawingSet.HealthBarOutline.Visible = false
@@ -2591,13 +2609,14 @@ local function getDrawingSet(Player)
     end
 
     DrawingSet = {
-        Box = createSquare(1, Color3.fromRGB(255, 255, 255)),
-        Name = createText(16),
-        Weapon = createText(16),
+        Box = createSquare(1.5, Color3.fromRGB(255, 255, 255)),
+        BoxOutline = createSquare(1, Color3.fromRGB(0, 0, 0)),
+        Name = createText(13),
+        Weapon = createText(13),
         Rect = nil,
         HealthBarOutline = createSquare(2, Color3.fromRGB(0, 0, 0)),
         HealthBarFill = createSquare(1, Color3.fromRGB(0, 255, 0)),
-        HealthText = createText(16),
+        HealthText = createText(13),
     }
 
     EspRuntime.Drawings[Player] = DrawingSet
@@ -2662,6 +2681,12 @@ local function updatePlayerChams(Player, Character)
     Highlight.Parent = Character
     Highlight.FillColor = getOptionColor("ESPChamsColor", Color3.fromRGB(255, 255, 255))
     Highlight.FillTransparency = getChamsTransparency()
+    if Toggles.ESPChamsOutline and Toggles.ESPChamsOutline.Value then
+        Highlight.OutlineTransparency = 0
+        Highlight.OutlineColor = getOptionColor("ESPChamsOutlineColor", Color3.fromRGB(255, 255, 255))
+    else
+        Highlight.OutlineTransparency = 1
+    end
     Highlight.Enabled = true
 end
 
@@ -2747,13 +2772,15 @@ local function updatePlayerEsp(Player)
     local BoxColor = getOptionColor("ESPBoxColor", Color3.fromRGB(255, 255, 255))
     local NameColor = getOptionColor("ESPNameColor", Color3.fromRGB(255, 255, 255))
 
+    DrawingSet.BoxOutline.Position = Vector2.new(Left - 1, Top - 1)
+    DrawingSet.BoxOutline.Size = Vector2.new(Width + 2, Height + 2)
+    DrawingSet.BoxOutline.Visible = ShowBox
+
     DrawingSet.Box.Position = Vector2.new(Left, Top)
     DrawingSet.Box.Size = Vector2.new(Width, Height)
     DrawingSet.Box.Color = BoxColor
     DrawingSet.Box.Visible = ShowBox
 
-    local CurrentFont = FontMap[Options.ESPFont.Value] or Drawing.Fonts.UI
-    DrawingSet.Name.Font = CurrentFont
     DrawingSet.Name.Text = Player.Name
     DrawingSet.Name.Position = Vector2.new(CenterX, Top - 15)
     DrawingSet.Name.Color = NameColor
@@ -2765,7 +2792,6 @@ local function updatePlayerEsp(Player)
     if Character and Character:FindFirstChild("EquippedTool") then
         WeaponName = tostring(Character.EquippedTool.Value)
     end
-    DrawingSet.Weapon.Font = CurrentFont
     DrawingSet.Weapon.Text = WeaponName
     DrawingSet.Weapon.Position = Vector2.new(CenterX, Bottom + 5)
     DrawingSet.Weapon.Color = WeaponColor
@@ -2794,7 +2820,6 @@ local function updatePlayerEsp(Player)
 
         local hp = math.floor(Humanoid.Health)
         if hp < 100 then
-            DrawingSet.HealthText.Font = CurrentFont
             DrawingSet.HealthText.Text = tostring(hp)
             DrawingSet.HealthText.Position = Vector2.new(barX - 8, barY)
             DrawingSet.HealthText.Color = Color3.fromRGB(255, 255, 255)
@@ -3139,6 +3164,7 @@ EspRuntime.Connections.RenderStepped = RunService.RenderStepped:Connect(function
     updateNoSmoke()
     updateGrenadePrediction(dt)
     updateHitChams()
+    updateFOV()
 end)
 
 
