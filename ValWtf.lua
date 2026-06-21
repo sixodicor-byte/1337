@@ -22,9 +22,15 @@ local SoundService = game:GetService("SoundService")
 local Debris = game:GetService("Debris")
 local VirtualInputManager = game:GetService("VirtualInputManager")
 local TweenService = game:GetService("TweenService")
+local WeaponsFolder = ReplicatedStorage:FindFirstChild("Weapons")
 
 -- Forward declarations
 local restoreAllRapidFireRates
+local updateRCS
+local updateFullAuto
+local updateRapidFire
+local updateNoScope
+local updateNoFlash
 
 -- Runtime states (must be declared before UI)
 local RapidFireState = {
@@ -144,11 +150,11 @@ LegitSections.Triggerbot:AddLabel('Keybind'):AddKeyPicker('TriggerbotKeybind', {
 
 
 -- RCS UI
-LegitSections.RCS:AddToggle('RCSEnable', {Text = 'Enable', Default = false})
+LegitSections.RCS:AddToggle('RCSEnable', {Text = 'Enable', Default = false, Callback = function() updateRCS() end})
 
 
 -- RCS slider
-LegitSections.RCS:AddSlider('RCSValue', {Text = 'RCS', Default = 0, Min = 0, Max = 100, Rounding = 0})
+LegitSections.RCS:AddSlider('RCSValue', {Text = 'RCS', Default = 0, Min = 0, Max = 100, Rounding = 0, Callback = function() updateRCS() end})
 
 
 -- Visual sections
@@ -265,8 +271,7 @@ RageSections.AntiAim:AddSlider('AntiAimYawValue', {Text = 'Yaw value', Default =
 
 -- Gun Mods UI
 RageSections.GunMods:AddToggle('GunModsNoRecoil', {Text = 'No recoil', Default = false, Callback = function(Value)
-        local ReplicatedStorage = game:GetService("ReplicatedStorage")
-        local Weapons = ReplicatedStorage:FindFirstChild("Weapons")
+        local Weapons = WeaponsFolder
         if not Weapons then return end
         for _, weaponFolder in ipairs(Weapons:GetChildren()) do
             if not weaponFolder:IsA("Folder") then continue end
@@ -302,13 +307,12 @@ RageSections.GunMods:AddToggle('GunModsNoSpread', {Text = 'No spread', Default =
 
 
 -- Rapid fire
-RageSections.GunMods:AddToggle('GunModsRapidFire', {Text = 'Rapid fire', Default = false, Callback = function(Value) if not Value then restoreAllRapidFireRates() end end})
+RageSections.GunMods:AddToggle('GunModsRapidFire', {Text = 'Rapid fire', Default = false, Callback = function(Value) if not Value then restoreAllRapidFireRates() else updateRapidFire() end end})
 
 
 -- Insta equip
 RageSections.GunMods:AddToggle('GunModsInstaEquip', {Text = 'Insta equip', Default = false, Callback = function(Value)
-        local ReplicatedStorage = game:GetService("ReplicatedStorage")
-        local Weapons = ReplicatedStorage:FindFirstChild("Weapons")
+        local Weapons = WeaponsFolder
         if not Weapons then return end
         if Value then
             for _, weaponFolder in ipairs(Weapons:GetChildren()) do
@@ -333,8 +337,7 @@ RageSections.GunMods:AddToggle('GunModsInstaEquip', {Text = 'Insta equip', Defau
 
 -- Insta reload
 RageSections.GunMods:AddToggle('GunModsInstaReload', {Text = 'Insta reload', Default = false, Callback = function(Value)
-        local ReplicatedStorage = game:GetService("ReplicatedStorage")
-        local Weapons = ReplicatedStorage:FindFirstChild("Weapons")
+        local Weapons = WeaponsFolder
         if not Weapons then return end
         if Value then
             for _, weaponFolder in ipairs(Weapons:GetChildren()) do
@@ -384,7 +387,7 @@ RageSections.Misc:AddSlider('MiscHitSoundVolume', {Text = 'Volume', Default = 5,
 
 
 -- Full auto
-RageSections.Misc:AddToggle('MiscFullAuto', {Text = 'Full auto', Default = false})
+RageSections.Misc:AddToggle('MiscFullAuto', {Text = 'Full auto', Default = false, Callback = function() updateFullAuto() end})
 
 
 -- Hit chams
@@ -463,10 +466,10 @@ VisualSections.Menu:AddToggle('MenuWatermark', {Text = 'Watermark', Default = tr
 VisualSections.Removals:AddToggle('RemovalsNoSmoke', {Text = 'No smoke', Default = false})
 
 
-VisualSections.Removals:AddToggle('RemovalsNoFlash', {Text = 'No flash', Default = false})
+VisualSections.Removals:AddToggle('RemovalsNoFlash', {Text = 'No flash', Default = false, Callback = function() updateNoFlash() end})
 
 
-VisualSections.Removals:AddToggle('RemovalsNoScope', {Text = 'No scope', Default = false})
+VisualSections.Removals:AddToggle('RemovalsNoScope', {Text = 'No scope', Default = false, Callback = function() updateNoScope() end})
 
 
 -- Grenades UI
@@ -525,7 +528,7 @@ local HitChamsState = {
     ObservedPlayers = {},
     ChamsFolder = nil,
     ActiveClones = 0,
-    MaxClones = 50,
+    MaxClones = 20,
 }
 
 
@@ -589,61 +592,49 @@ local getOptionColor
 local function drawBulletTracer(startPos, endPos)
     if not Toggles.MiscBulletTracer or not Toggles.MiscBulletTracer.Value then return end
 
-    pcall(function()
-        local color = getOptionColor("MiscBulletTracerColor", Color3.fromRGB(255, 0, 0))
-        local tracerMode = Options.MiscBulletTracerTexture and Options.MiscBulletTracerTexture.Value or "Laser"
-        local textureId = TracerTextureMap[tracerMode] or TracerTextureMap["Laser"]
+    local color = getOptionColor("MiscBulletTracerColor", Color3.fromRGB(255, 0, 0))
+    local tracerMode = Options.MiscBulletTracerTexture and Options.MiscBulletTracerTexture.Value or "Laser"
+    local textureId = TracerTextureMap[tracerMode] or TracerTextureMap["Laser"]
 
-        local holderPart = Instance.new("Part")
-        holderPart.Size = Vector3.new(0.1, 0.1, 0.1)
-        holderPart.Transparency = 1
-        holderPart.CanCollide = false
-        holderPart.Anchored = true
-        holderPart.Position = startPos
-        holderPart.Parent = workspace
+    local holderPart = Instance.new("Part")
+    holderPart.Size = Vector3.new(0.1, 0.1, 0.1)
+    holderPart.Transparency = 1
+    holderPart.CanCollide = false
+    holderPart.Anchored = true
+    holderPart.Position = startPos
+    holderPart.Parent = workspace
 
-        local attachment0 = Instance.new("Attachment", holderPart)
+    local attachment0 = Instance.new("Attachment", holderPart)
 
-        local targetPart = Instance.new("Part")
-        targetPart.Size = Vector3.new(0.1, 0.1, 0.1)
-        targetPart.Transparency = 1
-        targetPart.CanCollide = false
-        targetPart.Anchored = true
-        targetPart.Position = endPos
-        targetPart.Parent = workspace
+    local targetPart = Instance.new("Part")
+    targetPart.Size = Vector3.new(0.1, 0.1, 0.1)
+    targetPart.Transparency = 1
+    targetPart.CanCollide = false
+    targetPart.Anchored = true
+    targetPart.Position = endPos
+    targetPart.Parent = workspace
 
-        local attachment1 = Instance.new("Attachment", targetPart)
+    local attachment1 = Instance.new("Attachment", targetPart)
 
-        local beam = Instance.new("Beam")
-        beam.Color = ColorSequence.new(color)
-        beam.LightEmission = 1
-        beam.LightInfluence = 0
-        beam.Transparency = NumberSequence.new({
-            NumberSequenceKeypoint.new(0, 0.3),
-            NumberSequenceKeypoint.new(1, 0.3),
-        })
-        beam.Width0 = 0.25
-        beam.Width1 = 0.25
-        beam.Attachment0 = attachment0
-        beam.Attachment1 = attachment1
-        beam.FaceCamera = true
-        beam.Texture = textureId
-        beam.Parent = holderPart
+    local beam = Instance.new("Beam")
+    beam.Color = ColorSequence.new(color)
+    beam.LightEmission = 1
+    beam.LightInfluence = 0
+    beam.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0.3),
+        NumberSequenceKeypoint.new(1, 0.3),
+    })
+    beam.Width0 = 0.25
+    beam.Width1 = 0.25
+    beam.Attachment0 = attachment0
+    beam.Attachment1 = attachment1
+    beam.FaceCamera = true
+    beam.Texture = textureId
+    beam.Parent = holderPart
 
-        task.spawn(function()
-            task.wait(1)
-            for i = 30, 100, 4 do
-                task.wait()
-                if beam and holderPart then
-                    beam.Transparency = NumberSequence.new({
-                        NumberSequenceKeypoint.new(0, i / 100),
-                        NumberSequenceKeypoint.new(1, i / 100),
-                    })
-                end
-            end
-            pcall(function() holderPart:Destroy() end)
-            pcall(function() targetPart:Destroy() end)
-        end)
+    task.defer(function()
+        Debris:AddItem(holderPart, 1.4)
+        Debris:AddItem(targetPart, 1.4)
     end)
 end
 
@@ -694,7 +685,6 @@ local function getControlTurnRemote()
     return _controlTurnRemote
 end
 
--- Namecall hook setup
 pcall(function()
     _oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
         if checkcaller() then return _oldNamecall(self, ...) end
@@ -838,18 +828,18 @@ local HitSounds = {
     }
 }
 
+local _hitSoundObj = Instance.new("Sound")
+_hitSoundObj.Parent = workspace
 PlayHitSound = function()
     if not Toggles.MiscHitSound or not Toggles.MiscHitSound.Value then return end
-    local snd = Instance.new("Sound", workspace)
     local soundType = Options.MiscHitSoundType and Options.MiscHitSoundType.Value or "Skeet"
     local sndId = HitSounds[soundType]
     if type(sndId) == "table" then
         sndId = sndId[math.random(1, #sndId)]
     end
-    snd.SoundId = sndId or "rbxassetid://3124331820"
-    snd.Volume = Options.MiscHitSoundVolume and Options.MiscHitSoundVolume.Value or 5
-    snd.PlayOnRemove = true
-    snd:Destroy()
+    _hitSoundObj.SoundId = sndId or "rbxassetid://3124331820"
+    _hitSoundObj.Volume = Options.MiscHitSoundVolume and Options.MiscHitSoundVolume.Value or 5
+    _hitSoundObj:Play()
 end
 
 
@@ -876,18 +866,19 @@ local function cleanupHitChams()
     end
 end
 
+local _hitChamsIgnoreParts = { ["HumanoidRootPart"] = true, ["FakeHead"] = true, ["C4"] = true, ["Gun"] = true }
+
 local function runHitChamsOptimized(playerObj, color, material)
     if not playerObj or not playerObj.Character then return end
     if HitChamsState.ActiveClones >= HitChamsState.MaxClones then
         cleanupHitChams()
     end
 
-    local ignoreParts = { ["HumanoidRootPart"] = true, ["FakeHead"] = true, ["C4"] = true, ["Gun"] = true }
     local chamsFolder = getHitChamsFolder()
 
     for _, part in ipairs(playerObj.Character:GetChildren()) do
         if (part:IsA("MeshPart") and part.Transparency ~= 1) or part.Name == "Head" then
-            if not ignoreParts[part.Name] then
+            if not _hitChamsIgnoreParts[part.Name] then
                 local clone = part:Clone()
                 if clone then
                     clone:ClearAllChildren()
@@ -903,14 +894,9 @@ local function runHitChamsOptimized(playerObj, color, material)
 
                     task.delay(0.7, function()
                         if clone and clone.Parent then
-                            local tween = TweenService:Create(clone, TweenInfo.new(0.7), {Transparency = 1})
-                            tween:Play()
-                            tween.Completed:Connect(function()
-                                if clone then
-                                    clone:Destroy()
-                                    HitChamsState.ActiveClones = math.max(0, HitChamsState.ActiveClones - 1)
-                                end
-                            end)
+                            clone.Transparency = 1
+                            clone:Destroy()
+                            HitChamsState.ActiveClones = math.max(0, HitChamsState.ActiveClones - 1)
                         end
                     end)
                 end
@@ -929,7 +915,7 @@ local function observePlayerForHitChams(player)
         if humanoid then
             local lastHealth = humanoid.Health
 
-            humanoid.HealthChanged:Connect(function(currentHealth)
+            local conn = humanoid.HealthChanged:Connect(function(currentHealth)
                 if currentHealth < lastHealth and Toggles.MiscHitChams and Toggles.MiscHitChams.Value then
                     local color = Options.MiscHitChamsColor and Options.MiscHitChamsColor.Value or Color3.fromRGB(255, 0, 0)
                     local material = Enum.Material.ForceField
@@ -937,11 +923,15 @@ local function observePlayerForHitChams(player)
                 end
                 lastHealth = currentHealth
             end)
+            HitChamsState.Connections = HitChamsState.Connections or {}
+            table.insert(HitChamsState.Connections, conn)
         end
     end
 
     if player.Character then setupCharacter(player.Character) end
-    player.CharacterAdded:Connect(setupCharacter)
+    local charConn = player.CharacterAdded:Connect(setupCharacter)
+    HitChamsState.Connections = HitChamsState.Connections or {}
+    table.insert(HitChamsState.Connections, charConn)
 end
 
 local function updateHitChams()
@@ -954,13 +944,16 @@ end
 
 
 -- Gun Mods helpers
+local CachedClient = nil
 local function getCachedClient()
+    if CachedClient then return CachedClient end
     local ok, client = pcall(function()
         local pg = LocalPlayer:FindFirstChild("PlayerGui")
         local cg = pg and pg:FindFirstChild("Client")
         return cg and getsenv(cg)
     end)
     if ok and client then
+        CachedClient = client
         return client
     end
     return nil
@@ -979,7 +972,7 @@ local function getCurrentWeaponFireRateObject()
 
     if not weaponName then return nil, nil end
 
-    local Weapons = ReplicatedStorage:FindFirstChild("Weapons")
+    local Weapons = WeaponsFolder
     if not Weapons then return nil, nil end
 
     local weaponFolder = Weapons:FindFirstChild(weaponName)
@@ -996,7 +989,7 @@ end
 
 -- Restore rapid fire
 restoreAllRapidFireRates = function()
-    local Weapons = ReplicatedStorage:FindFirstChild("Weapons")
+    local Weapons = WeaponsFolder
     if Weapons then
         for weaponName, original in pairs(RapidFireState.SavedFireRates) do
             local weaponFolder = Weapons:FindFirstChild(weaponName)
@@ -1012,7 +1005,7 @@ end
 
 -- Restore full auto
 local function restoreAllFullAutoValues()
-    local Weapons = ReplicatedStorage:FindFirstChild("Weapons")
+    local Weapons = WeaponsFolder
     if Weapons then
         for weaponName, originalValue in pairs(FullAutoState.SavedAutoValues) do
             local weaponFolder = Weapons:FindFirstChild(weaponName)
@@ -1167,17 +1160,24 @@ end
 
 
 -- Get FOV radius
+local _cachedAimFovRadius = nil
+local _cachedAimFovKey = nil
 local function getAimFovRadius()
-    local Viewport = Camera.ViewportSize
     local AimFov = getAimFov()
+    local key = AimFov .. "_" .. Camera.FieldOfView .. "_" .. Camera.ViewportSize.Y
+    if _cachedAimFovKey == key then return _cachedAimFovRadius end
+    _cachedAimFovKey = key
+    local Viewport = Camera.ViewportSize
     local HalfViewport = Viewport.Y * 0.5
     local CamFovHalfRad = math.rad(Camera.FieldOfView * 0.5)
     local AimFovHalfRad = math.rad(AimFov * 0.5)
 
     if AimFov >= 180 then
+        _cachedAimFovRadius = 999999
         return 999999
     end
-    return (math.tan(AimFovHalfRad) / math.tan(CamFovHalfRad)) * HalfViewport
+    _cachedAimFovRadius = (math.tan(AimFovHalfRad) / math.tan(CamFovHalfRad)) * HalfViewport
+    return _cachedAimFovRadius
 end
 
 
@@ -1356,6 +1356,8 @@ end
 
 
 -- Ragebot FOV radius (moved before updateFovCircle)
+local _cachedRageFovRadius = nil
+local _cachedRageFovKey = nil
 local function getRagebotFovRadius()
     local FovValue = Options.RagebotFOV and Options.RagebotFOV.Value
     if type(FovValue) ~= "number" then
@@ -1363,19 +1365,27 @@ local function getRagebotFovRadius()
     end
     FovValue = math.clamp(FovValue, 1, 180)
 
+    local key = FovValue .. "_" .. Camera.FieldOfView .. "_" .. Camera.ViewportSize.Y
+    if _cachedRageFovKey == key then return _cachedRageFovRadius end
+    _cachedRageFovKey = key
+
     local Viewport = Camera.ViewportSize
     local HalfViewport = Viewport.Y * 0.5
     local CamFovHalfRad = math.rad(Camera.FieldOfView * 0.5)
     local AimFovHalfRad = math.rad(FovValue * 0.5)
 
     if FovValue >= 180 then
+        _cachedRageFovRadius = 999999
         return 999999
     end
-    return (math.tan(AimFovHalfRad) / math.tan(CamFovHalfRad)) * HalfViewport
+    _cachedRageFovRadius = (math.tan(AimFovHalfRad) / math.tan(CamFovHalfRad)) * HalfViewport
+    return _cachedRageFovRadius
 end
 
 
 -- Update FOV circle
+local FovSinCos = {}
+local FovSinCosCount = 0
 local function updateFovCircle()
     local ShowAimFov = Toggles.AimbotShowFOV and Toggles.AimbotShowFOV.Value
     local ShowRageFov = Toggles.RagebotShowFOV and Toggles.RagebotShowFOV.Value
@@ -1392,19 +1402,24 @@ local function updateFovCircle()
     local Viewport = Camera.ViewportSize
     local Center = Vector2.new(Viewport.X * 0.5, Viewport.Y * 0.5)
     local PartLines = math.floor(#AimRuntime.FovLines / 2)
-    local Cos, Sin = math.cos, math.sin
+
+    if FovSinCosCount ~= PartLines then
+        FovSinCosCount = PartLines
+        local Step = (math.pi * 2) / PartLines
+        for i = 1, PartLines do
+            local Angle = (i - 1) * Step
+            FovSinCos[i] = {math.cos(Angle), math.sin(Angle), math.cos(Angle + Step), math.sin(Angle + Step)}
+        end
+    end
 
     -- Aimbot FOV (first half of lines)
     if ShowAimFov and RadiusAim > 0 then
-        local Step = (math.pi * 2) / PartLines
         local White = Color3.fromRGB(255, 255, 255)
         for i = 1, PartLines do
             local Line = AimRuntime.FovLines[i]
-            local Angle = (i - 1) * Step
-            local NextAngle = Angle + Step
-
-            Line.From = Vector2.new(Center.X + Cos(Angle) * RadiusAim, Center.Y + Sin(Angle) * RadiusAim)
-            Line.To = Vector2.new(Center.X + Cos(NextAngle) * RadiusAim, Center.Y + Sin(NextAngle) * RadiusAim)
+            local sc = FovSinCos[i]
+            Line.From = Vector2.new(Center.X + sc[1] * RadiusAim, Center.Y + sc[2] * RadiusAim)
+            Line.To = Vector2.new(Center.X + sc[3] * RadiusAim, Center.Y + sc[4] * RadiusAim)
             Line.Color = White
             Line.Visible = true
         end
@@ -1416,15 +1431,12 @@ local function updateFovCircle()
 
     -- Ragebot FOV (second half of lines)
     if ShowRageFov and RadiusRage > 0 then
-        local Step = (math.pi * 2) / PartLines
         local White = Color3.fromRGB(255, 255, 255)
         for i = 1, PartLines do
             local Line = AimRuntime.FovLines[PartLines + i]
-            local Angle = (i - 1) * Step
-            local NextAngle = Angle + Step
-
-            Line.From = Vector2.new(Center.X + Cos(Angle) * RadiusRage, Center.Y + Sin(Angle) * RadiusRage)
-            Line.To = Vector2.new(Center.X + Cos(NextAngle) * RadiusRage, Center.Y + Sin(NextAngle) * RadiusRage)
+            local sc = FovSinCos[i]
+            Line.From = Vector2.new(Center.X + sc[1] * RadiusRage, Center.Y + sc[2] * RadiusRage)
+            Line.To = Vector2.new(Center.X + sc[3] * RadiusRage, Center.Y + sc[4] * RadiusRage)
             Line.Color = White
             Line.Visible = true
         end
@@ -1515,7 +1527,7 @@ end
 
 
 -- Update no scope
-local function updateNoScope()
+updateNoScope = function()
     if not Toggles.RemovalsNoScope or not Toggles.RemovalsNoScope.Value then
         applyNoScope(false)
         return
@@ -1525,7 +1537,7 @@ end
 
 
 -- Update no flash
-local function updateNoFlash()
+updateNoFlash = function()
     local blnd = LocalPlayer.PlayerGui and LocalPlayer.PlayerGui:FindFirstChild("Blnd")
     if blnd then
         blnd.Enabled = not (Toggles.RemovalsNoFlash and Toggles.RemovalsNoFlash.Value)
@@ -1547,21 +1559,27 @@ local function updateFOV()
 end
 
 
--- Update no smoke
-local function updateNoSmoke()
-    if not Toggles.RemovalsNoSmoke or not Toggles.RemovalsNoSmoke.Value then return end
+-- No smoke via ChildAdded
+local _noSmokeConn = nil
+local function setupNoSmoke()
+    if _noSmokeConn then return end
     local rayIgnore = Workspace:FindFirstChild("Ray_Ignore")
-    local smokesFolder = rayIgnore and rayIgnore:FindFirstChild("Smokes")
+    if not rayIgnore then return end
+    local smokesFolder = rayIgnore:FindFirstChild("Smokes")
     if not smokesFolder then return end
-    for _, child in ipairs(smokesFolder:GetChildren()) do
-        pcall(function() child:Destroy() end)
-    end
+    _noSmokeConn = smokesFolder.ChildAdded:Connect(function(child)
+        if Toggles.RemovalsNoSmoke and Toggles.RemovalsNoSmoke.Value then
+            child:Destroy()
+        end
+    end)
+    EspRuntime.Connections.NoSmokeChildAdded = _noSmokeConn
 end
+setupNoSmoke()
 
 
 -- RCS helpers
-local function updateRCS()
-    local Weapons = ReplicatedStorage:FindFirstChild("Weapons")
+updateRCS = function()
+    local Weapons = WeaponsFolder
     if not Weapons then return end
 
     local rcsEnabled = Toggles.RCSEnable and Toggles.RCSEnable.Value
@@ -2117,7 +2135,7 @@ local function updateKillAll()
 
     local gunName = "AWP"
     local gunRef = gun
-    local rsWeapons = ReplicatedStorage:FindFirstChild("Weapons")
+    local rsWeapons = WeaponsFolder
     local awpFolder = rsWeapons and rsWeapons:FindFirstChild("AWP")
     if awpFolder then gunRef = awpFolder end
 
@@ -2172,7 +2190,7 @@ end
 
 
 -- Update rapid fire
-local function updateRapidFire()
+updateRapidFire = function()
     if not Toggles.GunModsRapidFire or not Toggles.GunModsRapidFire.Value then
         return
     end
@@ -2207,8 +2225,8 @@ end
 
 
 -- Update full auto
-local function updateFullAuto()
-    local Weapons = ReplicatedStorage:FindFirstChild("Weapons")
+updateFullAuto = function()
+    local Weapons = WeaponsFolder
     if not Weapons then return end
 
     if Toggles.MiscFullAuto and Toggles.MiscFullAuto.Value then
@@ -2294,6 +2312,12 @@ ConfigSection:AddButton('Unload', function()
     if HitChamsState.ChamsFolder then
         HitChamsState.ChamsFolder:Destroy()
     end
+    if HitChamsState.Connections then
+        for _, conn in ipairs(HitChamsState.Connections) do
+            pcall(function() conn:Disconnect() end)
+        end
+        table.clear(HitChamsState.Connections)
+    end
 
     -- Reset Third Person
     pcall(function()
@@ -2328,7 +2352,7 @@ ConfigSection:AddButton('Unload', function()
     restoreAllFullAutoValues()
 
     -- Reset RCS
-    local Weapons = ReplicatedStorage:FindFirstChild("Weapons")
+    local Weapons = WeaponsFolder
     if Weapons then
         for weaponName, original in pairs(RCSOriginalValues) do
             local weaponFolder = Weapons:FindFirstChild(weaponName)
@@ -3027,7 +3051,7 @@ local function isHoldingNade()
     if gun and gun:FindFirstChild("Grenade") then return true end
     local eqVal = lp.Character:FindFirstChild("EquippedTool")
     if eqVal and type(eqVal.Value) == "string" then
-        local weaponDef = ReplicatedStorage:FindFirstChild("Weapons")
+        local weaponDef = WeaponsFolder
         if weaponDef then
             local w = weaponDef:FindFirstChild(eqVal.Value)
             if w and w:FindFirstChild("Grenade") then return true end
@@ -3127,15 +3151,20 @@ local function updateGrenadePrediction(dt)
     local tStep = 1/60
     local maxSteps = 240
     local currentPos = startPos
-    local rp = RaycastParams.new()
-    local filterList = {lp.Character, workspace:FindFirstChild("Ray_Ignore"), GrenadeRuntime.Folder}
-    local mapObj = workspace:FindFirstChild("Map")
-    if mapObj then
-        local clips = mapObj:FindFirstChild("Clips")
-        if clips then table.insert(filterList, clips) end
+    if not GrenadeRuntime.RP then
+        local rp = RaycastParams.new()
+        rp.FilterType = Enum.RaycastFilterType.Exclude
+        GrenadeRuntime.RP = rp
+        GrenadeRuntime.FilterList = {lp.Character, workspace:FindFirstChild("Ray_Ignore"), GrenadeRuntime.Folder}
+        local mapObj = workspace:FindFirstChild("Map")
+        if mapObj then
+            local clips = mapObj:FindFirstChild("Clips")
+            if clips then table.insert(GrenadeRuntime.FilterList, clips) end
+        end
     end
-    rp.FilterDescendantsInstances = filterList
-    rp.FilterType = Enum.RaycastFilterType.Exclude
+    GrenadeRuntime.FilterList[1] = lp.Character
+    GrenadeRuntime.RP.FilterDescendantsInstances = GrenadeRuntime.FilterList
+    local rp = GrenadeRuntime.RP
 
     local bounces = 0
     local pointCount = 1
@@ -3188,6 +3217,27 @@ local function updateGrenadePrediction(dt)
 end
 
 
+-- Weapon change listener for RapidFire
+local function setupWeaponChangeListener(character)
+    if not character then return end
+    local eqTool = character:WaitForChild("EquippedTool", 5)
+    if not eqTool then return end
+    eqTool.Changed:Connect(function()
+        if Toggles.GunModsRapidFire and Toggles.GunModsRapidFire.Value then
+            updateRapidFire()
+        end
+    end)
+    if Toggles.GunModsRapidFire and Toggles.GunModsRapidFire.Value then
+        updateRapidFire()
+    end
+end
+
+if LocalPlayer.Character then
+    task.spawn(setupWeaponChangeListener, LocalPlayer.Character)
+end
+EspRuntime.Connections.WeaponCharAdded = LocalPlayer.CharacterAdded:Connect(setupWeaponChangeListener)
+
+
 -- Main loop
 local lastEspUpdate = 0
 local watermarkFps = 0
@@ -3213,9 +3263,7 @@ EspRuntime.Connections.RenderStepped = RunService.RenderStepped:Connect(function
             watermarkFrames = 0
             watermarkLastUpdate = now
 
-            local ping = 0
-            local ok, stats = pcall(function() return LocalPlayer:GetNetworkPing() end)
-            if ok and type(stats) == "number" then ping = math.floor(stats * 1000) end
+            local ping = math.floor(LocalPlayer:GetNetworkPing() * 1000)
 
             local timeStr = os.date("%H:%M:%S")
             Library:SetWatermark(string.format("Valenok  |  %d fps  |  %d ms  |  %s", watermarkFps, ping, timeStr))
@@ -3227,17 +3275,11 @@ EspRuntime.Connections.RenderStepped = RunService.RenderStepped:Connect(function
     updateRagebot()
     updateThirdPerson()
     updateTriggerbot()
-    updateRapidFire()
-    updateFullAuto()
-    updateRCS()
     updateAntiAim()
     updateBhop()
     updateFastWalk()
     updateStrafe()
     updateAirStrafe()
-    updateNoScope()
-    updateNoFlash()
-    updateNoSmoke()
     updateGrenadePrediction(dt)
     updateHitChams()
     updateFOV()
