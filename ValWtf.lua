@@ -181,7 +181,6 @@ local SC_Viewmodels = ReplicatedStorage:WaitForChild("Viewmodels", 10)
 local SC_Skins = ReplicatedStorage:WaitForChild("Skins", 10)
 local SC_Models = nil
 pcall(function() SC_Models = game:GetObjects("rbxassetid://7285197035")[1] end)
-if SC_Models then repeat task.wait() until SC_Models ~= nil end
 local SC_OriginalCTKnife = SC_Viewmodels and SC_Viewmodels:FindFirstChild("v_CT Knife") and SC_Viewmodels:FindFirstChild("v_CT Knife"):Clone()
 local SC_OriginalTKnife = SC_Viewmodels and SC_Viewmodels:FindFirstChild("v_T Knife") and SC_Viewmodels:FindFirstChild("v_T Knife"):Clone()
 local SC_AllKnives = { "CT Knife", "T Knife", "Banana", "Bayonet", "Bearded Axe", "Butterfly Knife", "Cleaver", "Crowbar", "Falchion Knife", "Flip Knife", "Gut Knife", "Huntsman Knife", "Karambit", "M9 Bayonet", "Sickle" }
@@ -331,7 +330,7 @@ local function SC_setupArmsWatcher()
         pcall(function()
             local Client = nil
             pcall(function() Client = getsenv(LocalPlayer.PlayerGui.Client) end)
-            if not Client or Client.gun == "none" then return end
+            if not Client or Client.gun == "none" or typeof(Client.gun) ~= "Instance" then return end
             local isMelee = Client.gun:FindFirstChild("Melee")
             local gunname = Client.gun.Name
             if Toggles.SkinKnifeChanger and Toggles.SkinKnifeChanger.Value and isMelee then
@@ -3578,8 +3577,18 @@ end)
 print("Valenok")
 print("version: recode")
 print("open/close menu end")
+Library:OnUnload(function()
+    if SC_armsConn then SC_armsConn:Disconnect(); SC_armsConn = nil end
+    pcall(function()
+        if SC_Viewmodels then
+            if SC_Viewmodels:FindFirstChild("v_CT Knife") then SC_Viewmodels:FindFirstChild("v_CT Knife"):Destroy() end
+            if SC_Viewmodels:FindFirstChild("v_T Knife") then SC_Viewmodels:FindFirstChild("v_T Knife"):Destroy() end
+            if SC_OriginalCTKnife then SC_OriginalCTKnife:Clone().Parent = SC_Viewmodels end
+            if SC_OriginalTKnife then SC_OriginalTKnife:Clone().Parent = SC_Viewmodels end
+        end
+    end)
+end)
+
 -- Build coАnfig
 SaveManager:BuildConfigSection(Tabs.Config)
 ThemeManager:ApplyToTab(Tabs.Config)
-
-
