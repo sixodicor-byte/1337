@@ -72,6 +72,7 @@ local Tabs = {
     Rage = Window:AddTab('Rage'),
     Legit = Window:AddTab('Legit'),
     Visual = Window:AddTab('Visual'),
+    Skin = Window:AddTab('Skin'),
     Movement = Window:AddTab('Movement'),
     Config = Window:AddTab('Config'),
 }
@@ -174,6 +175,248 @@ local VisualSections = {
     Ambience = Tabs.Visual:AddRightGroupbox('Ambience'),
     Self = Tabs.Visual:AddRightGroupbox('Self'),
 }
+
+-- Skin changer data
+local SC_Viewmodels = ReplicatedStorage:FindFirstChild("Viewmodels")
+local SC_Skins = ReplicatedStorage:FindFirstChild("Skins")
+local SC_Models = nil
+pcall(function() SC_Models = game:GetObjects("rbxassetid://7285197035")[1] end)
+local SC_OriginalCTKnife = SC_Viewmodels and SC_Viewmodels:FindFirstChild("v_CT Knife") and SC_Viewmodels:FindFirstChild("v_CT Knife"):Clone()
+local SC_OriginalTKnife = SC_Viewmodels and SC_Viewmodels:FindFirstChild("v_T Knife") and SC_Viewmodels:FindFirstChild("v_T Knife"):Clone()
+local SC_AllKnives = { "CT Knife", "T Knife", "Banana", "Bayonet", "Bearded Axe", "Butterfly Knife", "Cleaver", "Crowbar", "Falchion Knife", "Flip Knife", "Gut Knife", "Huntsman Knife", "Karambit", "M9 Bayonet", "Sickle" }
+if SC_Models and SC_Models:FindFirstChild("Knives") then
+    for _, v in pairs(SC_Models.Knives:GetChildren()) do table.insert(SC_AllKnives, v.Name) end
+end
+local SC_AllWeapons = {}
+local SC_AllSkins = {}
+local SC_KnifeSkins = {}
+if SC_Skins then
+    for _, v in pairs(SC_Skins:GetChildren()) do
+        local isKnife = false
+        for _, knife in ipairs(SC_AllKnives) do
+            local cl = knife:gsub(" Knife", ""):gsub(" Classic", ""):lower()
+            if v.Name:lower() == cl or v.Name:lower():sub(1, #cl + 1) == cl .. " " then isKnife = true; break end
+        end
+        if not isKnife then table.insert(SC_AllWeapons, v.Name) end
+    end
+    table.sort(SC_AllWeapons, function(a, b) return a < b end)
+    for _, v in ipairs(SC_AllWeapons) do
+        SC_AllSkins[v] = {"Inventory"}
+        for _, v2 in pairs(SC_Skins[v]:GetChildren()) do table.insert(SC_AllSkins[v], v2.Name) end
+    end
+    for _, knifeName in ipairs(SC_AllKnives) do
+        SC_KnifeSkins[knifeName] = {"Inventory"}
+        if SC_Skins:FindFirstChild(knifeName) then
+            for _, skin in pairs(SC_Skins[knifeName]:GetChildren()) do table.insert(SC_KnifeSkins[knifeName], skin.Name) end
+        end
+    end
+end
+local SC_currentKnife = nil
+local SC_swapping = false
+local SC_armsConn = nil
+local SC_SavedKnifeSkins = {}
+local SC_SavedWeaponSkins = {}
+local function SC_SwapKnifeModel(knifeName)
+    if SC_swapping then return end
+    if SC_currentKnife == knifeName then return end
+    SC_swapping = true
+    if SC_Viewmodels:FindFirstChild("v_CT Knife") then SC_Viewmodels:FindFirstChild("v_CT Knife"):Destroy() end
+    if SC_Viewmodels:FindFirstChild("v_T Knife") then SC_Viewmodels:FindFirstChild("v_T Knife"):Destroy() end
+    wait()
+    if knifeName == "CT Knife" or knifeName == "T Knife" then
+        if SC_OriginalCTKnife then SC_OriginalCTKnife:Clone().Parent = SC_Viewmodels end
+        if SC_OriginalTKnife then SC_OriginalTKnife:Clone().Parent = SC_Viewmodels end
+    else
+        local sourceVM = nil
+        if SC_Viewmodels:FindFirstChild("v_" .. knifeName) then
+            sourceVM = SC_Viewmodels:FindFirstChild("v_" .. knifeName)
+        elseif SC_Models and SC_Models:FindFirstChild("Knives") then
+            local km = SC_Models.Knives:FindFirstChild(knifeName)
+            if km then sourceVM = km end
+        end
+        if sourceVM then
+            local ct = sourceVM:Clone(); ct.Name = "v_CT Knife"; ct.Parent = SC_Viewmodels
+            local tt = sourceVM:Clone(); tt.Name = "v_T Knife"; tt.Parent = SC_Viewmodels
+        else
+            if SC_OriginalCTKnife then SC_OriginalCTKnife:Clone().Parent = SC_Viewmodels end
+            if SC_OriginalTKnife then SC_OriginalTKnife:Clone().Parent = SC_Viewmodels end
+        end
+    end
+    SC_currentKnife = knifeName
+    SC_swapping = false
+end
+local function SC_applySkinToPart(targetPart, SkinData)
+    if not (targetPart:IsA("BasePart") or targetPart:IsA("MeshPart")) then return end
+    if targetPart.Transparency == 1 then return end
+    local tex = nil
+    local wm = SkinData:FindFirstChild("WorldModel")
+    for _, Data in next, SkinData:GetDescendants() do
+        if wm and Data:IsDescendantOf(wm) then continue end
+        local n = Data.Name:gsub("^#%s*", "")
+        if n == targetPart.Name or string.match(n, "^" .. targetPart.Name .. "%d*$") or (targetPart.Name == "Main" and (n == "Part1" or n == "Part")) then
+            if Data:IsA("StringValue") then tex = Data.Value
+            elseif Data:IsA("MeshPart") then tex = Data.TextureID
+            elseif Data:IsA("Decal") or Data:IsA("Texture") then tex = Data.Texture
+            elseif Data:IsA("SurfaceAppearance") then tex = Data end
+            if tex and tex ~= "" and tex ~= "rbxassetid://0" then break end
+        end
+    end
+    if (not tex or tex == "") then
+        for _, Data in next, SkinData:GetDescendants() do
+            if wm and Data:IsDescendantOf(wm) then continue end
+            local n = Data.Name:gsub("^#%s*", "")
+            if n == "Handle" and (targetPart.Name == "Blade" or targetPart.Name == "Main") then
+                if Data:IsA("StringValue") then tex = Data.Value
+                elseif Data:IsA("MeshPart") then tex = Data.TextureID
+                elseif Data:IsA("Decal") or Data:IsA("Texture") then tex = Data.Texture
+                elseif Data:IsA("SurfaceAppearance") then tex = Data end
+                if tex and tex ~= "" and tex ~= "rbxassetid://0" then break end
+            end
+        end
+    end
+    if (not tex or tex == "") and wm then
+        for _, Data in next, wm:GetDescendants() do
+            local n = Data.Name:gsub("^#%s*", "")
+            if n == targetPart.Name or string.match(n, "^" .. targetPart.Name .. "%d*$") or (targetPart.Name == "Main" and (n == "Part1" or n == "Part")) then
+                if Data:IsA("StringValue") then tex = Data.Value
+                elseif Data:IsA("MeshPart") then tex = Data.TextureID
+                elseif Data:IsA("Decal") or Data:IsA("Texture") then tex = Data.Texture
+                elseif Data:IsA("SurfaceAppearance") then tex = Data end
+                if tex and tex ~= "" and tex ~= "rbxassetid://0" then break end
+            end
+        end
+    end
+    if (not tex or tex == "") and wm then
+        for _, Data in next, wm:GetDescendants() do
+            local n = Data.Name:gsub("^#%s*", "")
+            if n == "Handle" and (targetPart.Name == "Blade" or targetPart.Name == "Main") then
+                if Data:IsA("StringValue") then tex = Data.Value
+                elseif Data:IsA("MeshPart") then tex = Data.TextureID
+                elseif Data:IsA("Decal") or Data:IsA("Texture") then tex = Data.Texture
+                elseif Data:IsA("SurfaceAppearance") then tex = Data end
+                if tex and tex ~= "" and tex ~= "rbxassetid://0" then break end
+            end
+        end
+    end
+    if tex then
+        if typeof(tex) == "Instance" and tex:IsA("SurfaceAppearance") then
+            if targetPart:FindFirstChildWhichIsA("SurfaceAppearance") then targetPart:FindFirstChildWhichIsA("SurfaceAppearance"):Destroy() end
+            tex:Clone().Parent = targetPart
+        elseif targetPart:IsA("MeshPart") then targetPart.TextureID = tex
+        elseif targetPart:FindFirstChild("Mesh") then targetPart.Mesh.TextureId = tex
+        else pcall(function() targetPart.TextureID = tex end) end
+    end
+end
+local function SC_applySkinToArms(armsObj, gunname, selectedSkin)
+    if not SC_Skins then return end
+    if not selectedSkin or selectedSkin == "Inventory" then return end
+    if (gunname == "CT Knife" or gunname == "T Knife") and not SC_Skins:FindFirstChild(gunname) then gunname = "M9 Bayonet" end
+    if not SC_Skins:FindFirstChild(gunname) then return end
+    local SkinData = SC_Skins[gunname]:FindFirstChild(selectedSkin)
+    if not SkinData or SkinData:FindFirstChild("Animated") then return end
+    for _, targetPart in next, armsObj:GetDescendants() do SC_applySkinToPart(targetPart, SkinData) end
+    local skinConn
+    skinConn = armsObj.DescendantAdded:Connect(function(part) SC_applySkinToPart(part, SkinData) end)
+    armsObj.AncestryChanged:Connect(function(_, newParent)
+        if not newParent and skinConn then skinConn:Disconnect(); skinConn = nil end
+    end)
+end
+local function SC_setupArmsWatcher()
+    if SC_armsConn then SC_armsConn:Disconnect() end
+    SC_armsConn = Camera.ChildAdded:Connect(function(obj)
+        RunService.RenderStepped:Wait()
+        if obj.Name ~= "Arms" then return end
+        pcall(function()
+            local Client = nil
+            pcall(function() Client = getsenv(LocalPlayer.PlayerGui.Client) end)
+            if not Client or Client.gun == "none" then return end
+            local isMelee = Client.gun:FindFirstChild("Melee")
+            local gunname = Client.gun.Name
+            if Toggles.SkinKnifeChanger and Toggles.SkinKnifeChanger.Value and isMelee then
+                local wantedKnife = Options.SkinKnifeModel and Options.SkinKnifeModel.Value
+                if wantedKnife and SC_currentKnife ~= wantedKnife then
+                    SC_SwapKnifeModel(wantedKnife)
+                    wait()
+                    obj:Destroy()
+                    return
+                end
+                local kn = wantedKnife or "M9 Bayonet"
+                if not SC_Skins:FindFirstChild(kn) then kn = "M9 Bayonet" end
+                SC_applySkinToArms(obj, kn, SC_SavedKnifeSkins[wantedKnife] or "Inventory")
+            elseif Toggles.SkinWeaponChanger and Toggles.SkinWeaponChanger.Value and not isMelee then
+                SC_applySkinToArms(obj, gunname, SC_SavedWeaponSkins[gunname] or "Inventory")
+            end
+        end)
+    end)
+end
+
+-- Skin sections
+local SkinSections = {
+    Knife = Tabs.Skin:AddLeftGroupbox('Knife Changer'),
+    Weapon = Tabs.Skin:AddRightGroupbox('Weapon Skins'),
+}
+SkinSections.Knife:AddToggle('SkinKnifeChanger', {Text = 'Enable', Default = false, Callback = function()
+    if Toggles.SkinKnifeChanger.Value then
+        local wantedKnife = Options.SkinKnifeModel and Options.SkinKnifeModel.Value
+        if wantedKnife then SC_SwapKnifeModel(wantedKnife) end
+    else
+        if SC_Viewmodels:FindFirstChild("v_CT Knife") then SC_Viewmodels:FindFirstChild("v_CT Knife"):Destroy() end
+        if SC_Viewmodels:FindFirstChild("v_T Knife") then SC_Viewmodels:FindFirstChild("v_T Knife"):Destroy() end
+        wait()
+        if SC_OriginalCTKnife then SC_OriginalCTKnife:Clone().Parent = SC_Viewmodels end
+        if SC_OriginalTKnife then SC_OriginalTKnife:Clone().Parent = SC_Viewmodels end
+        SC_currentKnife = nil
+    end
+end})
+SkinSections.Knife:AddDropdown('SkinKnifeModel', {Text = 'Knife', Values = SC_AllKnives, Default = 'Butterfly Knife', Callback = function()
+    local wantedKnife = Options.SkinKnifeModel and Options.SkinKnifeModel.Value
+    if wantedKnife then
+        local skins = SC_KnifeSkins[wantedKnife] or {"Inventory"}
+        Options.SkinKnifeSkin.Values = skins
+        Options.SkinKnifeSkin:SetValues()
+        Options.SkinKnifeSkin:SetValue(SC_SavedKnifeSkins[wantedKnife] or "Inventory")
+        if Toggles.SkinKnifeChanger and Toggles.SkinKnifeChanger.Value then SC_SwapKnifeModel(wantedKnife) end
+    end
+end})
+SkinSections.Knife:AddDropdown('SkinKnifeSkin', {Text = 'Knife Skin', Values = {'Inventory'}, Default = 'Inventory', Callback = function()
+    local kn = Options.SkinKnifeModel and Options.SkinKnifeModel.Value
+    local sk = Options.SkinKnifeSkin and Options.SkinKnifeSkin.Value
+    if kn and sk then SC_SavedKnifeSkins[kn] = sk end
+end})
+SkinSections.Weapon:AddToggle('SkinWeaponChanger', {Text = 'Enable', Default = false})
+local _SC_prevWeapon = SC_AllWeapons[1]
+SkinSections.Weapon:AddDropdown('SkinWeaponModel', {Text = 'Weapon', Values = SC_AllWeapons, Default = SC_AllWeapons[1], Callback = function()
+    local weaponName = Options.SkinWeaponModel and Options.SkinWeaponModel.Value
+    if _SC_prevWeapon and _SC_prevWeapon ~= weaponName then
+        local curSkin = Options.SkinWeaponSkin and Options.SkinWeaponSkin.Value
+        if curSkin then SC_SavedWeaponSkins[_SC_prevWeapon] = curSkin end
+    end
+    _SC_prevWeapon = weaponName
+    if weaponName then
+        local skins = SC_AllSkins[weaponName] or {"Inventory"}
+        Options.SkinWeaponSkin.Values = skins
+        Options.SkinWeaponSkin:SetValues()
+        Options.SkinWeaponSkin:SetValue(SC_SavedWeaponSkins[weaponName] or "Inventory")
+    end
+end})
+SkinSections.Weapon:AddDropdown('SkinWeaponSkin', {Text = 'Weapon Skin', Values = {'Inventory'}, Default = 'Inventory', Callback = function()
+    local wn = Options.SkinWeaponModel and Options.SkinWeaponModel.Value
+    local sk = Options.SkinWeaponSkin and Options.SkinWeaponSkin.Value
+    if wn and sk then SC_SavedWeaponSkins[wn] = sk end
+end})
+SC_setupArmsWatcher()
+do
+    local ks = SC_KnifeSkins["Butterfly Knife"] or {"Inventory"}
+    Options.SkinKnifeSkin.Values = ks
+    Options.SkinKnifeSkin:SetValues()
+    Options.SkinKnifeSkin:SetValue("Inventory")
+    if #SC_AllWeapons > 0 then
+        local ws = SC_AllSkins[SC_AllWeapons[1]] or {"Inventory"}
+        Options.SkinWeaponSkin.Values = ws
+        Options.SkinWeaponSkin:SetValues()
+        Options.SkinWeaponSkin:SetValue("Inventory")
+    end
+end
 
 local MovementSections = {
     Bhop = Tabs.Movement:AddLeftGroupbox('Bhop'),
@@ -3336,3 +3579,5 @@ print("open/close menu end")
 -- Build coАnfig
 SaveManager:BuildConfigSection(Tabs.Config)
 ThemeManager:ApplyToTab(Tabs.Config)
+
+
