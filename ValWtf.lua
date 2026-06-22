@@ -174,11 +174,14 @@ local VisualSections = {
     Grenades = Tabs.Visual:AddRightGroupbox('Grenades'),
     Ambience = Tabs.Visual:AddRightGroupbox('Ambience'),
     Self = Tabs.Visual:AddRightGroupbox('Self'),
+    Misc = Tabs.Visual:AddLeftGroupbox('Misc'),
 }
 
 -- Skin changer data
 local SC_Viewmodels = ReplicatedStorage:WaitForChild("Viewmodels", 10)
 local SC_Skins = ReplicatedStorage:WaitForChild("Skins", 10)
+local SC_Gloves = ReplicatedStorage:FindFirstChild("Gloves") or ReplicatedStorage:WaitForChild("Gloves", 10)
+local SC_GloveModels = SC_Gloves and SC_Gloves:FindFirstChild("Models")
 local SC_Models = nil
 pcall(function() SC_Models = game:GetObjects("rbxassetid://7285197035")[1] end)
 local SC_OriginalCTKnife = SC_Viewmodels and SC_Viewmodels:FindFirstChild("v_CT Knife") and SC_Viewmodels:FindFirstChild("v_CT Knife"):Clone()
@@ -216,6 +219,25 @@ local SC_swapping = false
 local SC_armsConn = nil
 local SC_SavedKnifeSkins = {}
 local SC_SavedWeaponSkins = {}
+local SC_AllGloveNames = {}
+local SC_AllGloves = {}
+if SC_Gloves then
+    for _, fldr in pairs(SC_Gloves:GetChildren()) do
+        if fldr ~= SC_GloveModels and fldr.Name ~= "Racer" and fldr.Name ~= "Models" then
+            table.insert(SC_AllGloveNames, fldr.Name)
+        end
+    end
+    table.sort(SC_AllGloveNames, function(a, b) return a < b end)
+    for _, gName in ipairs(SC_AllGloveNames) do
+        SC_AllGloves[gName] = {"Default"}
+        for _, modl in pairs(SC_Gloves[gName]:GetChildren()) do
+            table.insert(SC_AllGloves[gName], modl.Name)
+        end
+    end
+end
+local SC_SavedGloveSkins = {}
+local SC_lastGlove = nil
+local SC_lastGloveSkin = nil
 local function SC_SwapKnifeModel(knifeName)
     if not SC_Viewmodels then return end
     if SC_swapping then return end
@@ -333,6 +355,52 @@ local function SC_setupArmsWatcher()
             if not Client or Client.gun == "none" or typeof(Client.gun) ~= "Instance" then return end
             local isMelee = Client.gun:FindFirstChild("Melee")
             local gunname = Client.gun.Name
+            if Toggles.SkinGloveChanger and Toggles.SkinGloveChanger.Value then
+                pcall(function()
+                    if not SC_lastGlove or SC_lastGlove == "None" then return end
+                    if not SC_GloveModels or not SC_GloveModels:FindFirstChild(SC_lastGlove) then return end
+                    local Model
+                    for _, v in pairs(obj:GetChildren()) do
+                        if v:IsA("Model") and (v:FindFirstChild("Right Arm") or v:FindFirstChild("Left Arm")) then
+                            Model = v
+                        end
+                    end
+                    if not Model then return end
+                    local RArm = Model:FindFirstChild("Right Arm")
+                    local LArm = Model:FindFirstChild("Left Arm")
+                    local gloveTexData = SC_Gloves:FindFirstChild(SC_lastGlove) and SC_Gloves[SC_lastGlove]:FindFirstChild(SC_lastGloveSkin or "Default")
+                    local gloveTex = ""
+                    if gloveTexData and gloveTexData:FindFirstChild("Textures") then
+                        gloveTex = gloveTexData.Textures.TextureId or ""
+                    end
+                    if RArm and SC_GloveModels:FindFirstChild(SC_lastGlove) then
+                        local RGlove = RArm:FindFirstChild("Glove") or RArm:FindFirstChild("RGlove")
+                        if RGlove then RGlove:Destroy() end
+                        local newRG = SC_GloveModels[SC_lastGlove].RGlove:Clone()
+                        if newRG:FindFirstChild("Mesh") then
+                            newRG.Mesh.TextureId = gloveTex
+                        else
+                            pcall(function() newRG.TextureID = gloveTex end)
+                        end
+                        newRG.Parent = RArm
+                        newRG.Transparency = 0
+                        pcall(function() newRG.Welded.Part0 = RArm end)
+                    end
+                    if LArm and SC_GloveModels:FindFirstChild(SC_lastGlove) then
+                        local LGlove = LArm:FindFirstChild("Glove") or LArm:FindFirstChild("LGlove")
+                        if LGlove then LGlove:Destroy() end
+                        local newLG = SC_GloveModels[SC_lastGlove].LGlove:Clone()
+                        if newLG:FindFirstChild("Mesh") then
+                            newLG.Mesh.TextureId = gloveTex
+                        else
+                            pcall(function() newLG.TextureID = gloveTex end)
+                        end
+                        newLG.Transparency = 0
+                        newLG.Parent = LArm
+                        pcall(function() newLG.Welded.Part0 = LArm end)
+                    end
+                end)
+            end
             if Toggles.SkinKnifeChanger and Toggles.SkinKnifeChanger.Value and isMelee then
                 local wantedKnife = Options.SkinKnifeModel and Options.SkinKnifeModel.Value
                 if wantedKnife and SC_currentKnife ~= wantedKnife then
@@ -341,11 +409,19 @@ local function SC_setupArmsWatcher()
                     obj:Destroy()
                     return
                 end
-                local kn = wantedKnife or "M9 Bayonet"
-                if not SC_Skins:FindFirstChild(kn) then kn = "M9 Bayonet" end
-                SC_applySkinToArms(obj, kn, SC_SavedKnifeSkins[wantedKnife] or "Inventory")
+                spawn(function()
+                    pcall(function()
+                        local kn = wantedKnife or "M9 Bayonet"
+                        if not SC_Skins:FindFirstChild(kn) then kn = "M9 Bayonet" end
+                        SC_applySkinToArms(obj, kn, SC_SavedKnifeSkins[wantedKnife] or "Inventory")
+                    end)
+                end)
             elseif Toggles.SkinWeaponChanger and Toggles.SkinWeaponChanger.Value and not isMelee then
-                SC_applySkinToArms(obj, gunname, SC_SavedWeaponSkins[gunname] or "Inventory")
+                spawn(function()
+                    pcall(function()
+                        SC_applySkinToArms(obj, gunname, SC_SavedWeaponSkins[gunname] or "Inventory")
+                    end)
+                end)
             end
         end)
     end)
@@ -355,6 +431,7 @@ end
 local SkinSections = {
     Knife = Tabs.Skin:AddLeftGroupbox('Knife Changer'),
     Weapon = Tabs.Skin:AddRightGroupbox('Weapon Skins'),
+    Glove = Tabs.Skin:AddRightGroupbox('Glove Changer'),
 }
 SkinSections.Knife:AddToggle('SkinKnifeChanger', {Text = 'Enable', Default = false, Callback = function()
     if Toggles.SkinKnifeChanger.Value then
@@ -405,6 +482,27 @@ SkinSections.Weapon:AddDropdown('SkinWeaponSkin', {Text = 'Weapon Skin', Values 
     local sk = Options.SkinWeaponSkin and Options.SkinWeaponSkin.Value
     if wn and sk then SC_SavedWeaponSkins[wn] = sk end
 end})
+SkinSections.Glove:AddToggle('SkinGloveChanger', {Text = 'Enable', Default = false})
+if #SC_AllGloveNames > 0 then
+    SkinSections.Glove:AddDropdown('SkinGloveModel', {Text = 'Glove', Values = SC_AllGloveNames, Default = SC_AllGloveNames[1], Callback = function()
+        local gloveName = Options.SkinGloveModel and Options.SkinGloveModel.Value
+        if gloveName then
+            local skins = SC_AllGloves[gloveName] or {"Default"}
+            Options.SkinGloveSkin.Values = skins
+            Options.SkinGloveSkin:SetValues()
+            Options.SkinGloveSkin:SetValue(SC_SavedGloveSkins[gloveName] or skins[1])
+            SC_lastGlove = gloveName
+            SC_lastGloveSkin = SC_SavedGloveSkins[gloveName] or skins[1]
+        end
+    end})
+    SkinSections.Glove:AddDropdown('SkinGloveSkin', {Text = 'Glove Skin', Values = SC_AllGloves[SC_AllGloveNames[1]] or {"Default"}, Default = "Default", Callback = function()
+        SC_lastGlove = Options.SkinGloveModel and Options.SkinGloveModel.Value
+        SC_lastGloveSkin = Options.SkinGloveSkin and Options.SkinGloveSkin.Value
+        if SC_lastGlove and SC_lastGloveSkin then
+            SC_SavedGloveSkins[SC_lastGlove] = SC_lastGloveSkin
+        end
+    end})
+end
 SC_setupArmsWatcher()
 do
     local ks = SC_KnifeSkins["Butterfly Knife"] or {"Inventory"}
@@ -603,42 +701,29 @@ RageSections.GunMods:AddToggle('GunModsInstaReload', {Text = 'Insta reload', Def
     end})
 
 
--- Misc UI
-RageSections.Misc:AddToggle('MiscBulletTracer', {Text = 'Bullet tracer', Default = false})
+-- Misc UI (Visual tab)
+VisualSections.Misc:AddToggle('MiscBulletTracer', {Text = 'Bullet tracer', Default = false})
 
-
--- Bullet tracer color
-RageSections.Misc:AddLabel('Bullet tracer color'):AddColorPicker('MiscBulletTracerColor', {Default = Color3.fromRGB(255, 0, 0), Title = 'Bullet tracer color'})
-
-
--- Bullet tracer texture
-RageSections.Misc:AddDropdown('MiscBulletTracerTexture', {
+VisualSections.Misc:AddDropdown('MiscBulletTracerTexture', {
     Text = 'Tracer texture',
     Values = {"Solid","Lightning","Laser","Twisted Energy","Anime Lazer","Arrow","Minecraft","Alien Energy Ray","Energy Ray","Matrix","Cartoony Eletric"},
     Default = "Laser",
 })
 
+VisualSections.Misc:AddToggle('MiscHitSound', {Text = 'Hit sound', Default = false})
 
--- Hit sound
-RageSections.Misc:AddToggle('MiscHitSound', {Text = 'Hit sound', Default = false})
+VisualSections.Misc:AddDropdown('MiscHitSoundType', {Values = { 'Skeet', 'Neverlose', 'Bameware', 'Bell', 'Bubble', 'Pick', 'Pop', 'Rust', 'Sans', 'Fart', 'Big', 'Vine', 'Bruh', 'Fatality', 'Bonk', 'Minecraft', 'Moan' }, Default = 'Skeet', Text = 'Hit sound type'})
 
+VisualSections.Misc:AddSlider('MiscHitSoundVolume', {Text = 'Volume', Default = 5, Min = 1, Max = 10, Rounding = 0})
 
-RageSections.Misc:AddDropdown('MiscHitSoundType', {Values = { 'Skeet', 'Neverlose', 'Bameware', 'Bell', 'Bubble', 'Pick', 'Pop', 'Rust', 'Sans', 'Fart', 'Big', 'Vine', 'Bruh', 'Fatality', 'Bonk', 'Minecraft', 'Moan' }, Default = 'Skeet', Text = 'Hit sound type'})
+VisualSections.Misc:AddToggle('MiscHitChams', {Text = 'Hit chams', Default = false})
 
+VisualSections.Misc:AddLabel('Bullet tracer color'):AddColorPicker('MiscBulletTracerColor', {Default = Color3.fromRGB(255, 0, 0), Title = 'Bullet tracer color'})
 
-RageSections.Misc:AddSlider('MiscHitSoundVolume', {Text = 'Volume', Default = 5, Min = 1, Max = 10, Rounding = 0})
+VisualSections.Misc:AddLabel('Hit chams color'):AddColorPicker('MiscHitChamsColor', {Default = Color3.fromRGB(255, 0, 0), Title = 'Hit chams color'})
 
-
--- Full auto
+-- Full auto (stays in Rage)
 RageSections.Misc:AddToggle('MiscFullAuto', {Text = 'Full auto', Default = false, Callback = function() updateFullAuto() end})
-
-
--- Hit chams
-RageSections.Misc:AddToggle('MiscHitChams', {Text = 'Hit chams', Default = false})
-
-
--- Hit chams color
-RageSections.Misc:AddLabel('Hit chams color'):AddColorPicker('MiscHitChamsColor', {Default = Color3.fromRGB(255, 0, 0), Title = 'Hit chams color'})
 
 
 -- Exploit UI
@@ -723,14 +808,6 @@ VisualSections.Grenades:AddToggle('GrenadesPrediction', {Text = 'Grenade predict
 VisualSections.Grenades:AddLabel('Prediction color'):AddColorPicker('GrenadesPredictionColor', {Default = Color3.fromRGB(255, 0, 0), Title = 'Prediction color'})
 
 
--- Self UI
-VisualSections.Self:AddToggle('SelfFOVEnable', {Text = 'FOV', Default = false})
-
-
--- FOV slider
-VisualSections.Self:AddSlider('SelfFOV', {Text = 'FOV value', Default = 70, Min = 30, Max = 120, Rounding = 0})
-
-
 -- Third Person UI
 VisualSections.ThirdPerson:AddToggle('ThirdPersonEnable', {Text = 'Enable', Default = false})
 
@@ -741,6 +818,14 @@ VisualSections.ThirdPerson:AddLabel('Keybind'):AddKeyPicker('ThirdPersonKeybind'
 
 -- Third Person distance
 VisualSections.ThirdPerson:AddSlider('ThirdPersonDistance', {Text = 'Distance', Default = 5, Min = 1, Max = 10, Rounding = 0})
+
+
+-- Self UI
+VisualSections.Self:AddToggle('SelfFOVEnable', {Text = 'FOV', Default = false})
+
+
+-- FOV slider
+VisualSections.Self:AddSlider('SelfFOV', {Text = 'FOV value', Default = 70, Min = 30, Max = 120, Rounding = 0})
 
 
 -- Theme & Save
@@ -1789,22 +1874,6 @@ updateNoFlash = function()
     local blnd = LocalPlayer.PlayerGui and LocalPlayer.PlayerGui:FindFirstChild("Blnd")
     if blnd then
         blnd.Enabled = not (Toggles.RemovalsNoFlash and Toggles.RemovalsNoFlash.Value)
-    end
-end
-
-
--- Update FOV
-local OriginalFOV = Camera.FieldOfView
-local LastFOV = Camera.FieldOfView
-local function updateFOV()
-    local Camera = getCamera()
-    if not Camera then return end
-    local target = (Toggles.SelfFOVEnable and Toggles.SelfFOVEnable.Value)
-        and (Options.SelfFOV and Options.SelfFOV.Value or 70)
-        or OriginalFOV
-    if target ~= LastFOV then
-        Camera.FieldOfView = target
-        LastFOV = target
     end
 end
 
@@ -3564,7 +3633,6 @@ EspRuntime.Connections.RenderStepped = RunService.RenderStepped:Connect(function
     updateAirStrafe()
     updateGrenadePrediction(dt)
     updateHitChams()
-    updateFOV()
 end)
 
 
@@ -3592,3 +3660,5 @@ end)
 -- Build coАnfig
 SaveManager:BuildConfigSection(Tabs.Config)
 ThemeManager:ApplyToTab(Tabs.Config)
+
+
