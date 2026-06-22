@@ -177,10 +177,11 @@ local VisualSections = {
 }
 
 -- Skin changer data
-local SC_Viewmodels = ReplicatedStorage:FindFirstChild("Viewmodels")
-local SC_Skins = ReplicatedStorage:FindFirstChild("Skins")
+local SC_Viewmodels = ReplicatedStorage:WaitForChild("Viewmodels", 10)
+local SC_Skins = ReplicatedStorage:WaitForChild("Skins", 10)
 local SC_Models = nil
 pcall(function() SC_Models = game:GetObjects("rbxassetid://7285197035")[1] end)
+if SC_Models then repeat task.wait() until SC_Models ~= nil end
 local SC_OriginalCTKnife = SC_Viewmodels and SC_Viewmodels:FindFirstChild("v_CT Knife") and SC_Viewmodels:FindFirstChild("v_CT Knife"):Clone()
 local SC_OriginalTKnife = SC_Viewmodels and SC_Viewmodels:FindFirstChild("v_T Knife") and SC_Viewmodels:FindFirstChild("v_T Knife"):Clone()
 local SC_AllKnives = { "CT Knife", "T Knife", "Banana", "Bayonet", "Bearded Axe", "Butterfly Knife", "Cleaver", "Crowbar", "Falchion Knife", "Flip Knife", "Gut Knife", "Huntsman Knife", "Karambit", "M9 Bayonet", "Sickle" }
@@ -217,6 +218,7 @@ local SC_armsConn = nil
 local SC_SavedKnifeSkins = {}
 local SC_SavedWeaponSkins = {}
 local function SC_SwapKnifeModel(knifeName)
+    if not SC_Viewmodels then return end
     if SC_swapping then return end
     if SC_currentKnife == knifeName then return end
     SC_swapping = true
@@ -359,7 +361,7 @@ SkinSections.Knife:AddToggle('SkinKnifeChanger', {Text = 'Enable', Default = fal
     if Toggles.SkinKnifeChanger.Value then
         local wantedKnife = Options.SkinKnifeModel and Options.SkinKnifeModel.Value
         if wantedKnife then SC_SwapKnifeModel(wantedKnife) end
-    else
+    elseif SC_Viewmodels then
         if SC_Viewmodels:FindFirstChild("v_CT Knife") then SC_Viewmodels:FindFirstChild("v_CT Knife"):Destroy() end
         if SC_Viewmodels:FindFirstChild("v_T Knife") then SC_Viewmodels:FindFirstChild("v_T Knife"):Destroy() end
         wait()
@@ -368,7 +370,7 @@ SkinSections.Knife:AddToggle('SkinKnifeChanger', {Text = 'Enable', Default = fal
         SC_currentKnife = nil
     end
 end})
-SkinSections.Knife:AddDropdown('SkinKnifeModel', {Text = 'Knife', Values = SC_AllKnives, Default = 'Butterfly Knife', Callback = function()
+SkinSections.Knife:AddDropdown('SkinKnifeModel', {Text = 'Knife', Values = #SC_AllKnives > 0 and SC_AllKnives or {"CT Knife"}, Default = 'Butterfly Knife', Callback = function()
     local wantedKnife = Options.SkinKnifeModel and Options.SkinKnifeModel.Value
     if wantedKnife then
         local skins = SC_KnifeSkins[wantedKnife] or {"Inventory"}
@@ -385,7 +387,7 @@ SkinSections.Knife:AddDropdown('SkinKnifeSkin', {Text = 'Knife Skin', Values = {
 end})
 SkinSections.Weapon:AddToggle('SkinWeaponChanger', {Text = 'Enable', Default = false})
 local _SC_prevWeapon = SC_AllWeapons[1]
-SkinSections.Weapon:AddDropdown('SkinWeaponModel', {Text = 'Weapon', Values = SC_AllWeapons, Default = SC_AllWeapons[1], Callback = function()
+SkinSections.Weapon:AddDropdown('SkinWeaponModel', {Text = 'Weapon', Values = #SC_AllWeapons > 0 and SC_AllWeapons or {"AK-47"}, Default = SC_AllWeapons[1] or "AK-47", Callback = function()
     local weaponName = Options.SkinWeaponModel and Options.SkinWeaponModel.Value
     if _SC_prevWeapon and _SC_prevWeapon ~= weaponName then
         local curSkin = Options.SkinWeaponSkin and Options.SkinWeaponSkin.Value
