@@ -219,11 +219,31 @@ local SC_swapping = false
 local SC_armsConn = nil
 local SC_SavedKnifeSkins = {}
 local SC_SavedWeaponSkins = {}
+local SC_SavedGloveSkins = {}
+local SC_skinFile = "Valenok/skins.json"
+local HttpService = game:GetService("HttpService")
+local function SC_SaveSkins()
+    pcall(function()
+        local data = { knife = SC_SavedKnifeSkins, weapon = SC_SavedWeaponSkins, glove = SC_SavedGloveSkins }
+        writefile(SC_skinFile, HttpService:JSONEncode(data))
+    end)
+end
+local function SC_LoadSkins()
+    pcall(function()
+        if isfile(SC_skinFile) then
+            local data = HttpService:JSONDecode(readfile(SC_skinFile))
+            SC_SavedKnifeSkins = data.knife or {}
+            SC_SavedWeaponSkins = data.weapon or {}
+            SC_SavedGloveSkins = data.glove or {}
+        end
+    end)
+end
+SC_LoadSkins()
 local SC_AllGloveNames = {}
 local SC_AllGloves = {}
 if SC_Gloves then
     for _, fldr in pairs(SC_Gloves:GetChildren()) do
-        if fldr ~= SC_GloveModels and fldr.Name ~= "Racer" and fldr.Name ~= "Models" then
+        if fldr:IsA("Folder") and fldr ~= SC_GloveModels and fldr.Name ~= "Racer" and fldr.Name ~= "Models" then
             table.insert(SC_AllGloveNames, fldr.Name)
         end
     end
@@ -235,7 +255,6 @@ if SC_Gloves then
         end
     end
 end
-local SC_SavedGloveSkins = {}
 local SC_lastGlove = nil
 local SC_lastGloveSkin = nil
 local function SC_SwapKnifeModel(knifeName)
@@ -459,7 +478,7 @@ end})
 SkinSections.Knife:AddDropdown('SkinKnifeSkin', {Text = 'Knife Skin', Values = {'Inventory'}, Default = 'Inventory', Callback = function()
     local kn = Options.SkinKnifeModel and Options.SkinKnifeModel.Value
     local sk = Options.SkinKnifeSkin and Options.SkinKnifeSkin.Value
-    if kn and sk then SC_SavedKnifeSkins[kn] = sk end
+    if kn and sk then SC_SavedKnifeSkins[kn] = sk; SC_SaveSkins() end
 end})
 SkinSections.Weapon:AddToggle('SkinWeaponChanger', {Text = 'Enable', Default = false})
 local _SC_prevWeapon = SC_AllWeapons[1]
@@ -467,7 +486,7 @@ SkinSections.Weapon:AddDropdown('SkinWeaponModel', {Text = 'Weapon', Values = #S
     local weaponName = Options.SkinWeaponModel and Options.SkinWeaponModel.Value
     if _SC_prevWeapon and _SC_prevWeapon ~= weaponName then
         local curSkin = Options.SkinWeaponSkin and Options.SkinWeaponSkin.Value
-        if curSkin then SC_SavedWeaponSkins[_SC_prevWeapon] = curSkin end
+        if curSkin then SC_SavedWeaponSkins[_SC_prevWeapon] = curSkin; SC_SaveSkins() end
     end
     _SC_prevWeapon = weaponName
     if weaponName then
@@ -480,7 +499,7 @@ end})
 SkinSections.Weapon:AddDropdown('SkinWeaponSkin', {Text = 'Weapon Skin', Values = {'Inventory'}, Default = 'Inventory', Callback = function()
     local wn = Options.SkinWeaponModel and Options.SkinWeaponModel.Value
     local sk = Options.SkinWeaponSkin and Options.SkinWeaponSkin.Value
-    if wn and sk then SC_SavedWeaponSkins[wn] = sk end
+    if wn and sk then SC_SavedWeaponSkins[wn] = sk; SC_SaveSkins() end
 end})
 SkinSections.Glove:AddToggle('SkinGloveChanger', {Text = 'Enable', Default = false})
 if #SC_AllGloveNames > 0 then
@@ -500,20 +519,64 @@ if #SC_AllGloveNames > 0 then
         SC_lastGloveSkin = Options.SkinGloveSkin and Options.SkinGloveSkin.Value
         if SC_lastGlove and SC_lastGloveSkin then
             SC_SavedGloveSkins[SC_lastGlove] = SC_lastGloveSkin
+            SC_SaveSkins()
         end
     end})
 end
+SkinSections.Knife:AddButton('Random Skin', function()
+    for _, knifeName in ipairs(SC_AllKnives) do
+        local skins = SC_KnifeSkins[knifeName]
+        if skins and #skins > 0 then
+            SC_SavedKnifeSkins[knifeName] = skins[math.random(1, #skins)]
+        end
+    end
+    SC_SaveSkins()
+    local curKnife = Options.SkinKnifeModel and Options.SkinKnifeModel.Value
+    if curKnife and SC_KnifeSkins[curKnife] then
+        Options.SkinKnifeSkin:SetValue(SC_SavedKnifeSkins[curKnife] or "Inventory")
+    end
+end)
+SkinSections.Weapon:AddButton('Random Skin', function()
+    for _, weaponName in ipairs(SC_AllWeapons) do
+        local skins = SC_AllSkins[weaponName]
+        if skins and #skins > 0 then
+            SC_SavedWeaponSkins[weaponName] = skins[math.random(1, #skins)]
+        end
+    end
+    SC_SaveSkins()
+    local curWeapon = Options.SkinWeaponModel and Options.SkinWeaponModel.Value
+    if curWeapon and SC_AllSkins[curWeapon] then
+        Options.SkinWeaponSkin:SetValue(SC_SavedWeaponSkins[curWeapon] or "Inventory")
+    end
+end)
+SkinSections.Glove:AddButton('Random Skin', function()
+    for _, gloveName in ipairs(SC_AllGloveNames) do
+        local skins = SC_AllGloves[gloveName]
+        if skins and #skins > 0 then
+            SC_SavedGloveSkins[gloveName] = skins[math.random(1, #skins)]
+        end
+    end
+    SC_SaveSkins()
+    local curGlove = Options.SkinGloveModel and Options.SkinGloveModel.Value
+    if curGlove and SC_AllGloves[curGlove] then
+        Options.SkinGloveSkin:SetValue(SC_SavedGloveSkins[curGlove] or "Default")
+        SC_lastGlove = curGlove
+        SC_lastGloveSkin = SC_SavedGloveSkins[curGlove]
+    end
+end)
 SC_setupArmsWatcher()
 do
-    local ks = SC_KnifeSkins["Butterfly Knife"] or {"Inventory"}
+    local defaultKnife = "Butterfly Knife"
+    local ks = SC_KnifeSkins[defaultKnife] or {"Inventory"}
     Options.SkinKnifeSkin.Values = ks
     Options.SkinKnifeSkin:SetValues()
-    Options.SkinKnifeSkin:SetValue("Inventory")
+    Options.SkinKnifeSkin:SetValue(SC_SavedKnifeSkins[defaultKnife] or "Inventory")
     if #SC_AllWeapons > 0 then
-        local ws = SC_AllSkins[SC_AllWeapons[1]] or {"Inventory"}
+        local firstWeapon = SC_AllWeapons[1]
+        local ws = SC_AllSkins[firstWeapon] or {"Inventory"}
         Options.SkinWeaponSkin.Values = ws
         Options.SkinWeaponSkin:SetValues()
-        Options.SkinWeaponSkin:SetValue("Inventory")
+        Options.SkinWeaponSkin:SetValue(SC_SavedWeaponSkins[firstWeapon] or "Inventory")
     end
 end
 
@@ -529,6 +592,9 @@ MovementSections.Bhop:AddToggle('BhopEnable', {Text = 'Enable', Default = false,
 
 -- Bhop slider
 MovementSections.Bhop:AddSlider('BhopMultiplier', {Text = 'Bhop multiplier', Default = 1, Min = 1, Max = 3, Rounding = 2})
+
+
+MovementSections.Bhop:AddToggle('BhopAutoJump', {Text = 'Auto jump', Default = false, Callback = function() updateBhop() end})
 
 
 -- Strafe UI
@@ -2330,6 +2396,10 @@ updateBhop = function()
             humanoid.Jump = true
         end
 
+        if Toggles.BhopAutoJump and Toggles.BhopAutoJump.Value and UserInputService:IsKeyDown(Enum.KeyCode.Space) then
+            humanoid.Jump = true
+        end
+
         local camLook = Camera.CFrame.LookVector
         local camRight = Camera.CFrame.RightVector
         local mx, mz = 0, 0
@@ -3645,7 +3715,9 @@ end)
 print("Valenok")
 print("version: recode")
 print("open/close menu end")
+getgenv().ValenokUnload = function() Library:Unload() end
 Library:OnUnload(function()
+    getgenv().ValenokUnload = nil
     if SC_armsConn then SC_armsConn:Disconnect(); SC_armsConn = nil end
     pcall(function()
         if SC_Viewmodels then
