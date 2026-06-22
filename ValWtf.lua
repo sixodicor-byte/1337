@@ -1,6 +1,3 @@
-local print = function() end
-local warn = function() end
-
 -- FPS unlock
 setfpscap(300)
 
@@ -21,11 +18,8 @@ local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local SoundService = game:GetService("SoundService")
 local Debris = game:GetService("Debris")
 local VirtualInputManager = game:GetService("VirtualInputManager")
-local TweenService = game:GetService("TweenService")
-local WeaponsFolder = ReplicatedStorage:FindFirstChild("Weapons")
 
 -- Camera/weapons helpers
 local function getCamera()
@@ -305,7 +299,7 @@ RageSections.GunMods:AddToggle('GunModsNoSpread', {Text = 'No spread', Default =
                 if OriginalAccuracySd == nil then OriginalAccuracySd = Client.accuracy_sd end
                 Client.accuracy_sd = 0
             else
-                if OriginalAccuracySd ~= nil then Client.accuracy_sd = OriginalAccuracySd else Client.accuracy_sd = 0.001 end
+                if OriginalAccuracySd ~= nil then Client.accuracy_sd = OriginalAccuracySd end
             end
         end
     end})
@@ -2368,7 +2362,7 @@ local function unloadValenok()
     -- Reset Gun Mods
     local Client = getCachedClient()
     if Client then
-        if OriginalAccuracySd ~= nil then Client.accuracy_sd = OriginalAccuracySd else Client.accuracy_sd = 0.001 end
+        if OriginalAccuracySd ~= nil then Client.accuracy_sd = OriginalAccuracySd end
     end
 
     restoreAllRapidFireRates()
@@ -3342,5 +3336,3 @@ print("open/close menu end")
 -- Build coАnfig
 SaveManager:BuildConfigSection(Tabs.Config)
 ThemeManager:ApplyToTab(Tabs.Config)
-
-
