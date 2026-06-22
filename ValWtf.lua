@@ -5,6 +5,9 @@ local warn = function() end
 setfpscap(300)
 
 
+-- Re-execute protection (before library load)
+if getgenv().ValenokUnload then pcall(getgenv().ValenokUnload) end
+
 -- Library load
 local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/bdimka251212-del/NewLib/refs/heads/main/NewLib.lua"))()
 local ThemeManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/bdimka251212-del/NewLib/refs/heads/main/addons/ThemeManager.lua"))()
@@ -24,7 +27,17 @@ local VirtualInputManager = game:GetService("VirtualInputManager")
 local TweenService = game:GetService("TweenService")
 local WeaponsFolder = ReplicatedStorage:FindFirstChild("Weapons")
 
+-- Camera/weapons helpers
+local function getCamera()
+    Camera = Workspace.CurrentCamera
+    return Camera
+end
+local function getWeaponsFolder()
+    return ReplicatedStorage:FindFirstChild("Weapons")
+end
+
 -- Forward declarations
+local updateBhop
 local restoreAllRapidFireRates
 local updateRCS
 local updateFullAuto
@@ -175,21 +188,11 @@ local MovementSections = {
 }
 
 -- Bhop UI
-MovementSections.Bhop:AddToggle('BhopEnable', {Text = 'Enable', Default = false})
+MovementSections.Bhop:AddToggle('BhopEnable', {Text = 'Enable', Default = false, Callback = function() updateBhop() end})
 
 
 -- Bhop slider
-MovementSections.Bhop:AddSlider('BhopMultiplier', {Text = 'Bhop multiplier', Default = 1, Min = 1, Max = 10, Rounding = 2})
-
-
--- Movement UI
-MovementSections.Movement:AddToggle('MovementFastWalk', {Text = 'Fast walk', Default = false})
-
-
-MovementSections.Movement:AddDropdown('MovementFastWalkMode', {Values = { 'Legit', 'Semi', 'Rage' }, Default = 'Legit', Text = 'Mode'})
-
-
-MovementSections.Movement:AddToggle('MovementEdgeJump', {Text = 'Edge jump', Default = false})
+MovementSections.Bhop:AddSlider('BhopMultiplier', {Text = 'Bhop multiplier', Default = 1, Min = 1, Max = 3, Rounding = 2})
 
 
 -- Strafe UI
@@ -271,7 +274,7 @@ RageSections.AntiAim:AddSlider('AntiAimYawValue', {Text = 'Yaw value', Default =
 
 -- Gun Mods UI
 RageSections.GunMods:AddToggle('GunModsNoRecoil', {Text = 'No recoil', Default = false, Callback = function(Value)
-        local Weapons = WeaponsFolder
+        local Weapons = getWeaponsFolder()
         if not Weapons then return end
         for _, weaponFolder in ipairs(Weapons:GetChildren()) do
             if not weaponFolder:IsA("Folder") then continue end
@@ -294,7 +297,9 @@ RageSections.GunMods:AddToggle('GunModsNoRecoil', {Text = 'No recoil', Default =
 RageSections.GunMods:AddToggle('GunModsNoSpread', {Text = 'No spread', Default = false, Callback = function(Value)
         local Players = game:GetService("Players")
         local LocalPlayer = Players.LocalPlayer
-        local success, Client = pcall(function() return getsenv(LocalPlayer.PlayerGui:WaitForChild("Client")) end)
+        local clientGui = LocalPlayer.PlayerGui:WaitForChild("Client", 5)
+        if not clientGui then return end
+        local success, Client = pcall(function() return getsenv(clientGui) end)
         if success and Client then
             if Value then
                 if OriginalAccuracySd == nil then OriginalAccuracySd = Client.accuracy_sd end
@@ -312,7 +317,7 @@ RageSections.GunMods:AddToggle('GunModsRapidFire', {Text = 'Rapid fire', Default
 
 -- Insta equip
 RageSections.GunMods:AddToggle('GunModsInstaEquip', {Text = 'Insta equip', Default = false, Callback = function(Value)
-        local Weapons = WeaponsFolder
+        local Weapons = getWeaponsFolder()
         if not Weapons then return end
         if Value then
             for _, weaponFolder in ipairs(Weapons:GetChildren()) do
@@ -337,7 +342,7 @@ RageSections.GunMods:AddToggle('GunModsInstaEquip', {Text = 'Insta equip', Defau
 
 -- Insta reload
 RageSections.GunMods:AddToggle('GunModsInstaReload', {Text = 'Insta reload', Default = false, Callback = function(Value)
-        local Weapons = WeaponsFolder
+        local Weapons = getWeaponsFolder()
         if not Weapons then return end
         if Value then
             for _, weaponFolder in ipairs(Weapons:GetChildren()) do
@@ -526,6 +531,7 @@ local AimRuntime = {
 -- Hit Chams runtime
 local HitChamsState = {
     ObservedPlayers = {},
+    PlayerConns = {},
     ChamsFolder = nil,
     ActiveClones = 0,
     MaxClones = 20,
@@ -763,7 +769,7 @@ pcall(function()
         local totalDamage = additionals:FindFirstChild("TotalDamage")
         if totalDamage then
             local oldDamage = totalDamage.Value
-            totalDamage.Changed:Connect(function(newVal)
+            EspRuntime.Connections.TotalDamageChanged = totalDamage.Changed:Connect(function(newVal)
                 if newVal > oldDamage then
                     if Toggles.MiscHitSound and Toggles.MiscHitSound.Value then
                         PlayHitSound()
@@ -877,6 +883,7 @@ local function runHitChamsOptimized(playerObj, color, material)
     local chamsFolder = getHitChamsFolder()
 
     for _, part in ipairs(playerObj.Character:GetChildren()) do
+        if HitChamsState.ActiveClones >= HitChamsState.MaxClones then break end
         if (part:IsA("MeshPart") and part.Transparency ~= 1) or part.Name == "Head" then
             if not _hitChamsIgnoreParts[part.Name] then
                 local clone = part:Clone()
@@ -909,6 +916,7 @@ local function observePlayerForHitChams(player)
     if player == LocalPlayer then return end
     if HitChamsState.ObservedPlayers[player] then return end
     HitChamsState.ObservedPlayers[player] = true
+    HitChamsState.PlayerConns[player] = HitChamsState.PlayerConns[player] or {}
 
     local function setupCharacter(character)
         local humanoid = character:WaitForChild("Humanoid", 3)
@@ -923,15 +931,13 @@ local function observePlayerForHitChams(player)
                 end
                 lastHealth = currentHealth
             end)
-            HitChamsState.Connections = HitChamsState.Connections or {}
-            table.insert(HitChamsState.Connections, conn)
+            table.insert(HitChamsState.PlayerConns[player], conn)
         end
     end
 
     if player.Character then setupCharacter(player.Character) end
     local charConn = player.CharacterAdded:Connect(setupCharacter)
-    HitChamsState.Connections = HitChamsState.Connections or {}
-    table.insert(HitChamsState.Connections, charConn)
+    table.insert(HitChamsState.PlayerConns[player], charConn)
 end
 
 local function updateHitChams()
@@ -972,7 +978,7 @@ local function getCurrentWeaponFireRateObject()
 
     if not weaponName then return nil, nil end
 
-    local Weapons = WeaponsFolder
+    local Weapons = getWeaponsFolder()
     if not Weapons then return nil, nil end
 
     local weaponFolder = Weapons:FindFirstChild(weaponName)
@@ -989,7 +995,7 @@ end
 
 -- Restore rapid fire
 restoreAllRapidFireRates = function()
-    local Weapons = WeaponsFolder
+    local Weapons = getWeaponsFolder()
     if Weapons then
         for weaponName, original in pairs(RapidFireState.SavedFireRates) do
             local weaponFolder = Weapons:FindFirstChild(weaponName)
@@ -1005,7 +1011,7 @@ end
 
 -- Restore full auto
 local function restoreAllFullAutoValues()
-    local Weapons = WeaponsFolder
+    local Weapons = getWeaponsFolder()
     if Weapons then
         for weaponName, originalValue in pairs(FullAutoState.SavedAutoValues) do
             local weaponFolder = Weapons:FindFirstChild(weaponName)
@@ -1194,8 +1200,9 @@ local function isStrictRayVisible(TargetPart)
     VisibilityParams.FilterDescendantsInstances = RayIgnoreList
 
     getgenv().IgnoreRaycastHook = true
-    local RaycastResult = Workspace:Raycast(Origin, Direction, VisibilityParams)
+    local ok, result = pcall(function() return Workspace:Raycast(Origin, Direction, VisibilityParams) end)
     getgenv().IgnoreRaycastHook = false
+    local RaycastResult = ok and result or nil
 
     if not RaycastResult or not RaycastResult.Instance then return false end
 
@@ -1387,6 +1394,8 @@ end
 local FovSinCos = {}
 local FovSinCosCount = 0
 local function updateFovCircle()
+    local Camera = getCamera()
+    if not Camera then return end
     local ShowAimFov = Toggles.AimbotShowFOV and Toggles.AimbotShowFOV.Value
     local ShowRageFov = Toggles.RagebotShowFOV and Toggles.RagebotShowFOV.Value
     local RadiusAim = ShowAimFov and getAimFovRadius() or 0
@@ -1452,6 +1461,7 @@ end
 
 -- Update aimbot
 local function updateAimBot()
+    local Camera = getCamera()
     local aimShouldRun = Toggles.AimbotEnable and Toggles.AimbotEnable.Value and isAimKeyActive()
     if not Camera or not aimShouldRun then
         AimRuntime.CurrentTarget = nil
@@ -1549,6 +1559,8 @@ end
 local OriginalFOV = Camera.FieldOfView
 local LastFOV = Camera.FieldOfView
 local function updateFOV()
+    local Camera = getCamera()
+    if not Camera then return end
     local target = (Toggles.SelfFOVEnable and Toggles.SelfFOVEnable.Value)
         and (Options.SelfFOV and Options.SelfFOV.Value or 70)
         or OriginalFOV
@@ -1564,9 +1576,35 @@ local _noSmokeConn = nil
 local function setupNoSmoke()
     if _noSmokeConn then return end
     local rayIgnore = Workspace:FindFirstChild("Ray_Ignore")
-    if not rayIgnore then return end
+    if not rayIgnore then
+        if not EspRuntime.Connections.NoSmokeRetry then
+            EspRuntime.Connections.NoSmokeRetry = Workspace.ChildAdded:Connect(function(child)
+                if child.Name == "Ray_Ignore" then
+                    if EspRuntime.Connections.NoSmokeRetry then
+                        EspRuntime.Connections.NoSmokeRetry:Disconnect()
+                        EspRuntime.Connections.NoSmokeRetry = nil
+                    end
+                    setupNoSmoke()
+                end
+            end)
+        end
+        return
+    end
     local smokesFolder = rayIgnore:FindFirstChild("Smokes")
-    if not smokesFolder then return end
+    if not smokesFolder then
+        if not EspRuntime.Connections.NoSmokeRetry then
+            EspRuntime.Connections.NoSmokeRetry = rayIgnore.ChildAdded:Connect(function(child)
+                if child.Name == "Smokes" then
+                    if EspRuntime.Connections.NoSmokeRetry then
+                        EspRuntime.Connections.NoSmokeRetry:Disconnect()
+                        EspRuntime.Connections.NoSmokeRetry = nil
+                    end
+                    setupNoSmoke()
+                end
+            end)
+        end
+        return
+    end
     _noSmokeConn = smokesFolder.ChildAdded:Connect(function(child)
         if Toggles.RemovalsNoSmoke and Toggles.RemovalsNoSmoke.Value then
             child:Destroy()
@@ -1579,7 +1617,7 @@ setupNoSmoke()
 
 -- RCS helpers
 updateRCS = function()
-    local Weapons = WeaponsFolder
+    local Weapons = getWeaponsFolder()
     if not Weapons then return end
 
     local rcsEnabled = Toggles.RCSEnable and Toggles.RCSEnable.Value
@@ -1790,6 +1828,8 @@ local RagebotState = {
 
 -- Update ragebot
 local function updateRagebot()
+    local Camera = getCamera()
+    if not Camera then return end
     local ragebotEnabled = Toggles.RagebotEnable and Toggles.RagebotEnable.Value
     local keyActive = isRagebotKeyActive()
 
@@ -1837,6 +1877,8 @@ local originalWalkSpeed = 16
 
 -- Anti Aim helpers
 local function updateAntiAim()
+    local Camera = getCamera()
+    if not Camera then return end
     local PitchEnabled = Toggles.AntiAimPitch and Toggles.AntiAimPitch.Value
     local YawEnabled = Toggles.AntiAimYaw and Toggles.AntiAimYaw.Value
     local YawMode = Options.AntiAimYawMode and Options.AntiAimYawMode.Value or "Local"
@@ -1898,12 +1940,16 @@ local function updateAntiAim()
 
             for _, player in pairs(Players:GetPlayers()) do
                 if player == LocalPlayer then continue end
-                if player.Team == LocalPlayer.Team then continue end
+                local pTeam = player.Team
+                local lpTeam = LocalPlayer.Team
+                if pTeam and lpTeam and pTeam == lpTeam then continue end
 
                 local char = player.Character
                 if not char then continue end
                 local hrp = char:FindFirstChild("HumanoidRootPart")
                 if not hrp then continue end
+                local hum = char:FindFirstChildOfClass("Humanoid")
+                if not hum or hum.Health <= 0 then continue end
 
                 local dist = (hrp.Position - rootPart.Position).Magnitude
                 if dist < closestDist then
@@ -1916,14 +1962,24 @@ local function updateAntiAim()
                 local targetHrp = closestPlayer.Character:FindFirstChild("HumanoidRootPart")
                 if targetHrp then
                     local toTarget = targetHrp.Position - rootPart.Position
-                    lookVector = Vector3.new(toTarget.X, 0, toTarget.Z).Unit
+                    local flatDist = math.sqrt(toTarget.X ^ 2 + toTarget.Z ^ 2)
+                    if flatDist > 0.01 then
+                        lookVector = Vector3.new(toTarget.X / flatDist, 0, toTarget.Z / flatDist)
+                    end
+                    if PitchEnabled then
+                        if PitchMode == "Down" then
+                            yawRad = math.rad(-180)
+                        elseif PitchMode == "Up" then
+                            yawRad = math.rad(0)
+                        end
+                    end
                 end
             else
                 local camLook = Camera.CFrame.LookVector
                 lookVector = Vector3.new(camLook.X, 0, camLook.Z).Unit
             end
         elseif YawMode == "Random" then
-            if tick() - (getgenv().LastRandomYaw or 0) > 0.1 then
+            if tick() - (getgenv().LastRandomYaw or 0) > (1/60) then
                 getgenv().LastRandomYaw = tick()
                 getgenv().RandomYawValue = math.random(-180, 180)
             end
@@ -1945,48 +2001,56 @@ local function updateAntiAim()
 end
 
 -- Bhop helpers
-local function updateBhop()
-    if not Toggles.BhopEnable or not Toggles.BhopEnable.Value then return end
+local BhopState = { Conn = nil }
 
-    local character = LocalPlayer.Character
-    if not character then return end
-    local rootPart = character:FindFirstChild("HumanoidRootPart")
-    local humanoid = character:FindFirstChildOfClass("Humanoid")
-    if not (rootPart and humanoid) or humanoid.Health <= 0 then return end
-
-    if not UserInputService:IsKeyDown(Enum.KeyCode.Space) then return end
-
-    if humanoid.FloorMaterial ~= Enum.Material.Air then
-        humanoid.Jump = true
+updateBhop = function()
+    if BhopState.Conn then
+        BhopState.Conn:Disconnect()
+        BhopState.Conn = nil
     end
+    if not (Toggles.BhopEnable and Toggles.BhopEnable.Value) then return end
+    BhopState.Conn = RunService.RenderStepped:Connect(function()
+        local character = LocalPlayer.Character
+        if not character then return end
+        local rootPart = character:FindFirstChild("HumanoidRootPart")
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if not (rootPart and humanoid) or humanoid.Health <= 0 then return end
 
-    local camLook = Camera.CFrame.LookVector
-    local camRight = Camera.CFrame.RightVector
-    local mx, mz = 0, 0
-    if UserInputService:IsKeyDown(Enum.KeyCode.W) then mx = mx + camLook.X; mz = mz + camLook.Z end
-    if UserInputService:IsKeyDown(Enum.KeyCode.S) then mx = mx - camLook.X; mz = mz - camLook.Z end
-    if UserInputService:IsKeyDown(Enum.KeyCode.A) then mx = mx - camRight.X; mz = mz - camRight.Z end
-    if UserInputService:IsKeyDown(Enum.KeyCode.D) then mx = mx + camRight.X; mz = mz + camRight.Z end
+        local Camera = getCamera()
+        if not Camera then return end
 
-    local baseSpeed = 16
-    local multiplier = Options.BhopMultiplier and Options.BhopMultiplier.Value or 1
-    local targetSpeed = baseSpeed * multiplier
-    local currentVel = rootPart.AssemblyLinearVelocity
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) and humanoid.FloorMaterial ~= Enum.Material.Air then
+            humanoid.Jump = true
+        end
 
-    local mag = math.sqrt(mx * mx + mz * mz)
-    if mag > 0 then
-        local inv = targetSpeed / mag
-        rootPart.AssemblyLinearVelocity = Vector3.new(mx * inv, currentVel.Y, mz * inv)
-    else
-        rootPart.AssemblyLinearVelocity = Vector3.new(0, currentVel.Y, 0)
-    end
+        local camLook = Camera.CFrame.LookVector
+        local camRight = Camera.CFrame.RightVector
+        local mx, mz = 0, 0
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then mx = mx + camLook.X; mz = mz + camLook.Z end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then mx = mx - camLook.X; mz = mz - camLook.Z end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then mx = mx - camRight.X; mz = mz - camRight.Z end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then mx = mx + camRight.X; mz = mz + camRight.Z end
+
+        local multiplier = Options.BhopMultiplier and Options.BhopMultiplier.Value or 1
+        if not multiplier or multiplier <= 0 then multiplier = 1 end
+        local targetSpeed = 16 * multiplier
+        local currentVel = rootPart.AssemblyLinearVelocity
+
+        local mag = math.sqrt(mx * mx + mz * mz)
+        if mag > 0 then
+            local inv = targetSpeed / mag
+            rootPart.AssemblyLinearVelocity = Vector3.new(mx * inv, currentVel.Y, mz * inv)
+        else
+            rootPart.AssemblyLinearVelocity = Vector3.new(0, currentVel.Y, 0)
+        end
+    end)
 end
 
 
 -- Strafe helpers
 local function updateStrafe()
     if not Toggles.StrafeEnable or not Toggles.StrafeEnable.Value then return end
-    if Toggles.BhopEnable and Toggles.BhopEnable.Value and UserInputService:IsKeyDown(Enum.KeyCode.Space) then return end
+    if Toggles.BhopEnable and Toggles.BhopEnable.Value then return end
 
     local character = LocalPlayer.Character
     if not character then return end
@@ -2017,7 +2081,7 @@ end
 
 local function updateAirStrafe()
     if not Toggles.AirStrafeEnable or not Toggles.AirStrafeEnable.Value then return end
-    if Toggles.BhopEnable and Toggles.BhopEnable.Value and UserInputService:IsKeyDown(Enum.KeyCode.Space) then return end
+    if Toggles.BhopEnable and Toggles.BhopEnable.Value then return end
 
     local character = LocalPlayer.Character
     if not character then return end
@@ -2071,51 +2135,6 @@ local function isKillAllKeyActive()
 end
 
 
--- Fast Walk helpers
-local function updateFastWalk()
-    if not Toggles.MovementFastWalk or not Toggles.MovementFastWalk.Value then return end
-
-    local character = LocalPlayer.Character
-    if not character then return end
-    local rootPart = character:FindFirstChild("HumanoidRootPart")
-    local humanoid = character:FindFirstChildOfClass("Humanoid")
-    if not (rootPart and humanoid) or humanoid.Health <= 0 then return end
-
-    -- Если включен Bhop и персонаж в воздухе, не перезаписываем скорость
-    if Toggles.BhopEnable and Toggles.BhopEnable.Value and humanoid.FloorMaterial == Enum.Material.Air then
-        return
-    end
-
-    local mode = Options.MovementFastWalkMode and Options.MovementFastWalkMode.Value or "Legit"
-    local multiplier = 1.1
-    if mode == "Semi" then
-        multiplier = 1.5
-    elseif mode == "Rage" then
-        multiplier = 2
-    end
-
-    local camLook = Camera.CFrame.LookVector
-    local camRight = Camera.CFrame.RightVector
-    local mx, mz = 0, 0
-    if UserInputService:IsKeyDown(Enum.KeyCode.W) then mx = mx + camLook.X; mz = mz + camLook.Z end
-    if UserInputService:IsKeyDown(Enum.KeyCode.S) then mx = mx - camLook.X; mz = mz - camLook.Z end
-    if UserInputService:IsKeyDown(Enum.KeyCode.A) then mx = mx - camRight.X; mz = mz - camRight.Z end
-    if UserInputService:IsKeyDown(Enum.KeyCode.D) then mx = mx + camRight.X; mz = mz + camRight.Z end
-
-    local baseSpeed = 16
-    local targetSpeed = baseSpeed * multiplier
-    local currentVel = rootPart.AssemblyLinearVelocity
-
-    local mag = math.sqrt(mx * mx + mz * mz)
-    if mag > 0 then
-        local inv = targetSpeed / mag
-        rootPart.AssemblyLinearVelocity = Vector3.new(mx * inv, currentVel.Y, mz * inv)
-    else
-        rootPart.AssemblyLinearVelocity = Vector3.new(0, currentVel.Y, 0)
-    end
-end
-
-
 -- Update Kill All
 local function updateKillAll()
     local autoEnabled = Toggles.ExploitKillAll and Toggles.ExploitKillAll.Value
@@ -2135,7 +2154,7 @@ local function updateKillAll()
 
     local gunName = "AWP"
     local gunRef = gun
-    local rsWeapons = WeaponsFolder
+    local rsWeapons = getWeaponsFolder()
     local awpFolder = rsWeapons and rsWeapons:FindFirstChild("AWP")
     if awpFolder then gunRef = awpFolder end
 
@@ -2226,7 +2245,7 @@ end
 
 -- Update full auto
 updateFullAuto = function()
-    local Weapons = WeaponsFolder
+    local Weapons = getWeaponsFolder()
     if not Weapons then return end
 
     if Toggles.MiscFullAuto and Toggles.MiscFullAuto.Value then
@@ -2256,7 +2275,7 @@ end
 
 -- Config section
 local ConfigSection = Tabs.Config:AddLeftGroupbox('Menu')
-ConfigSection:AddButton('Unload', function()
+local function unloadValenok()
     -- Restore namecall hook
     restoreNamecallHook()
     getgenv().PSilentTargetPos = nil
@@ -2308,16 +2327,20 @@ ConfigSection:AddButton('Unload', function()
         pcall(function() GrenadeRuntime.Folder:Destroy() end)
     end
 
+    -- Cleanup HitSound
+    if _hitSoundObj then pcall(function() _hitSoundObj:Destroy() end) end
+
     -- Cleanup Hit Chams
     if HitChamsState.ChamsFolder then
         HitChamsState.ChamsFolder:Destroy()
     end
-    if HitChamsState.Connections then
-        for _, conn in ipairs(HitChamsState.Connections) do
+    for _, conns in pairs(HitChamsState.PlayerConns) do
+        for _, conn in ipairs(conns) do
             pcall(function() conn:Disconnect() end)
         end
-        table.clear(HitChamsState.Connections)
     end
+    table.clear(HitChamsState.PlayerConns)
+    table.clear(HitChamsState.ObservedPlayers)
 
     -- Reset Third Person
     pcall(function()
@@ -2352,7 +2375,7 @@ ConfigSection:AddButton('Unload', function()
     restoreAllFullAutoValues()
 
     -- Reset RCS
-    local Weapons = WeaponsFolder
+    local Weapons = getWeaponsFolder()
     if Weapons then
         for weaponName, original in pairs(RCSOriginalValues) do
             local weaponFolder = Weapons:FindFirstChild(weaponName)
@@ -2393,7 +2416,9 @@ ConfigSection:AddButton('Unload', function()
     table.clear(InstaWeaponState.SavedReloadTimes)
 
     Library:Unload()
-end)
+end
+getgenv().ValenokUnload = unloadValenok
+ConfigSection:AddButton('Unload', unloadValenok)
 ConfigSection:AddLabel('Menu bind'):AddKeyPicker('MenuKeybind', { Default = 'End', NoUI = true, Text = 'Menu' })
 
 Library.ToggleKeybind = Options.MenuKeybind
@@ -2472,6 +2497,8 @@ local function isTriggerbotKeyActive()
 end
 
 local function updateTriggerbot()
+    local Camera = getCamera()
+    if not Camera then return end
     if not Toggles.TriggerbotEnable or not Toggles.TriggerbotEnable.Value then
         return
     end
@@ -2939,6 +2966,13 @@ end
 EspRuntime.Connections.PlayerRemoving = Players.PlayerRemoving:Connect(function(Player)
     removeDrawingSet(Player)
     removeHighlight(Player)
+    HitChamsState.ObservedPlayers[Player] = nil
+    if HitChamsState.PlayerConns[Player] then
+        for _, conn in ipairs(HitChamsState.PlayerConns[Player]) do
+            pcall(function() conn:Disconnect() end)
+        end
+        HitChamsState.PlayerConns[Player] = nil
+    end
 end)
 
 
@@ -3051,7 +3085,7 @@ local function isHoldingNade()
     if gun and gun:FindFirstChild("Grenade") then return true end
     local eqVal = lp.Character:FindFirstChild("EquippedTool")
     if eqVal and type(eqVal.Value) == "string" then
-        local weaponDef = WeaponsFolder
+        local weaponDef = getWeaponsFolder()
         if weaponDef then
             local w = weaponDef:FindFirstChild(eqVal.Value)
             if w and w:FindFirstChild("Grenade") then return true end
@@ -3099,6 +3133,8 @@ EspRuntime.Connections.GrenadeInputEnded = UserInputService.InputEnded:Connect(f
 end)
 
 local function updateGrenadePrediction(dt)
+    local Camera = getCamera()
+    if not Camera then return end
     if not Toggles.GrenadesPrediction or not Toggles.GrenadesPrediction.Value then
         for _, b in pairs(GrenadeRuntime.Beams) do b.Enabled = false end
         GrenadeRuntime.Sphere.Transparency = 1
@@ -3222,7 +3258,10 @@ local function setupWeaponChangeListener(character)
     if not character then return end
     local eqTool = character:WaitForChild("EquippedTool", 5)
     if not eqTool then return end
-    eqTool.Changed:Connect(function()
+    if EspRuntime.Connections.EquippedToolChanged then
+        pcall(function() EspRuntime.Connections.EquippedToolChanged:Disconnect() end)
+    end
+    EspRuntime.Connections.EquippedToolChanged = eqTool.Changed:Connect(function()
         if Toggles.GunModsRapidFire and Toggles.GunModsRapidFire.Value then
             updateRapidFire()
         end
@@ -3243,6 +3282,7 @@ local lastEspUpdate = 0
 local watermarkFps = 0
 local watermarkFrames = 0
 local watermarkLastUpdate = 0
+local lastRemovalsCheck = 0
 
 EspRuntime.Connections.RenderStepped = RunService.RenderStepped:Connect(function(dt)
     local now = tick()
@@ -3270,14 +3310,18 @@ EspRuntime.Connections.RenderStepped = RunService.RenderStepped:Connect(function
         end
     end
 
+    if now - lastRemovalsCheck >= 2 then
+        lastRemovalsCheck = now
+        if Toggles.RemovalsNoScope and Toggles.RemovalsNoScope.Value then updateNoScope() end
+        if Toggles.RemovalsNoFlash and Toggles.RemovalsNoFlash.Value then updateNoFlash() end
+    end
+
     updateFovCircle()
     updateAimBot()
     updateRagebot()
     updateThirdPerson()
     updateTriggerbot()
     updateAntiAim()
-    updateBhop()
-    updateFastWalk()
     updateStrafe()
     updateAirStrafe()
     updateGrenadePrediction(dt)
@@ -3292,9 +3336,9 @@ EspRuntime.Connections.KillAllHeartbeat = RunService.Heartbeat:Connect(function(
         updateKillAll()
     end
 end)
-
-print("123")
-
+print("Valenok")
+print("version: recode")
+print("open/close menu end")
 -- Build coАnfig
 SaveManager:BuildConfigSection(Tabs.Config)
 ThemeManager:ApplyToTab(Tabs.Config)
