@@ -1081,7 +1081,7 @@ local function updateAimBot(dt)
     local targetPart = Cache:get("AimTarget")
     if not isPartTargetable(targetPart, screenCenter, fovRadius) then
         targetPart = getClosestAimTarget(screenCenter, fovRadius)
-        Cache:set("AimTarget", targetPart, 1/30)
+        Cache:set("AimTarget", targetPart, 0)
     end
 
     if not targetPart then return end
@@ -1414,36 +1414,34 @@ local function applyTriggerbotMagnet(cam, now)
     if cached then
         magnetTarget = cached
     else
-        if now - (TriggerbotState.LastMagnetScan or 0) >= (1/30) then
-            TriggerbotState.LastMagnetScan = now
-            for _, player in ipairs(Players:GetPlayers()) do
-                if player == LocalPlayer then continue end
-                if not isTriggerEnemy(player) then continue end
+        TriggerbotState.LastMagnetScan = now
+        for _, player in ipairs(Players:GetPlayers()) do
+            if player == LocalPlayer then continue end
+            if not isTriggerEnemy(player) then continue end
 
-                local character = player.Character
-                if not character then continue end
-                local humanoid = character:FindFirstChildOfClass("Humanoid")
-                if not humanoid or humanoid.Health <= 0 then continue end
+            local character = player.Character
+            if not character then continue end
+            local humanoid = character:FindFirstChildOfClass("Humanoid")
+            if not humanoid or humanoid.Health <= 0 then continue end
 
-                local magnetHitboxes = {"Head", "HeadHB", "HumanoidRootPart", "UpperTorso", "Torso"}
-                for _, partName in ipairs(magnetHitboxes) do
-                    local part = character:FindFirstChild(partName)
-                    if part and part:IsA("BasePart") then
-                        local screenPoint = cam:WorldToViewportPoint(part.Position)
-                        if screenPoint.Z > 0 then
-                            local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - mousePos).Magnitude
-                            if dist <= magnetFov and dist < bestDistance then
-                                if isStrictRayVisible(part) then
-                                    bestDistance = dist
-                                    magnetTarget = part
-                                end
+            local magnetHitboxes = {"Head", "HeadHB", "HumanoidRootPart", "UpperTorso", "Torso"}
+            for _, partName in ipairs(magnetHitboxes) do
+                local part = character:FindFirstChild(partName)
+                if part and part:IsA("BasePart") then
+                    local screenPoint = cam:WorldToViewportPoint(part.Position)
+                    if screenPoint.Z > 0 then
+                        local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - mousePos).Magnitude
+                        if dist <= magnetFov and dist < bestDistance then
+                            if isStrictRayVisible(part) then
+                                bestDistance = dist
+                                magnetTarget = part
                             end
                         end
                     end
                 end
             end
-            Cache:set("MagnetTarget", magnetTarget, 1/30)
         end
+        Cache:set("MagnetTarget", magnetTarget, 0)
     end
 
     if magnetTarget then
@@ -2109,7 +2107,9 @@ updateFly = function()
             if not char then return end
             local rootPart = char:FindFirstChild("HumanoidRootPart")
             local humanoid = char:FindFirstChildOfClass("Humanoid")
-            if not rootPart or not humanoid or humanoid.Health <= 0 then return end
+            if not rootPart or not humanoid or humanoid.Health <= 0 then
+                if humanoid then humanoid.PlatformStand = false end
+                return end
 
             humanoid.PlatformStand = true
 
@@ -4091,6 +4091,7 @@ VisualSections.Self:AddSlider('SelfFOV', {Text = 'FOV value', Default = 70, Min 
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
 SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({ 'SkinKnifeSkin', 'SkinWeaponSkin', 'SkinGloveSkin' })
 ThemeManager:SetFolder('Valenok')
 SaveManager:SetFolder('Valenok')
 
