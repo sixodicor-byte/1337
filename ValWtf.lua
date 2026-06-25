@@ -976,34 +976,60 @@ local function getRagebotTarget()
                 end
             end
         else
-            -- head priority
-            targetPart = findRagebotHeadPart(character)
+            local selectedHitbox = Options.RagebotHitbox and Options.RagebotHitbox.Value or "Head"
 
-            -- body fallback
-            if not targetPart then
-                local screenCenter = Vector2.new(Camera.ViewportSize.X * 0.5, Camera.ViewportSize.Y * 0.5)
-                targetPart = findRagebotBodyPart(character, screenCenter)
+            if selectedHitbox == "Nearest" then
+                targetPart = findRagebotHeadPart(character)
+                if not targetPart then
+                    local screenCenter = Vector2.new(Camera.ViewportSize.X * 0.5, Camera.ViewportSize.Y * 0.5)
+                    local priorityGroups = {
+                        { "UpperTorso", "LowerTorso", "Torso", "HumanoidRootPart" },
+                        { "LeftUpperArm", "LeftLowerArm", "LeftHand", "RightUpperArm", "RightLowerArm", "RightHand" },
+                        { "LeftUpperLeg", "LeftLowerLeg", "LeftFoot", "RightUpperLeg", "RightLowerLeg", "RightFoot" },
+                    }
+                    for _, group in ipairs(priorityGroups) do
+                        local bestDist = math.huge
+                        local bestPart = nil
+                        for _, partName in ipairs(group) do
+                            local part = findCharacterPart(character, partName)
+                            if part then
+                                local sp = Camera:WorldToViewportPoint(part.Position)
+                                if sp.Z > 0 then
+                                    local d = (Vector2.new(sp.X, sp.Y) - screenCenter).Magnitude
+                                    if d < bestDist then
+                                        bestDist = d
+                                        bestPart = part
+                                    end
+                                end
+                            end
+                        end
+                        if bestPart then
+                            targetPart = bestPart
+                            break
+                        end
+                    end
+                end
+            elseif selectedHitbox == "Body" then
+                local bodyFallbacks = { "UpperTorso", "LowerTorso", "Torso", "HumanoidRootPart" }
+                for _, bName in ipairs(bodyFallbacks) do
+                    local bPart = findCharacterPart(character, bName)
+                    if bPart then
+                        targetPart = bPart
+                        break
+                    end
+                end
+            else
+                targetPart = findRagebotHeadPart(character)
+                if not targetPart then
+                    local screenCenter = Vector2.new(Camera.ViewportSize.X * 0.5, Camera.ViewportSize.Y * 0.5)
+                    targetPart = findRagebotBodyPart(character, screenCenter)
+                end
             end
         end
 
         if not targetPart then continue end
 
         evaluatePart(targetPart, character)
-
-        -- camera resolver
-        if Toggles.RagebotCameraResolver and Toggles.RagebotCameraResolver.Value then
-            local cameraCF = player:FindFirstChild("CameraCF")
-            if cameraCF and cameraCF.Value then
-                local camPos = cameraCF.Value.Position
-                if camPos == camPos and (camPos - rootPart.Position).Magnitude > 8 then
-                    local fakePart = setmetatable({}, {__index = function(_, k)
-                        if k == "Position" then return camPos end
-                        return rootPart[k]
-                    end})
-                    evaluatePart(fakePart, character)
-                end
-            end
-        end
     end
 
     return bestPart
@@ -1018,25 +1044,11 @@ local function updateRagebot()
 
     if not ragebotEnabled or not keyActive then
         getgenv().PSilentTargetPos = nil
-        Cache:invalidate("RageTarget")
         return
     end
 
     local now = tick()
-    local targetPart = Cache:get("RageTarget")
-
-    if not targetPart or not targetPart.Parent then
-        targetPart = getRagebotTarget()
-        Cache:set("RageTarget", targetPart, 1/30)
-    else
-        -- validate cached target still alive
-        local character = targetPart:FindFirstAncestorOfClass('Model')
-        local humanoid = character and character:FindFirstChildOfClass('Humanoid')
-        if not humanoid or humanoid.Health <= 0 then
-            targetPart = getRagebotTarget()
-            Cache:set("RageTarget", targetPart, 1/30)
-        end
-    end
+    local targetPart = getRagebotTarget()
 
     if targetPart then
         getgenv().PSilentTargetPos = targetPart.Position
@@ -1055,7 +1067,7 @@ local function updateRagebot()
                         local mouseY = mouse.Y
                         pcall(function()
                             VirtualInputManager:SendMouseButtonEvent(mouseX, mouseY, 0, true, game, 1)
-                            task.wait(0.1)
+                            task.wait(0.05)
                             VirtualInputManager:SendMouseButtonEvent(mouseX, mouseY, 0, false, game, 1)
                         end)
                         RagebotState.Firing = false
@@ -3342,7 +3354,6 @@ RageSections.Ragebot:AddLabel('Keybind'):AddKeyPicker('RagebotKeybind', {Default
 RageSections.Ragebot:AddToggle('RagebotAutoFire', {Text = 'Automatic fire', Default = false})
 RageSections.Ragebot:AddToggle('RagebotTeamCheck', {Text = 'Team check', Default = false})
 RageSections.Ragebot:AddToggle('RagebotVisCheck', {Text = 'Vis check', Default = false})
-RageSections.Ragebot:AddToggle('RagebotCameraResolver', {Text = 'Camera resolver', Default = false})
 RageSections.Ragebot:AddToggle('RagebotShowFOV', {Text = 'Show FOV', Default = false})
 RageSections.Ragebot:AddSlider('RagebotFOV', {Text = 'FOV', Default = 1, Min = 1, Max = 180, Rounding = 0})
 RageSections.Ragebot:AddDropdown('RagebotHitbox', {Values = { 'Head', 'Body', 'Nearest' }, Default = 'Head', Text = 'Hit box'})
