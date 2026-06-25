@@ -90,7 +90,7 @@ local CONSTANTS = {
     },
     RealHitboxLookup = {},
     RAPID_FIRE_MULTIPLIERS = {
-        AWP = 7, Scout = 7, G3SG1 = 5, USP = 3, DesertEagle = 3, ["AK-47"] = 3,
+        AWP = 6, Scout = 6, G3SG1 = 4, USP = 3, DesertEagle = 3, ["AK-47"] = 3,
     },
     GRENADE_PARAMS = {
         LOOK_SPEED = 100,
@@ -683,7 +683,7 @@ for i = 1, PEEK_CIRCLE_SEGMENTS do
     ln.Visible      = false
     ln.Thickness    = 2
     ln.Transparency = 1
-    ln.Color        = Color3.fromRGB(255, 60, 60)
+    ln.Color        = Color3.fromRGB(135, 206, 250)
     PeekDraw.CircleLines[i] = ln
 end
 
@@ -691,8 +691,8 @@ for i = 1, PEEK_FILL_SEGMENTS do
     local ln = Drawing.new("Line")
     ln.Visible      = false
     ln.Thickness    = 1
-    ln.Transparency = 0.45
-    ln.Color        = Color3.fromRGB(255, 80, 80)
+    ln.Transparency = 0.5
+    ln.Color        = Color3.fromRGB(135, 206, 250)
     PeekDraw.FillLines[i] = ln
 end
 
@@ -755,6 +755,57 @@ local function isPeekKeybindActive()
     return isKeybindActive(Options.PeekAssistKeybind)
 end
 
+local function retreatToSaved(savedCF)
+    PeekAssist.Returning = true
+    task.spawn(function()
+        local char = LocalPlayer.Character
+        local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+        local hum  = char and char:FindFirstChildOfClass("Humanoid")
+        if hrp then
+            local baseSpeed = (hum and hum.WalkSpeed and hum.WalkSpeed > 0) and hum.WalkSpeed or 16
+            local moveSpeed = baseSpeed * 4
+            local targetPos = savedCF.Position
+            local deadline  = tick() + 3
+            local lastT     = tick()
+
+            while PeekAssist.Returning and tick() < deadline do
+                local c2 = LocalPlayer.Character
+                local h2 = c2 and c2:FindFirstChild("HumanoidRootPart")
+                if not h2 then break end
+
+                local now = tick()
+                local dt  = now - lastT
+                lastT = now
+
+                local cur      = h2.Position
+                local toTarget = targetPos - cur
+                local dist     = toTarget.Magnitude
+                if dist < 0.5 then
+                    pcall(function() h2.CFrame = savedCF end)
+                    break
+                end
+
+                local step = moveSpeed * dt
+                if step >= dist then
+                    pcall(function() h2.CFrame = savedCF end)
+                    break
+                else
+                    local newPos = cur + toTarget.Unit * step
+                    pcall(function() h2.CFrame = CFrame.new(newPos, newPos + h2.CFrame.lookVector) end)
+                end
+                RunService.RenderStepped:Wait()
+            end
+
+            local c3 = LocalPlayer.Character
+            local h3 = c3 and c3:FindFirstChild("HumanoidRootPart")
+            if h3 then pcall(function() h3.CFrame = savedCF end) end
+        end
+        PeekAssist.Returning   = false
+        PeekAssist.SavedCFrame = nil
+        PeekAssist.Active      = false
+    end)
+end
+
 local function updatePeekAssist()
     if not Toggles.PeekAssistEnable or not Toggles.PeekAssistEnable.Value then
         hidePeekCircle()
@@ -778,12 +829,16 @@ local function updatePeekAssist()
             PeekAssist.Active      = true
             PeekAssist.Returning   = false
         end
-    elseif not bindOn then
+    elseif not bindOn and PeekAssist.LastBindOn then
         PeekAssist.Active = false
-        if not PeekAssist.Returning then
-            PeekAssist.SavedCFrame = nil
+        if not PeekAssist.Returning and PeekAssist.SavedCFrame then
+            local retreatMode = Options.PeekAssistRetreatMode and Options.PeekAssistRetreatMode.Value or "On Key"
+            if retreatMode == "On Key" then
+                retreatToSaved(PeekAssist.SavedCFrame)
+            else
+                PeekAssist.SavedCFrame = nil
+            end
         end
-        PeekAssist.Returning = false
     end
     PeekAssist.LastBindOn = bindOn
 
@@ -836,52 +891,7 @@ peekAssistOnShot = function()
     local retreatMode = Options.PeekAssistRetreatMode and Options.PeekAssistRetreatMode.Value or "On Key"
     if retreatMode ~= "On Shot" then return end
     if not PeekAssist.SavedCFrame then return end
-    local savedCF = PeekAssist.SavedCFrame
-    PeekAssist.Returning = true
-    task.spawn(function()
-        local char = LocalPlayer.Character
-        local hrp  = char and char:FindFirstChild("HumanoidRootPart")
-        local hum  = char and char:FindFirstChildOfClass("Humanoid")
-        if hrp then
-            local baseSpeed = (hum and hum.WalkSpeed and hum.WalkSpeed > 0) and hum.WalkSpeed or 16
-            local moveSpeed = baseSpeed * 4
-            local targetPos = savedCF.Position
-            local deadline  = tick() + 3
-            local lastT     = tick()
-
-            while PeekAssist.Returning and tick() < deadline do
-                local c2 = LocalPlayer.Character
-                local h2 = c2 and c2:FindFirstChild("HumanoidRootPart")
-                if not h2 then break end
-
-                local now = tick()
-                local dt  = now - lastT
-                lastT = now
-
-                local cur      = h2.Position
-                local toTarget = targetPos - cur
-                local dist     = toTarget.Magnitude
-                if dist < 1 then break end
-
-                local step = moveSpeed * dt
-                if step >= dist then
-                    pcall(function() h2.CFrame = savedCF end)
-                    break
-                else
-                    local newPos = cur + toTarget.Unit * step
-                    pcall(function() h2.CFrame = (h2.CFrame - h2.CFrame.Position) + newPos end)
-                end
-                task.wait()
-            end
-
-            local c3 = LocalPlayer.Character
-            local h3 = c3 and c3:FindFirstChild("HumanoidRootPart")
-            if h3 then pcall(function() h3.CFrame = savedCF end) end
-        end
-        PeekAssist.Returning   = false
-        PeekAssist.SavedCFrame = nil
-        PeekAssist.Active      = false
-    end)
+    retreatToSaved(PeekAssist.SavedCFrame)
 end
 
 local RapidFireState = { SavedFireRates = {} }
