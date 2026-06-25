@@ -1575,7 +1575,11 @@ local function updateAntiAim()
             elseif pitchMode == "Random" then
                 local pitchSpeedMs = Options.AntiAimPitchRandomSpeed and Options.AntiAimPitchRandomSpeed.Value or 1
                 if (tick() - AntiAimState.PitchRandomLastSwitch) * 1000 >= pitchSpeedMs then
-                    AntiAimState.PitchRandomAngle = math.random(-10, 10) / 10
+                    local newPitch = math.random(-10, 10) / 10
+                    while math.abs(newPitch - AntiAimState.PitchRandomAngle) < 0.2 do
+                        newPitch = math.random(-10, 10) / 10
+                    end
+                    AntiAimState.PitchRandomAngle = newPitch
                     AntiAimState.PitchRandomLastSwitch = tick()
                 end
                 pitch = AntiAimState.PitchRandomAngle
@@ -2335,16 +2339,16 @@ local function getDrawingSet(player)
         HealthBarFill = createSquare(1, Color3.fromRGB(0, 255, 0)),
         HealthText = createText(13),
         CornerLines = {
-            createLine(2, Color3.fromRGB(255,255,255)), createLine(2, Color3.fromRGB(255,255,255)),
-            createLine(2, Color3.fromRGB(255,255,255)), createLine(2, Color3.fromRGB(255,255,255)),
-            createLine(2, Color3.fromRGB(255,255,255)), createLine(2, Color3.fromRGB(255,255,255)),
-            createLine(2, Color3.fromRGB(255,255,255)), createLine(2, Color3.fromRGB(255,255,255)),
+            createLine(1, Color3.fromRGB(255,255,255)), createLine(1, Color3.fromRGB(255,255,255)),
+            createLine(1, Color3.fromRGB(255,255,255)), createLine(1, Color3.fromRGB(255,255,255)),
+            createLine(1, Color3.fromRGB(255,255,255)), createLine(1, Color3.fromRGB(255,255,255)),
+            createLine(1, Color3.fromRGB(255,255,255)), createLine(1, Color3.fromRGB(255,255,255)),
         },
         CornerOutlines = {
-            createLine(4, Color3.fromRGB(0,0,0)), createLine(4, Color3.fromRGB(0,0,0)),
-            createLine(4, Color3.fromRGB(0,0,0)), createLine(4, Color3.fromRGB(0,0,0)),
-            createLine(4, Color3.fromRGB(0,0,0)), createLine(4, Color3.fromRGB(0,0,0)),
-            createLine(4, Color3.fromRGB(0,0,0)), createLine(4, Color3.fromRGB(0,0,0)),
+            createLine(3, Color3.fromRGB(0,0,0)), createLine(3, Color3.fromRGB(0,0,0)),
+            createLine(3, Color3.fromRGB(0,0,0)), createLine(3, Color3.fromRGB(0,0,0)),
+            createLine(3, Color3.fromRGB(0,0,0)), createLine(3, Color3.fromRGB(0,0,0)),
+            createLine(3, Color3.fromRGB(0,0,0)), createLine(3, Color3.fromRGB(0,0,0)),
         },
     }
     drawingSet.BoxFill.Filled = true
@@ -4153,7 +4157,7 @@ pcall(function()
                         elseif pitchMode == "Up" then
                             hookArgs[1] = 1
                         elseif pitchMode == "Random" then
-                            hookArgs[1] = math.random(-10, 10) / 10
+                            hookArgs[1] = AntiAimState.PitchRandomAngle
                         end
                         return _oldNamecall(self, unpack(hookArgs))
                     end
