@@ -1935,6 +1935,13 @@ do
             Toggle:AddColorPicker(CpIdx, CpInfo)
         end
 
+        if Info.KeyPicker then
+            local KpInfo = Info.KeyPicker
+            local KpIdx = KpInfo.Idx or (Idx .. '_Keybind')
+            KpInfo.Idx = nil
+            Toggle:AddKeyPicker(KpIdx, KpInfo)
+        end
+
         return Toggle;
     end;
 
