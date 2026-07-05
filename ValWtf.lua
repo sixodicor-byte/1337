@@ -5830,9 +5830,9 @@ EspRuntime.Connections.KillAllHeartbeat = RunService.Heartbeat:Connect(function(
 end)
 
 print("Valenok")
-print("version: recode")
+print("version: 3.2")
 print("open/close menu end")
-
+print("status: discontinued")
 Library:OnUnload(function()
     getgenv().ValenokUnload = nil
     if SC.State.armsConn then SC.State.armsConn:Disconnect(); SC.State.armsConn = nil end
