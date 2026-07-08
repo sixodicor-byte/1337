@@ -1,5 +1,5 @@
 -- services
-setfpscap(400)
+setfpscap(600)
 if getgenv().ValenokUnload then pcall(getgenv().ValenokUnload) end
 
 local Players = game:GetService("Players")
@@ -542,10 +542,6 @@ local function getNearestSilentTarget()
     local useVisibleCheck = Toggles.RagebotVisCheck and Toggles.RagebotVisCheck.Value
     local useTeamCheck = Toggles.RagebotTeamCheck and Toggles.RagebotTeamCheck.Value
     local selectedHitbox = Options.RagebotHitbox and Options.RagebotHitbox.Value or "Head"
-    
-    -- For Auto Fire, always check walls regardless of VisCheck setting
-    local autoFireActive = Toggles.RagebotAutoFire and Toggles.RagebotAutoFire.Value
-    local forceWallCheck = autoFireActive
 
     local nearestPart = nil
     local nearestDist = math.huge
@@ -580,8 +576,7 @@ local function getNearestSilentTarget()
         local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
         if not onScreen then continue end
 
-        -- Always check walls for Auto Fire, otherwise respect VisCheck setting
-        if (useVisibleCheck or forceWallCheck) and not isVisibleWithWalls(targetPart, maxWalls) then continue end
+        if useVisibleCheck and not isVisibleWithWalls(targetPart, maxWalls) then continue end
 
         local dist = (Vector2.new(screenPos.X, screenPos.Y) - aimPos).Magnitude
         if dist < nearestDist and dist <= fovPixels then
@@ -594,87 +589,43 @@ local function getNearestSilentTarget()
 end
 
 
-local TracerPool = { available = {}, active = {}, count = 0, nextId = 1, maxSize = 30 }
-
-local function createTracerSet()
-    local holderPart = Instance.new("Part")
-    holderPart.Size = Vector3.new(0.1, 0.1, 0.1)
-    holderPart.Transparency = 1
-    holderPart.CanCollide = false
-    holderPart.Anchored = true
-    holderPart.Parent = workspace
-
-    local attachment0 = Instance.new("Attachment", holderPart)
-
-    local targetPart = Instance.new("Part")
-    targetPart.Size = Vector3.new(0.1, 0.1, 0.1)
-    targetPart.Transparency = 1
-    targetPart.CanCollide = false
-    targetPart.Anchored = true
-    targetPart.Parent = workspace
-
-    local attachment1 = Instance.new("Attachment", targetPart)
-
-    local beam = Instance.new("Beam")
-    beam.LightEmission = 1
-    beam.LightInfluence = 0
-    beam.Transparency = NumberSequence.new({
-        NumberSequenceKeypoint.new(0, 0.3),
-        NumberSequenceKeypoint.new(1, 0.3),
-    })
-    beam.Width0 = 0.25
-    beam.Width1 = 0.25
-    beam.Attachment0 = attachment0
-    beam.Attachment1 = attachment1
-    beam.FaceCamera = true
-    beam.Enabled = false
-    beam.Parent = holderPart
-
-    return { holderPart = holderPart, targetPart = targetPart, beam = beam, attachment0 = attachment0, attachment1 = attachment1 }
-end
-
-local function returnTracerToPool(set, idx)
-    set.beam.Enabled = false
-    TracerPool.active[idx] = nil
-    TracerPool.available[#TracerPool.available + 1] = set
-end
-
 local function drawBulletTracer(startPos, endPos)
     if not Toggles.MiscBulletTracer or not Toggles.MiscBulletTracer.Value then return end
 
-    local color = getOptionColor("MiscBulletTracerColor", Color3.fromRGB(255, 0, 0))
-    local tracerMode = Options.MiscBulletTracerTexture and Options.MiscBulletTracerTexture.Value or "Laser"
-    local textureId = CONSTANTS.TracerTextureMap[tracerMode] or CONSTANTS.TracerTextureMap["Laser"]
+    local color = getOptionColor("MiscBulletTracerColor", Color3.fromRGB(150, 20, 60))
+    local tracerMode = Options.MiscBulletTracerTexture and Options.MiscBulletTracerTexture.Value or "Solid"
+    local textureId = CONSTANTS.TracerTextureMap[tracerMode] or CONSTANTS.TracerTextureMap["Solid"]
+    local faceCamera = Toggles.MiscBulletTracerFaceCamera and Toggles.MiscBulletTracerFaceCamera.Value or false
 
-    local set = TracerPool.available[#TracerPool.available]
-    if set then
-        TracerPool.available[#TracerPool.available] = nil
-    elseif TracerPool.count < TracerPool.maxSize then
-        TracerPool.count = TracerPool.count + 1
-        set = createTracerSet()
-    else
-        return
-    end
+    local att0 = Instance.new("Attachment")
+    local att1 = Instance.new("Attachment")
+    att0.WorldPosition = startPos
+    att1.WorldPosition = endPos
+    att0.Parent = workspace.Terrain
+    att1.Parent = workspace.Terrain
 
-    set.holderPart.Position = startPos
-    set.targetPart.Position = endPos
-    set.beam.Color = ColorSequence.new(color)
-    set.beam.Texture = textureId
-    set.beam.Enabled = true
+    local beam = Instance.new("Beam")
+    beam.Attachment0 = att0
+    beam.Attachment1 = att1
+    beam.Width0 = 0.5
+    beam.Width1 = 0.5
+    beam.Color = ColorSequence.new(color)
+    beam.FaceCamera = faceCamera
+    beam.Texture = textureId
+    beam.LightEmission = 1
+    beam.LightInfluence = 0
+    beam.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0),
+        NumberSequenceKeypoint.new(1, 0),
+    })
+    beam.Parent = workspace.Terrain
 
-    local idx = TracerPool.nextId
-    TracerPool.nextId = TracerPool.nextId + 1
-    TracerPool.active[idx] = set
-
-    task.delay(1.4, function()
-        if TracerPool.active[idx] == set then
-            returnTracerToPool(set, idx)
-        end
-    end)
+    Debris:AddItem(beam, 1)
+    Debris:AddItem(att0, 1)
+    Debris:AddItem(att1, 1)
 end
 
-
-local _hitSoundObj, PlayHitSound, ShowHitMarker
+local _hitSoundObj, PlayHitMarker
 
 local HitMarkerState = {
     OutlineLines = {},
@@ -687,6 +638,64 @@ local HitMarkerState = {
     FadeDuration = 0.3,
     HeartbeatConn = nil,
 }
+
+local HitChamsState = {
+    Cooldown = false,
+    ActiveChams = 0,
+}
+
+local HIT_CHAMS_IGNORE = {
+    "HumanoidRootPart",
+    "FakeHead",
+    "C4",
+    "Gun"
+}
+
+local function hitChams(player, customColor, transparency, lifetime)
+    if not player or not player.Character or HitChamsState.Cooldown then return end
+    if HitChamsState.ActiveChams >= CONSTANTS.MAX_HIT_CHAMS_CLONES then return end
+    
+    HitChamsState.Cooldown = true
+    HitChamsState.ActiveChams = HitChamsState.ActiveChams + 1
+    
+    task.delay(0.05, function()
+        HitChamsState.Cooldown = false
+    end)
+    
+    local color = customColor or getOptionColor("MiscHitChamsColor", Color3.fromRGB(200, 30, 80))
+    local fadeTime = lifetime or (Options.MiscHitChamsLifetime and Options.MiscHitChamsLifetime.Value or 1.3)
+    
+    for _, part in ipairs(player.Character:GetChildren()) do
+        if (part:IsA("MeshPart") and part.Transparency ~= 1) or part.Name == "Head" then
+            if not HIT_CHAMS_IGNORE[part.Name] then
+                local clone = part:Clone()
+                clone:ClearAllChildren()
+                clone.Material = Enum.Material.ForceField
+                clone.CFrame = part.CFrame
+                clone.Size = part.Name == "Head" and Vector3.new(1.18, 1.18, 1.18) or clone.Size
+                clone.CanCollide = false
+                clone.Color = color
+                clone.Anchored = true
+                clone.Transparency = transparency or 0
+                clone.Parent = workspace
+                
+                if clone:FindFirstChild("TextureID") then
+                    clone.TextureID = ""
+                end
+                if clone:FindFirstChild("UsePartColor") then
+                    clone.UsePartColor = true
+                end
+                
+                task.delay(fadeTime, function()
+                    if clone and clone.Parent then
+                        clone:Destroy()
+                    end
+                    HitChamsState.ActiveChams = math.max(0, HitChamsState.ActiveChams - 1)
+                end)
+            end
+        end
+    end
+end
 
 local function ensureHitMarkerLines()
     if HitMarkerState.Created then return end
@@ -829,7 +838,7 @@ end
 -- forward declarations
 local updateRCS, updateRapidFire, updateFullAuto, restoreAllRapidFireRates, restoreAllFullAutoValues
 local applyNoRecoil, applyNoSpread, applyInstaEquip, applyInstaReload, fireSingleShot
-local updateThirdPerson, updateThirdPersonNoClip, updateNoclip, updateFly, onAutoJumpChanged, updateAutoCrouch, updateSpeedHack, updateBhop, updateWallTransparency
+local updateBhop, updateLegitBhop, updateThirdPerson, updateThirdPersonNoClip, updateNoclip, updateFly, onAutoJumpChanged, updateAutoCrouch, updateSpeedHack
 local updateGrenadePrediction, updateNoScope, updateNoFlash, applyNoScope, setupNoSmoke
 local ensureCrosshair, updateCrosshair, unloadValenok
 
@@ -2482,88 +2491,108 @@ updateAutoCrouch = function()
     end)
 end
 
+local BhopState = { Conn = nil }
+local LegitBhopState = { Conn = nil, JumpCount = 0, WasInAir = false, DefaultSpeed = 16 }
+local AutoJumpConn
 local NoclipState = { Conn = nil, DescendantConn = nil, Saved = {}, Parts = {}, Character = nil }
 local FlyState = { Conn = nil }
-local BhopState = { Conn = nil, JumpCount = 0, WasInAir = false, DefaultSpeed = 16 }
+
 
 updateBhop = function()
     if BhopState.Conn then
         BhopState.Conn:Disconnect()
         BhopState.Conn = nil
     end
-    BhopState.JumpCount = 0
-    BhopState.WasInAir = false
     local humanoid = MoveUtil.getLocalHumanoid()
     if humanoid then
-        humanoid.WalkSpeed = BhopState.DefaultSpeed
+        humanoid.WalkSpeed = CONSTANTS.DEFAULT_WALK_SPEED
     end
     if not (Toggles.BhopEnable and Toggles.BhopEnable.Value) then return end
 
     BhopState.Conn = RunService.RenderStepped:Connect(function(dt)
         pcall(function()
             local _, hum, rootPart = MoveUtil.getAliveMovementRig()
-            if not hum or not rootPart then return end
-            
+            if not rootPart then return end
+
             local autoJumpEnabled = Toggles.BhopAutoJump and Toggles.BhopAutoJump.Value
             local spaceHeld = UserInputService:IsKeyDown(MoveUtil.MOVE_KEY_SPACE)
             
-            if not autoJumpEnabled and not spaceHeld then
-                BhopState.JumpCount = 0
-                BhopState.WasInAir = hum.FloorMaterial == MoveUtil.AIR_MATERIAL
-                return
-            end
-            
-            local add = 0
-            local keyHeld = false
-            
-            if UserInputService:IsKeyDown(Enum.KeyCode.W) or UserInputService:IsKeyDown(Enum.KeyCode.A) or UserInputService:IsKeyDown(Enum.KeyCode.S) or UserInputService:IsKeyDown(Enum.KeyCode.D) then 
-                keyHeld = true 
-            end
-            if UserInputService:IsKeyDown(Enum.KeyCode.A) then add = 90 end
-            if UserInputService:IsKeyDown(Enum.KeyCode.S) then add = 180 end
-            if UserInputService:IsKeyDown(Enum.KeyCode.D) then add = 270 end
-            if UserInputService:IsKeyDown(Enum.KeyCode.A) and UserInputService:IsKeyDown(Enum.KeyCode.W) then add = 45 end
-            if UserInputService:IsKeyDown(Enum.KeyCode.D) and UserInputService:IsKeyDown(Enum.KeyCode.W) then add = 315 end
-            if UserInputService:IsKeyDown(Enum.KeyCode.D) and UserInputService:IsKeyDown(Enum.KeyCode.S) then add = 225 end
-            if UserInputService:IsKeyDown(Enum.KeyCode.A) and UserInputService:IsKeyDown(Enum.KeyCode.S) then add = 135 end
-            
-            local state = hum:GetState()
-            local onGround = hum.FloorMaterial ~= MoveUtil.AIR_MATERIAL
-                and state ~= Enum.HumanoidStateType.Jumping
-                and state ~= Enum.HumanoidStateType.Freefall
-            
-            if onGround then
-                hum:ChangeState(Enum.HumanoidStateType.Jumping)
+            -- AutoJump mode: auto jump when on ground
+            -- Normal mode: only jump when Space is held
+            if autoJumpEnabled then
+                if hum.FloorMaterial ~= MoveUtil.AIR_MATERIAL then
+                    hum.Jump = true
+                end
+            elseif spaceHeld and hum.FloorMaterial ~= MoveUtil.AIR_MATERIAL then
                 hum.Jump = true
-                BhopState.JumpCount = math.min(BhopState.JumpCount + 1, 5)
             end
-            
-            if keyHeld then
-                local cam = getCamera()
-                if not cam then return end
-                
-                local camCF = cam.CFrame
-                local _, camY, _ = camCF:ToOrientation()
-                local rot = CFrame.new(camCF.Position) * CFrame.Angles(0, camY, 0) * CFrame.Angles(0, math.rad(add), 0)
-                
-                local multiplier = Options.BhopMultiplier and Options.BhopMultiplier.Value or 1
-                local baseSpeed = CONSTANTS.DEFAULT_WALK_SPEED
-                
-                -- Speed acceleration based on jump count
-                local speedMultiplier = 1 + (BhopState.JumpCount / 5) * (multiplier - 1)
-                local targetSpeed = baseSpeed * speedMultiplier
-                
-                local cfSpeed = targetSpeed / 300
-                local moveDir = rot.LookVector.Unit
-                rootPart.CFrame = rootPart.CFrame + Vector3.new(moveDir.X * cfSpeed, 0, moveDir.Z * cfSpeed)
-            end
-            
-            BhopState.WasInAir = not onGround
+
+            local multiplier = Options.BhopMultiplier and Options.BhopMultiplier.Value or 1
+            if not multiplier or multiplier <= 0 then multiplier = 1 end
+            local targetSpeed = CONSTANTS.DEFAULT_WALK_SPEED * multiplier
+            hum.WalkSpeed = targetSpeed
+
+            local cam = getCamera()
+            if not cam then return end
+            MoveUtil.applyCameraCFrameMove(rootPart, cam, targetSpeed, dt)
         end)
     end)
 end
 
 
+updateLegitBhop = function()
+    if LegitBhopState.Conn then
+        LegitBhopState.Conn:Disconnect()
+        LegitBhopState.Conn = nil
+    end
+    LegitBhopState.JumpCount = 0
+    LegitBhopState.WasInAir = false
+    local humanoid = MoveUtil.getLocalHumanoid()
+    if humanoid then
+        humanoid.WalkSpeed = LegitBhopState.DefaultSpeed
+    end
+    if not (Toggles.LegitBhopEnable and Toggles.LegitBhopEnable.Value) then return end
+
+    LegitBhopState.Conn = RunService.RenderStepped:Connect(function()
+        pcall(function()
+            local _, hum, rootPart = MoveUtil.getAliveMovementRig()
+            if not hum then return end
+
+            if not UserInputService:IsKeyDown(MoveUtil.MOVE_KEY_SPACE) then
+                LegitBhopState.JumpCount = 0
+                LegitBhopState.WasInAir = hum.FloorMaterial == MoveUtil.AIR_MATERIAL
+                return
+            end
+
+            local state = hum:GetState()
+            local onGround = hum.FloorMaterial ~= MoveUtil.AIR_MATERIAL
+                and state ~= Enum.HumanoidStateType.Jumping
+                and state ~= Enum.HumanoidStateType.Freefall
+
+            if onGround then
+                hum:ChangeState(Enum.HumanoidStateType.Jumping)
+                hum.Jump = true
+                LegitBhopState.JumpCount = math.min(LegitBhopState.JumpCount + 1, 5)
+
+                -- speed gain ramps up with consecutive bhops, capped to avoid flinging
+                local maxMult = Options.LegitBhopMultiplier and Options.LegitBhopMultiplier.Value or 2
+                local multiplier = 1 + (LegitBhopState.JumpCount / 5) * (maxMult - 1)
+                if rootPart then
+                    local vel = rootPart.AssemblyLinearVelocity
+                    local horizontal = Vector3.new(vel.X, 0, vel.Z)
+                    if horizontal.Magnitude > 1 then
+                        local cap = hum.WalkSpeed * multiplier
+                        local newMag = math.min(horizontal.Magnitude * 1.15, cap)
+                        local boosted = horizontal.Unit * newMag
+                        rootPart.AssemblyLinearVelocity = Vector3.new(boosted.X, vel.Y, boosted.Z)
+                    end
+                end
+            end
+
+            LegitBhopState.WasInAir = not onGround
+        end)
+    end)
+end
 
 
 local function clearNoclipRuntime()
@@ -2676,6 +2705,16 @@ updateFly = function()
 end
 
 
+local function updateStrafe()
+    if not Toggles.StrafeEnable or not Toggles.StrafeEnable.Value then return end
+    MoveUtil.applyStrafeVelocity(false)
+end
+
+
+local function updateAirStrafe()
+    if not Toggles.AirStrafeEnable or not Toggles.AirStrafeEnable.Value then return end
+    MoveUtil.applyStrafeVelocity(true)
+end
 
 
 local ThirdPersonCache = { arms = nil, parts = nil, lastHideState = nil }
@@ -2768,15 +2807,18 @@ onAutoJumpChanged = function()
     end
     if not (Toggles.MiscAutoJump and Toggles.MiscAutoJump.Value) then return end
 
-    AutoJumpConn = UserInputService.InputBegan:Connect(function(input, gameProcessed)
-        if gameProcessed then return end
-        if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == Enum.KeyCode.Space then
-            local character = LocalPlayer.Character
-            local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-            if humanoid and humanoid.Health > 0 then
+    AutoJumpConn = RunService.RenderStepped:Connect(function()
+        pcall(function()
+            if not UserInputService:IsKeyDown(Enum.KeyCode.Space) then return end
+            
+            local _, humanoid = MoveUtil.getAliveMovementRig()
+            if not humanoid then return end
+            
+            -- Only jump if on ground
+            if humanoid.FloorMaterial ~= MoveUtil.AIR_MATERIAL then
                 humanoid.Jump = true
             end
-        end
+        end)
     end)
 end
 
@@ -2796,86 +2838,6 @@ local GrenadeRuntime = {
     RmbDown = false,
 }
 
-local HitChamsState = {
-    Cooldown = false,
-    ActiveChams = {}
-}
-
-local WallTransparencyState = {
-    Conn = nil,
-    OriginalTransparency = {},
-    MapParts = {}
-}
-
-updateWallTransparency = function()
-    local mapObj = Workspace:FindFirstChild("Map")
-    if not mapObj then return end
-    
-    local geometry = mapObj:FindFirstChild("Geometry")
-    if not geometry then return end
-    
-    local transparencyValue = Options.WallTransparencyValue and Options.WallTransparencyValue.Value or 50
-    local targetTransparency = transparencyValue / 100
-    
-    if Toggles.WallTransparency and Toggles.WallTransparency.Value then
-        for _, part in ipairs(geometry:GetDescendants()) do
-            if part:IsA("BasePart") and part.Transparency ~= 1 then
-                if WallTransparencyState.OriginalTransparency[part] == nil then
-                    WallTransparencyState.OriginalTransparency[part] = part.Transparency
-                end
-                part.Transparency = targetTransparency
-            end
-        end
-    else
-        for part, originalTrans in pairs(WallTransparencyState.OriginalTransparency) do
-            if part and part.Parent then
-                pcall(function() part.Transparency = originalTrans end)
-            end
-        end
-        table.clear(WallTransparencyState.OriginalTransparency)
-    end
-end
-
-local function hitChams(targetChar)
-    if not targetChar or not targetChar.Parent then return end
-    if HitChamsState.Cooldown then return end
-    HitChamsState.Cooldown = true
-    task.delay(0.05, function()
-        HitChamsState.Cooldown = false
-    end)
-
-    local color = getOptionColor("MiscHitChamsColor", Color3.fromRGB(200, 30, 80))
-    local container = Instance.new("Model")
-    container.Name = "HitCham_" .. tick()
-    local parts = {}
-    for _, v in next, targetChar:GetChildren() do
-        if v:IsA("BasePart") and v.Transparency ~= 1 then
-            local p = Instance.new("Part")
-            p.Size = v.Size
-            p.CFrame = v.CFrame
-            p.Color = color
-            p.Material = Enum.Material.ForceField
-            p.Transparency = 0.3
-            p.Anchored = true
-            p.CanCollide = false
-            p.Parent = container
-            parts[#parts + 1] = p
-        end
-    end
-    container.Parent = Workspace.CurrentCamera
-    HitChamsState.ActiveChams[container] = true
-    
-    for _, p in next, parts do
-        TweenService:Create(p, TweenInfo.new(1.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Transparency = 1}):Play()
-    end
-    
-    task.delay(1.3, function()
-        if container and container.Parent then
-            pcall(function() container:Destroy() end)
-        end
-        HitChamsState.ActiveChams[container] = nil
-    end)
-end
 
 local AmbienceSavedLighting
 local MiscState = { ambienceDirty = false, grenadeHidden = false }
@@ -3999,10 +3961,7 @@ local HttpService = game:GetService("HttpService")
 local function SC_SaveSkins()
     pcall(function()
         local data = { knife = SC.State.SavedKnifeSkins, weapon = SC.State.SavedWeaponSkins, glove = SC.State.SavedGloveSkins }
-        local json = HttpService:JSONEncode(data)
-        if json then
-            writefile(SC.State.skinFile, json)
-        end
+        writefile(SC.State.skinFile, HttpService:JSONEncode(data))
     end)
 end
 SC.SaveSkins = SC_SaveSkins
@@ -4455,11 +4414,25 @@ MovementSections.SpeedHack:AddSlider('SpeedHackSpeed', {Text = 'Speed', Default 
 MovementSections.Exploits:AddToggle('NoclipEnable', {Text = 'Noclip', Default = false, Callback = function() updateNoclip() end})
 MovementSections.Exploits:AddToggle('FlyEnable', {Text = 'Fly', Default = false, Callback = function() updateFly() end})
 MovementSections.Exploits:AddSlider('FlySpeed', {Text = 'Fly speed', Default = 50, Min = 10, Max = 300, Rounding = 0})
-MovementSections.LegitBhop:AddToggle('LegitBhopEnable', {Text = 'Enable', Default = false})
+MovementSections.LegitBhop:AddToggle('LegitBhopEnable', {Text = 'Enable', Default = false, Callback = function() updateLegitBhop() end})
 MovementSections.LegitBhop:AddSlider('LegitBhopMultiplier', {Text = 'Multiplier', Default = 2, Min = 1, Max = 3, Rounding = 1})
 MovementSections.Bhop:AddToggle('BhopEnable', {Text = 'Enable', Default = false, Callback = function() updateBhop() end})
 MovementSections.Bhop:AddSlider('BhopMultiplier', {Text = 'Bhop multiplier', Default = 1, Min = 1, Max = 5, Rounding = 2})
-MovementSections.Bhop:AddToggle('BhopAutoJump', {Text = 'Auto jump', Default = false, Callback = function() updateBhop() end})
+MovementSections.Bhop:AddToggle('BhopAutoJump', {Text = 'Auto jump', Default = false, Callback = function()
+    if AutoJumpConn then AutoJumpConn:Disconnect(); AutoJumpConn = nil end
+    if not (Toggles.BhopAutoJump and Toggles.BhopAutoJump.Value) then return end
+    AutoJumpConn = RunService.RenderStepped:Connect(function()
+        if not (Toggles.BhopAutoJump and Toggles.BhopAutoJump.Value) then return end
+        if not UserInputService:IsKeyDown(Enum.KeyCode.Space) then return end
+        local character = LocalPlayer.Character
+        if not character then return end
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if not humanoid or humanoid.Health <= 0 then return end
+        if humanoid.FloorMaterial ~= Enum.Material.Air then
+            humanoid.Jump = true
+        end
+    end)
+end})
 MovementSections.Strafe:AddToggle('StrafeEnable', {Text = 'Strafe', Default = false})
 MovementSections.Strafe:AddToggle('AirStrafeEnable', {Text = 'Air strafe', Default = false})
 
@@ -4577,16 +4550,18 @@ RageSections.GunMods:AddToggle('GunModsInstaReload', {Text = 'Insta reload', Def
     end
 end})
 
-VisualSections.Misc:AddToggle('MiscBulletTracer', {Text = 'Bullet tracer', Default = false, ColorPicker = {Idx = 'MiscBulletTracerColor', Default = Color3.fromRGB(255, 0, 0), Title = 'Bullet tracer color'}})
+VisualSections.Misc:AddToggle('MiscBulletTracer', {Text = 'Bullet tracer', Default = false, ColorPicker = {Idx = 'MiscBulletTracerColor', Default = Color3.fromRGB(150, 20, 60), Title = 'Bullet tracer color'}})
+VisualSections.Misc:AddToggle('MiscBulletTracerFaceCamera', {Text = 'Face camera', Default = false})
 VisualSections.Misc:AddDropdown('MiscBulletTracerTexture', {
     Text = 'Tracer texture',
     Values = {"Solid","Lightning","Laser","Twisted Energy","Anime Lazer","Arrow","Minecraft","Alien Energy Ray","Energy Ray","Matrix","Cartoony Eletric"},
-    Default = "Laser",
+    Default = "Solid",
 })
 VisualSections.Misc:AddToggle('MiscHitSound', {Text = 'Hit sound', Default = false})
 VisualSections.Misc:AddDropdown('MiscHitSoundType', {Values = { 'Skeet', 'Neverlose', 'Bameware', 'Bell', 'Bubble', 'Pick', 'Pop', 'Rust', 'Sans', 'Fart', 'Big', 'Vine', 'Bruh', 'Fatality', 'Bonk', 'Minecraft', 'Moan' }, Default = 'Skeet', Text = 'Hit sound type'})
 VisualSections.Misc:AddSlider('MiscHitSoundVolume', {Text = 'Volume', Default = 5, Min = 1, Max = 10, Rounding = 0})
 VisualSections.Misc:AddToggle('MiscHitChams', {Text = 'Hit chams', Default = false, ColorPicker = {Idx = 'MiscHitChamsColor', Default = Color3.fromRGB(200, 30, 80), Title = 'Hit chams color'}})
+VisualSections.Misc:AddSlider('MiscHitChamsLifetime', {Text = 'Hit chams time (s)', Default = 1.3, Min = 1, Max = 5, Rounding = 1})
 VisualSections.Misc:AddToggle('MiscHitMarker', {Text = 'Hit marker', Default = false, ColorPicker = {Idx = 'MiscHitMarkerColor', Default = Color3.fromRGB(255, 255, 255), Title = 'Hit marker color'}})
 VisualSections.Misc:AddSlider('MiscHitMarkerLifetime', {Text = 'Hit marker time (s)', Default = 0.6, Min = 0.2, Max = 5, Rounding = 1})
 VisualSections.Misc:AddToggle('MiscCenterDot', {Text = 'Center dot', Default = true, ColorPicker = {Idx = 'MiscCenterDotColor', Default = Color3.fromRGB(255, 255, 255), Title = 'Center dot color'}})
@@ -4633,6 +4608,7 @@ VisualSections.Radar:AddSlider('RadarRadius', {Text = 'Radius', Default = 125, M
 VisualSections.Radar:AddSlider('RadarRange', {Text = 'Range (studs)', Default = 150, Min = 50, Max = 1000, Rounding = 0})
 
 VisualSections.Arrows:AddToggle('ArrowsEnable', {Text = 'Enable', Default = false, ColorPicker = {Idx = 'ArrowsColor', Default = Color3.fromRGB(255, 255, 255), Title = 'Arrow color'}})
+VisualSections.Arrows:AddToggle('ArrowsTeamCheck', {Text = 'Team check', Default = true})
 VisualSections.Arrows:AddSlider('ArrowsDistance', {Text = 'Distance', Default = 80, Min = 40, Max = 200, Rounding = 0})
 VisualSections.Arrows:AddSlider('ArrowsSize', {Text = 'Size', Default = 16, Min = 8, Max = 40, Rounding = 0})
 
@@ -4645,8 +4621,6 @@ ambienceTab:AddToggle('AmbienceCustomTime', {Text = 'Custom time', Default = fal
 ambienceTab:AddSlider('AmbienceTime', {Text = 'Time', Default = 12, Min = 0, Max = 24, Rounding = 1}):OnChanged(function() MiscState.ambienceDirty = true end)
 ambienceTab:AddToggle('AmbienceCustomSkybox', {Text = 'Custom skybox', Default = false, ColorPicker = {Idx = 'AmbienceSkyboxColor', Default = Color3.fromRGB(0, 0, 0), Title = 'Skybox color', Callback = function() MiscState.ambienceDirty = true end}}):OnChanged(function() MiscState.ambienceDirty = true end)
 ambienceTab:AddToggle('AmbienceSkyColor', {Text = 'Sky color', Default = false, ColorPicker = {Idx = 'AmbienceSkyColorValue', Default = Color3.fromRGB(0, 0, 0), Title = 'Sky color', Callback = function() MiscState.ambienceDirty = true end}}):OnChanged(function() MiscState.ambienceDirty = true end)
-ambienceTab:AddToggle('WallTransparency', {Text = 'Visualize penetration', Default = false, Callback = function() updateWallTransparency() end})
-ambienceTab:AddSlider('WallTransparencyValue', {Text = 'Penetration amount', Default = 50, Min = 0, Max = 99, Rounding = 0, Callback = function() updateWallTransparency() end})
 ambienceTab:AddToggle('AmbienceNightMode', {Text = 'Night mode (walls)', Default = false, ColorPicker = {Idx = 'AmbienceNightColor', Default = Color3.fromRGB(20, 20, 40), Title = 'Night mode color', Callback = function() MiscState.ambienceDirty = true end}}):OnChanged(function() MiscState.ambienceDirty = true end)
 ambienceTab:AddToggle('AmbienceNoShadow', {Text = 'No shadow', Default = false}):OnChanged(function() MiscState.ambienceDirty = true end)
 ambienceTab:AddSlider('AmbienceBrightness', {Text = 'Brightness', Default = 0, Min = -10, Max = 10, Rounding = 1}):OnChanged(function() MiscState.ambienceDirty = true end)
@@ -5112,12 +5086,30 @@ pcall(function()
                                 end
                             end
                             if targetChar then
-                                hitChams(targetChar)
+                                local targetPlayer = Players:GetPlayerFromCharacter(targetChar)
+                                if targetPlayer then
+                                    local lifetime = Options.MiscHitChamsLifetime and Options.MiscHitChamsLifetime.Value or 1.3
+                                    hitChams(targetPlayer, nil, 0, lifetime)
+                                end
                             end
                         end
                     end)
                 end)
                 return _oldNamecall(self, unpack(args, 1, args.n))
+            end
+
+            if self.Name == "Trail" then
+                if Toggles.MiscBulletTracer and Toggles.MiscBulletTracer.Value then
+                    task.spawn(function()
+                        pcall(function()
+                            local startPos = args[1].Position
+                            local endPos = args[2]
+                            if startPos and endPos then
+                                drawBulletTracer(startPos, endPos)
+                            end
+                        end)
+                    end)
+                end
             end
 
             if self.Name == "ReplicateShot" then
@@ -5126,27 +5118,6 @@ pcall(function()
                         peekAssistOnShot()
                     end
                 end)
-                if Toggles.MiscBulletTracer and Toggles.MiscBulletTracer.Value then
-                local originPos = getgenv().LastBulletTracerOrigin
-                local targetPos = getgenv().LastBulletTracerTarget
-
-                if not originPos or not targetPos then
-                    local Cam = Workspace.CurrentCamera
-                    originPos = Cam.CFrame.Position - Vector3.new(0, 0.4, 0)
-                    if typeof(args[2]) == "Vector3" then
-                        targetPos = args[2]
-                    elseif typeof(args[1]) == "Instance" and args[1]:IsA("BasePart") then
-                        targetPos = args[1].Position
-                    else
-                        targetPos = Cam.CFrame.Position + (Cam.CFrame.LookVector * 500)
-                    end
-                end
-
-                drawBulletTracer(originPos, targetPos)
-
-                getgenv().LastBulletTracerOrigin = nil
-                getgenv().LastBulletTracerTarget = nil
-                end
             end
         end
 
@@ -5159,8 +5130,6 @@ pcall(function()
                 if typeof(origin) == "Vector3" and typeof(direction) == "Vector3" then
                     local mag = direction.Magnitude
                     if mag < 0.001 then mag = 500 end
-                    getgenv().LastBulletTracerOrigin = rayOrigin
-                    getgenv().LastBulletTracerTarget = predicted
                     rayArgs[2] = (predicted - rayOrigin).Unit * mag
                     return _oldNamecall(self, unpack(rayArgs))
                 end
@@ -5833,6 +5802,15 @@ end)
             return
         end
 
+        -- Team check
+        if Toggles.ArrowsTeamCheck and Toggles.ArrowsTeamCheck.Value then
+            if teamCheck(player, false) then
+                local existing = ArrowRuntime.Arrows[player]
+                if existing then existing.Visible = false end
+                return
+            end
+        end
+
         local myCharacter = LocalPlayer.Character
         local myRoot = myCharacter and myCharacter:FindFirstChild("HumanoidRootPart")
         local character, humanoid, rootPart = getCharacterParts(player)
@@ -5912,36 +5890,37 @@ EspRuntime.Connections.RenderStepped = RunService.RenderStepped:Connect(function
         
         -- Silent aim target update
         if silentActive then
-            if UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
-                local silentTarget = getNearestSilentTarget()
-                getgenv().PSilentTarget = silentTarget
-            else
-                getgenv().PSilentTarget = nil
+            local silentTarget = getNearestSilentTarget()
+            getgenv().PSilentTarget = silentTarget
+            
+            -- Auto fire functionality
+            if Toggles.RagebotAutoFire and Toggles.RagebotAutoFire.Value and silentTarget then
+                -- Check if player is alive before auto firing
+                local _, myHumanoid = MoveUtil.getAliveMovementRig()
+                if not myHumanoid then
+                    getgenv().PSilentTarget = nil
+                    silentActive = false
+                    return
+                end
+                
+                -- Check if we should auto fire (only if not already holding mouse button)
+                if not UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+                    local mouse = LocalPlayer:GetMouse()
+                    local mouseX = mouse.X
+                    local mouseY = mouse.Y
+                    
+                    -- Auto click to fire
+                    task.spawn(function()
+                        pcall(function()
+                            VirtualInputManager:SendMouseButtonEvent(mouseX, mouseY, 0, true, game, 1)
+                            task.wait(0.05)
+                            VirtualInputManager:SendMouseButtonEvent(mouseX, mouseY, 0, false, game, 1)
+                        end)
+                    end)
+                end
             end
         else
             getgenv().PSilentTarget = nil
-        end
-        
-        -- Auto Fire logic for Ragebot
-        if Toggles.RagebotAutoFire and Toggles.RagebotAutoFire.Value then
-            local keybindActive = isKeybindActive(Options.RagebotKeybind)
-            if keybindActive then
-                local silentTarget = getNearestSilentTarget()
-                if silentTarget then
-                    getgenv().PSilentTarget = silentTarget
-                    -- Auto click mouse button 1 when target is found
-                    if not UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
-                        local mousePos = UserInputService:GetMouseLocation()
-                        VirtualInputManager:SendMouseButtonEvent(mousePos.X, mousePos.Y, 0, true, game, 1)
-                        task.wait(0.05)
-                        VirtualInputManager:SendMouseButtonEvent(mousePos.X, mousePos.Y, 0, false, game, 1)
-                    end
-                else
-                    getgenv().PSilentTarget = nil
-                end
-            else
-                getgenv().PSilentTarget = nil
-            end
         end
         
         updateCrosshair()
@@ -5990,6 +5969,8 @@ end)
 EspRuntime.Connections.KillAllHeartbeat = RunService.Heartbeat:Connect(function()
     pcall(function()
         updateKillAll()
+        updateStrafe()
+        updateAirStrafe()
     end)
 end)
 
@@ -6034,10 +6015,7 @@ do
                 local p = Library.KeybindFrame.Position
                 data.uiPositions.Keybind = { p.X.Scale, p.X.Offset, p.Y.Scale, p.Y.Offset }
             end
-            local json = HttpService:JSONEncode(data)
-            if json then
-                writefile(fullPath, json)
-            end
+            writefile(fullPath, HttpService:JSONEncode(data))
         end)
 
         return true
@@ -6160,10 +6138,7 @@ end
                 local data = {}
                 if Library.Watermark then data.Watermark = udimToTable(Library.Watermark.Position) end
                 if Library.KeybindFrame then data.Keybind = udimToTable(Library.KeybindFrame.Position) end
-                local json = HttpService:JSONEncode(data)
-                if json then
-                    writefile(UI_POS_FILE, json)
-                end
+                writefile(UI_POS_FILE, HttpService:JSONEncode(data))
             end)
         end)
     end
