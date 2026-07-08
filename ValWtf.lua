@@ -200,6 +200,9 @@ VisibilityParams.IgnoreWater = true
 
 local RayIgnoreList = {Camera, nil, nil}
 
+-- Silent aim state
+local silentActive = false
+
 
 local function getCamera()
     Camera = Workspace.CurrentCamera
@@ -377,7 +380,6 @@ local function createLine(thickness, color)
     return line
 end
 
-
 local function getCharacterParts(player)
     local character = player.Character
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
@@ -459,6 +461,116 @@ local function isVisibleTarget(character)
     end
 
     return false
+end
+
+
+-- Check how many walls are between player and target
+local function getWallCount(originPos, targetPos, maxWalls)
+    local direction = (targetPos - originPos).Unit
+    local distance = (targetPos - originPos).Magnitude
+    local rayLength = math.min(distance, 500)
+    
+    local ignoreList = {
+        LocalPlayer.Character,
+        getCachedRayIgnore(),
+        Workspace:FindFirstChild("Map") and Workspace.Map:FindFirstChild("Clips"),
+        Workspace:FindFirstChild("Map") and Workspace.Map:FindFirstChild("SpawnPoints")
+    }
+    
+    local wallCount = 0
+    local lastHitPos = originPos
+    local remainingDistance = rayLength
+    local maxIterations = maxWalls + 2 -- Limit iterations to prevent lag
+    local iterationCount = 0
+    
+    while remainingDistance > 0.1 and wallCount <= maxWalls + 1 and iterationCount < maxIterations do
+        iterationCount = iterationCount + 1
+        local checkRay = Ray.new(lastHitPos, direction * remainingDistance)
+        local hitPart, hitPos = Workspace:FindPartOnRayWithIgnoreList(checkRay, ignoreList)
+        
+        if hitPart then
+            local parent = hitPart.Parent
+            if parent and not parent:FindFirstChild("Humanoid") and not parent:IsDescendantOf(LocalPlayer.Character) then
+                wallCount = wallCount + 1
+                lastHitPos = hitPos + direction * 0.1
+                remainingDistance = (targetPos - lastHitPos).Magnitude
+            else
+                lastHitPos = hitPos + direction * 0.1
+                remainingDistance = (targetPos - lastHitPos).Magnitude
+            end
+        else
+            break
+        end
+    end
+    
+    return wallCount
+end
+
+-- Enhanced visibility check with wall penetration
+local function isVisibleWithWalls(targetPart, maxWalls)
+    local originPos = Camera.CFrame.Position
+    local targetPos = targetPart.Position
+    
+    local walls = getWallCount(originPos, targetPos, maxWalls)
+    return walls <= maxWalls
+end
+
+-- Find nearest target for silent aim with FOV and wall penetration check
+local function getNearestSilentTarget()
+    local mousePos = UserInputService:GetMouseLocation()
+    local aimPos = mousePos
+
+    local fovValue = Options.RagebotFOV and Options.RagebotFOV.Value or 180
+    local fovPixels = fovValue * (Camera.ViewportSize.Y / Camera.FieldOfView)
+    
+    local maxWalls = Options.SilentAimMaxWalls and Options.SilentAimMaxWalls.Value or 3
+    local useVisibleCheck = Toggles.RagebotVisCheck and Toggles.RagebotVisCheck.Value
+    local useTeamCheck = Toggles.RagebotTeamCheck and Toggles.RagebotTeamCheck.Value
+    local selectedHitbox = Options.RagebotHitbox and Options.RagebotHitbox.Value or "Head"
+
+    local nearestPart = nil
+    local nearestDist = math.huge
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == LocalPlayer then continue end
+        
+        if useTeamCheck then
+            local myTeam = LocalPlayer.Team
+            local theirTeam = player.Team
+            if myTeam and theirTeam and theirTeam == myTeam then continue end
+        end
+
+        local character = player.Character
+        if not character then continue end
+        
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        local rootPart = character:FindFirstChild("HumanoidRootPart")
+        local head = character:FindFirstChild("Head") or character:FindFirstChild("HeadHB")
+        if not humanoid or humanoid.Health <= 0 or not rootPart then continue end
+
+        -- Determine target part based on hitbox selection
+        local targetPart
+        if selectedHitbox == "Body" then
+            targetPart = rootPart
+        else
+            targetPart = head or rootPart
+        end
+        
+        if not targetPart then continue end
+
+        local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+        if not onScreen then continue end
+
+        if useVisibleCheck and not isVisibleWithWalls(targetPart, maxWalls) then continue end
+
+        local dist = (Vector2.new(screenPos.X, screenPos.Y) - aimPos).Magnitude
+        if dist < nearestDist and dist <= fovPixels then
+            nearestDist = dist
+            nearestPart = targetPart
+        end
+    end
+
+    return nearestPart
 end
 
 
@@ -698,7 +810,7 @@ end
 local updateRCS, updateRapidFire, updateFullAuto, restoreAllRapidFireRates, restoreAllFullAutoValues
 local applyNoRecoil, applyNoSpread, applyInstaEquip, applyInstaReload, fireSingleShot
 local updateBhop, updateLegitBhop, updateThirdPerson, updateThirdPersonNoClip, updateNoclip, updateFly, onAutoJumpChanged, updateAutoCrouch, updateSpeedHack
-local updateHitChams, updateGrenadePrediction, updateNoScope, updateNoFlash, applyNoScope, setupNoSmoke
+local updateGrenadePrediction, updateNoScope, updateNoFlash, applyNoScope, setupNoSmoke
 local ensureCrosshair, updateCrosshair, unloadValenok
 
 
@@ -1194,65 +1306,8 @@ local function updateAimBot(dt)
 end
 
 
-local function getRagebotFovRadius()
-    local fovValue = Options.RagebotFOV and Options.RagebotFOV.Value or 1
-    fovValue = math.clamp(fovValue, 1, 180)
-    local cam = getCamera()
-    local key = "RageFovRadius_" .. fovValue .. "_" .. cam.FieldOfView .. "_" .. cam.ViewportSize.Y
-    return Cache:getOrSet(key, 0, function()
-        if fovValue >= 180 then return 999999 end
-        local halfViewport = cam.ViewportSize.Y * 0.5
-        local camFovHalfRad = math.rad(cam.FieldOfView * 0.5)
-        local rageFovHalfRad = math.rad(fovValue * 0.5)
-        return (math.tan(rageFovHalfRad) / math.tan(camFovHalfRad)) * halfViewport
-    end)
-end
-
-local function isRagebotBaimKeyActive()
-    if not Toggles.RagebotBaim or not Toggles.RagebotBaim.Value then return false end
-    return isKeybindActive(Options.RagebotBaimKeybind)
-end
 
 
-local function findRagebotHeadPart(character)
-    local headParts = { "HeadHB", "Head", "FakeHead" }
-    for _, hName in ipairs(headParts) do
-        local hPart = findCharacterPart(character, hName)
-        if hPart then return hPart end
-    end
-    return nil
-end
-
-local function findRagebotBodyPart(character, screenCenter)
-    local bestPart = nil
-    local bestDistance = math.huge
-
-    local priorityGroups = {
-        { "UpperTorso", "LowerTorso", "HumanoidRootPart", "LeftUpperArm", "LeftLowerArm", "LeftHand", "RightUpperArm", "RightLowerArm", "RightHand" },
-        { "LeftUpperLeg", "LeftLowerLeg", "LeftFoot", "RightUpperLeg", "RightLowerLeg", "RightFoot" },
-    }
-
-    for _, group in ipairs(priorityGroups) do
-        bestPart = nil
-        bestDistance = math.huge
-        for _, partName in ipairs(group) do
-            local part = findCharacterPart(character, partName)
-            if part then
-                local screenPoint = Camera:WorldToViewportPoint(part.Position)
-                if screenPoint.Z > 0 then
-                    local distance = (Vector2.new(screenPoint.X, screenPoint.Y) - screenCenter).Magnitude
-                    if distance < bestDistance then
-                        bestDistance = distance
-                        bestPart = part
-                    end
-                end
-            end
-        end
-        if bestPart then break end
-    end
-
-    return bestPart
-end
 
 
 -- multipoint scan: check multiple points on a part's surface for visibility
@@ -1369,140 +1424,8 @@ local RAGEBOT_HITBOX_PRIORITY = {
     LeftFoot = 15, RightFoot = 15,
 }
 
-local function getRagebotTarget()
-    local bestPart = nil
-    local bestMetric = math.huge
-    local useVisible = Toggles.RagebotVisCheck and Toggles.RagebotVisCheck.Value
-    local isFullCircle = (Options.RagebotFOV and Options.RagebotFOV.Value or 1) >= 180
-    local camLook = Camera.CFrame.LookVector
-    local camPos = Camera.CFrame.Position
-    local screenCenter = Vector2.new(Camera.ViewportSize.X * 0.5, Camera.ViewportSize.Y * 0.5)
-    local fovRadius = getRagebotFovRadius()
-
-    local selectedHitbox = Options.RagebotHitbox and Options.RagebotHitbox.Value or "Head"
-    local baimActive = isRagebotBaimKeyActive()
-
-    -- determine which hitboxes to scan
-    local hitboxList
-    if baimActive then
-        hitboxList = { "UpperTorso", "LowerTorso", "LeftUpperArm", "LeftLowerArm", "LeftHand", "RightUpperArm", "RightLowerArm", "RightHand" }
-    elseif selectedHitbox == "Nearest" or selectedHitbox == "All" then
-        hitboxList = RAGEBOT_ALL_HITBOXES
-    elseif selectedHitbox == "Body" then
-        hitboxList = { "UpperTorso", "LowerTorso", "Torso", "HumanoidRootPart" }
-    else
-        -- Head mode: try head first, then fall back to all
-        hitboxList = { "HeadHB", "Head", "FakeHead", "UpperTorso", "LowerTorso", "Torso", "HumanoidRootPart" }
-    end
-
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player == LocalPlayer then continue end
-
-        if Toggles.RagebotTeamCheck and Toggles.RagebotTeamCheck.Value then
-            local myTeam, theirTeam = LocalPlayer.Team, player.Team
-            if myTeam ~= nil and theirTeam ~= nil and theirTeam == myTeam then
-                continue
-            end
-        end
-
-        local character = player.Character
-        if not character then continue end
-        if hasShield(character) then continue end
-
-        local humanoid = character:FindFirstChildOfClass("Humanoid")
-        local rootPart = character:FindFirstChild("HumanoidRootPart")
-        if not humanoid or humanoid.Health <= 0 or not rootPart then continue end
-
-        -- scan all hitboxes for this player, find the best visible one
-        local playerBestPart = nil
-        local playerBestScore = -1
-
-        for _, partName in ipairs(hitboxList) do
-            local part = findCharacterPart(character, partName)
-            if not part then continue end
-
-            local screenPoint = Camera:WorldToViewportPoint(part.Position)
-            if screenPoint.Z <= 0 then continue end
-
-            -- FOV check
-            local distanceFromCrosshair = (Vector2.new(screenPoint.X, screenPoint.Y) - screenCenter).Magnitude
-            if not isFullCircle and distanceFromCrosshair > fovRadius then continue end
-
-            -- per-part visibility check (with multipoint if enabled)
-            local useMulti = Toggles.RagebotMultiPoint and Toggles.RagebotMultiPoint.Value
-            if useVisible and not isPartVisibleMultiPoint(part, useMulti, 0.20) then continue end
-
-            -- score: prefer higher priority hitbox, then closer to crosshair
-            local priority = RAGEBOT_HITBOX_PRIORITY[partName] or 10
-            local score = priority - distanceFromCrosshair * 0.01
-
-            if score > playerBestScore then
-                playerBestScore = score
-                playerBestPart = part
-            end
-        end
-
-        if not playerBestPart then continue end
-
-        -- evaluate this player's best part against global best
-        if isFullCircle then
-            local delta = playerBestPart.Position - camPos
-            if delta.Magnitude < 1e-4 then continue end
-            local dir = delta.Unit
-            local angle = math.acos(math.clamp(camLook:Dot(dir), -1, 1))
-            if angle < bestMetric then
-                bestMetric = angle
-                bestPart = playerBestPart
-            end
-        else
-            local sp = Camera:WorldToViewportPoint(playerBestPart.Position)
-            local dist = (Vector2.new(sp.X, sp.Y) - screenCenter).Magnitude
-            if dist < bestMetric then
-                bestMetric = dist
-                bestPart = playerBestPart
-            end
-        end
-    end
-
-    return bestPart
-end
 
 
-local function updateRagebot()
-    local cam = getCamera()
-    if not cam then return end
-    local ragebotEnabled = Toggles.RagebotEnable and Toggles.RagebotEnable.Value
-    local keyActive = isKeybindActive(Options.RagebotKeybind)
-
-    if not ragebotEnabled or not keyActive then
-        getgenv().PSilentTarget = nil
-        return
-    end
-
-    local targetPart = getRagebotTarget()
-
-    if targetPart then
-        getgenv().PSilentTarget = targetPart
-
-        -- auto fire
-        if Toggles.RagebotAutoFire and Toggles.RagebotAutoFire.Value then
-            local character = LocalPlayer.Character
-            local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-            if character and humanoid and humanoid.Health > 0 then
-                local mouse = LocalPlayer:GetMouse()
-                local mouseX = mouse.X
-                local mouseY = mouse.Y
-                task.spawn(function()
-                    VirtualInputManager:SendMouseButtonEvent(mouseX, mouseY, 0, true, game, 1)
-                    task.wait(0.05)
-                    VirtualInputManager:SendMouseButtonEvent(mouseX, mouseY, 0, false, game, 1)
-                end)
-            end
-        end
-    else
-        getgenv().PSilentTarget = nil
-    end
-end
 
 
 local function checkTriggerbotConditions(character, humanoid)
@@ -2854,14 +2777,6 @@ end
 
 -- visuals
 
-local HitChamsState = {
-    ChamsFolder = nil,
-    PlayerConns = {},
-    ObservedPlayers = {},
-    PlayerAddedConn = nil,
-    PlayerRemovingConn = nil,
-}
-
 local GrenadeRuntime = {
     Folder = nil,
     Attachments = {},
@@ -2873,16 +2788,58 @@ local GrenadeRuntime = {
     RmbDown = false,
 }
 
+local HitChamsState = {
+    Cooldown = false
+}
+
+local function hitChams(targetChar)
+    if not targetChar or not targetChar.Parent then return end
+    if HitChamsState.Cooldown then return end
+    HitChamsState.Cooldown = true
+    task.delay(0.05, function()
+        HitChamsState.Cooldown = false
+    end)
+
+    local color = getOptionColor("MiscHitChamsColor", Color3.fromRGB(200, 30, 80))
+    local container = Instance.new("Model")
+    container.Name = "HitCham"
+    local parts = {}
+    for _, v in next, targetChar:GetChildren() do
+        if v:IsA("BasePart") and v.Transparency ~= 1 then
+            local p = Instance.new("Part")
+            p.Size = v.Size
+            p.CFrame = v.CFrame
+            p.Color = color
+            p.Material = Enum.Material.ForceField
+            p.Transparency = 0.3
+            p.Anchored = true
+            p.CanCollide = false
+            p.Parent = container
+            parts[#parts + 1] = p
+        end
+    end
+    container.Parent = Workspace.CurrentCamera
+    for _, p in next, parts do
+        TweenService:Create(p, TweenInfo.new(1.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Transparency = 1}):Play()
+    end
+    Debris:AddItem(container, 1.3)
+end
+
 local AmbienceSavedLighting
 local MiscState = { ambienceDirty = false, grenadeHidden = false }
 
 
 
+local function setCornerSeg(line, outline, fx, fy, tx, ty, color, visible)
+    line.From = Vector2.new(fx, fy); line.To = Vector2.new(tx, ty)
+    line.Color = color; line.Visible = visible
+    outline.From = line.From; outline.To = line.To; outline.Visible = visible
+end
+
 local function hideDrawingSet(drawingSet, resetRect)
     if not drawingSet then return end
 
     drawingSet.Box.Visible = false
-    drawingSet.BoxOutline.Visible = false
     drawingSet.BoxFill.Visible = false
     drawingSet.Name.Visible = false
     drawingSet.Weapon.Visible = false
@@ -2940,20 +2897,19 @@ local function getDrawingSet(player)
     if drawingSet then return drawingSet end
 
     drawingSet = {
-        Box = createSquare(1, Color3.fromRGB(255, 255, 255)),
-        BoxOutline = createSquare(3, Color3.fromRGB(0, 0, 0)),
+        Box = createSquare(1.1, Color3.fromRGB(255, 255, 255)),
         BoxFill = createSquare(1, Color3.fromRGB(255, 255, 255)),
         Name = createText(13),
         Weapon = createText(13),
         Rect = nil,
-        HealthBarOutline = createSquare(2, Color3.fromRGB(0, 0, 0)),
+        HealthBarOutline = createSquare(0.5, Color3.fromRGB(0, 0, 0)),
         HealthBarFill = createSquare(1, Color3.fromRGB(0, 255, 0)),
         HealthText = createText(13),
         CornerLines = {
-            createLine(1, Color3.fromRGB(255,255,255)), createLine(1, Color3.fromRGB(255,255,255)),
-            createLine(1, Color3.fromRGB(255,255,255)), createLine(1, Color3.fromRGB(255,255,255)),
-            createLine(1, Color3.fromRGB(255,255,255)), createLine(1, Color3.fromRGB(255,255,255)),
-            createLine(1, Color3.fromRGB(255,255,255)), createLine(1, Color3.fromRGB(255,255,255)),
+            createLine(1.1, Color3.fromRGB(255,255,255)), createLine(1.1, Color3.fromRGB(255,255,255)),
+            createLine(1.1, Color3.fromRGB(255,255,255)), createLine(1.1, Color3.fromRGB(255,255,255)),
+            createLine(1.1, Color3.fromRGB(255,255,255)), createLine(1.1, Color3.fromRGB(255,255,255)),
+            createLine(1.1, Color3.fromRGB(255,255,255)), createLine(1.1, Color3.fromRGB(255,255,255)),
         },
         CornerOutlines = {
             createLine(3, Color3.fromRGB(0,0,0)), createLine(3, Color3.fromRGB(0,0,0)),
@@ -3085,37 +3041,26 @@ local function updatePlayerEsp(player)
 
     if boxType == "Corner" then
         drawingSet.Box.Visible = false
-        drawingSet.BoxOutline.Visible = false
+
         -- proportional corner length: 25% of min dimension, clamped 4-12px
         -- this ensures corners never merge together regardless of distance
         local cl = math.clamp(math.min(width, height) * 0.25, 4, 12)
-        local tl = Vector2.new(left, top)
-        local tr = Vector2.new(left + width, top)
-        local bl = Vector2.new(left, top + height)
-        local br = Vector2.new(left + width, top + height)
-        local segs = {
-            { tl, tl + Vector2.new(cl, 0) },   -- top-left horizontal
-            { tl, tl + Vector2.new(0, cl) },   -- top-left vertical
-            { tr, tr + Vector2.new(-cl, 0) },  -- top-right horizontal
-            { tr, tr + Vector2.new(0, cl) },   -- top-right vertical
-            { bl, bl + Vector2.new(cl, 0) },   -- bottom-left horizontal
-            { bl, bl + Vector2.new(0, -cl) },  -- bottom-left vertical
-            { br, br + Vector2.new(-cl, 0) },  -- bottom-right horizontal
-            { br, br + Vector2.new(0, -cl) },  -- bottom-right vertical
-        }
-        for i = 1, 8 do
-            local seg = segs[i]
-            local outline = drawingSet.CornerOutlines[i]
-            outline.From = seg[1]; outline.To = seg[2]; outline.Visible = showBox
-            local line = drawingSet.CornerLines[i]
-            line.From = seg[1]; line.To = seg[2]; line.Color = boxColor; line.Visible = showBox
-        end
+        local right, bot = left + width, top + height
+        local cl_, co_ = drawingSet.CornerLines, drawingSet.CornerOutlines
+
+        setCornerSeg(cl_[1], co_[1], left, top, left + cl, top, boxColor, showBox)   -- top-left horizontal
+        setCornerSeg(cl_[2], co_[2], left, top, left, top + cl, boxColor, showBox)   -- top-left vertical
+        setCornerSeg(cl_[3], co_[3], right, top, right - cl, top, boxColor, showBox) -- top-right horizontal
+        setCornerSeg(cl_[4], co_[4], right, top, right, top + cl, boxColor, showBox) -- top-right vertical
+        setCornerSeg(cl_[5], co_[5], left, bot, left + cl, bot, boxColor, showBox)   -- bottom-left horizontal
+        setCornerSeg(cl_[6], co_[6], left, bot, left, bot - cl, boxColor, showBox)   -- bottom-left vertical
+        setCornerSeg(cl_[7], co_[7], right, bot, right - cl, bot, boxColor, showBox) -- bottom-right horizontal
+        setCornerSeg(cl_[8], co_[8], right, bot, right, bot - cl, boxColor, showBox) -- bottom-right vertical
     else
         for i = 1, 8 do
             drawingSet.CornerLines[i].Visible = false
             drawingSet.CornerOutlines[i].Visible = false
         end
-        drawingSet.BoxOutline.Visible = false
 
         drawingSet.Box.Position = Vector2.new(left, top)
         drawingSet.Box.Size = Vector2.new(width, height)
@@ -3155,7 +3100,7 @@ local function updatePlayerEsp(player)
     local showHealthBar = Toggles.ESPHealthBar and Toggles.ESPHealthBar.Value
     if showHealthBar and humanoid then
         local hpPercent = math.clamp(humanoid.Health / humanoid.MaxHealth, 0, 1)
-        local barWidth = 4
+        local barWidth = 3.5
         local barHeight = height
         local barX = left - barWidth - 2
         local barY = top
@@ -3398,26 +3343,7 @@ local function updateFovCircle()
         end
     end
 
-    local rageCircle = AimRuntime.RageFovCircle
-    if rageCircle then
-        local rageFovVal = Options.RagebotFOV and Options.RagebotFOV.Value or 1
-        local show = Toggles.RagebotShowFOV and Toggles.RagebotShowFOV.Value
-            and Toggles.RagebotEnable and Toggles.RagebotEnable.Value
-            and rageFovVal < 180
-        if show then
-            local radius = getRagebotFovRadius()
-            local col = getOptionColor("RagebotFOVColor", Color3.fromRGB(255, 0, 0))
-            pcall(function()
-                rageCircle.Position = center
-                rageCircle.Radius = math.min(radius, 100000)
-                rageCircle.Color = col
-                rageCircle.Visible = true
-            end)
-        else
-            rageCircle.Visible = false
-        end
     end
-end
 
 
 -- crosshair
@@ -3473,193 +3399,6 @@ updateCrosshair = function()
         CrosshairState.Outline.Position = center
         CrosshairState.Outline.Visible = true
     end
-end
-
-
--- hit chams
-local function getHitChamsFolder()
-    if HitChamsState.ChamsFolder and HitChamsState.ChamsFolder.Parent then
-        return HitChamsState.ChamsFolder
-    end
-    local folder = Instance.new("Folder")
-    folder.Name = "ValenokHitChams"
-    folder.Parent = workspace
-    HitChamsState.ChamsFolder = folder
-    return folder
-end
-
-local function cleanupHitChams()
-    if HitChamsState.ChamsFolder then
-        pcall(function() HitChamsState.ChamsFolder:Destroy() end)
-        HitChamsState.ChamsFolder = nil
-    end
-end
-
-HitChamsState.Pool = { available = {}, active = {}, nextId = 1 }
-
-local function getPooledHighlight()
-    local hl = HitChamsState.Pool.available[#HitChamsState.Pool.available]
-    if hl then
-        HitChamsState.Pool.available[#HitChamsState.Pool.available] = nil
-        return hl
-    end
-    local newHl = Instance.new("Highlight")
-    newHl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-    newHl.FillTransparency = 0.5
-    newHl.OutlineTransparency = 1
-    newHl.Enabled = false
-    return newHl
-end
-
-local function returnHighlightToPool(hl, idx)
-    hl.Enabled = false
-    hl.Adornee = nil
-    hl.Parent = nil
-    HitChamsState.Pool.active[idx] = nil
-    HitChamsState.Pool.available[#HitChamsState.Pool.available + 1] = hl
-end
-
-local function runHitChamsOptimized(character)
-    if not Toggles.MiscHitChams or not Toggles.MiscHitChams.Value then return end
-    if not character then return end
-
-    -- temporarily disable ESP highlight so hit chams can show
-    local espHighlight = nil
-    local espEnabled = nil
-    for player, hl in pairs(EspRuntime.Highlights) do
-        if hl.Adornee == character then
-            espHighlight = hl
-            espEnabled = hl.Enabled
-            hl.Enabled = false
-            break
-        end
-    end
-
-    local hitHl = getPooledHighlight()
-    hitHl.FillColor = getOptionColor("MiscHitChamsColor", Color3.fromRGB(255, 0, 0))
-    hitHl.Adornee = character
-    hitHl.Parent = character
-    hitHl.Enabled = true
-
-    local idx = HitChamsState.Pool.nextId
-    HitChamsState.Pool.nextId = HitChamsState.Pool.nextId + 1
-    HitChamsState.Pool.active[idx] = hitHl
-
-    task.delay(0.5, function()
-        if HitChamsState.Pool.active[idx] == hitHl then
-            returnHighlightToPool(hitHl, idx)
-        end
-        if espHighlight then
-            pcall(function() espHighlight.Enabled = espEnabled end)
-        end
-    end)
-end
-
-local function observePlayerForHitChams(player)
-    if HitChamsState.ObservedPlayers[player] then return end
-    HitChamsState.ObservedPlayers[player] = true
-
-    local function onCharacterAdded(character)
-        local conns = {}
-        local humanoid = character:WaitForChild("Humanoid", 5)
-        if humanoid then
-            table.insert(conns, humanoid.Died:Connect(function()
-                if Toggles.MiscHitChams and Toggles.MiscHitChams.Value then
-                    runHitChamsOptimized(character)
-                end
-            end))
-        end
-        HitChamsState.PlayerConns[player] = conns
-    end
-
-    if player.Character then
-        task.spawn(onCharacterAdded, player.Character)
-    end
-    local charAddedConn = player.CharacterAdded:Connect(onCharacterAdded)
-    table.insert(HitChamsState.PlayerConns[player] or {}, charAddedConn)
-end
-
-local function findHitChamsTarget()
-    local cam = getCamera()
-    if not cam then return nil end
-    local screenCenter = Vector2.new(cam.ViewportSize.X * 0.5, cam.ViewportSize.Y * 0.5)
-    local bestDist = math.huge
-    local bestChar = nil
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer then
-            local character = player.Character
-            if character then
-                local humanoid = character:FindFirstChildOfClass("Humanoid")
-                local rootPart = character:FindFirstChild("HumanoidRootPart")
-                if humanoid and humanoid.Health > 0 and rootPart then
-                    local sp = cam:WorldToViewportPoint(rootPart.Position)
-                    if sp.Z > 0 then
-                        local d = (Vector2.new(sp.X, sp.Y) - screenCenter).Magnitude
-                        if d < bestDist then
-                            bestDist = d
-                            bestChar = character
-                        end
-                    end
-                end
-            end
-        end
-    end
-    return bestChar
-end
-
-local function cleanupPlayerHitChamsConns(player)
-    local conns = HitChamsState.PlayerConns[player]
-    if conns then
-        for _, conn in ipairs(conns) do
-            pcall(function() conn:Disconnect() end)
-        end
-        HitChamsState.PlayerConns[player] = nil
-    end
-    HitChamsState.ObservedPlayers[player] = nil
-end
-
-local function initHitChamsListeners()
-    if HitChamsState.PlayerAddedConn then return end
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer then
-            observePlayerForHitChams(player)
-        end
-    end
-    HitChamsState.PlayerAddedConn = Players.PlayerAdded:Connect(function(player)
-        if player ~= LocalPlayer then
-            observePlayerForHitChams(player)
-        end
-    end)
-    HitChamsState.PlayerRemovingConn = Players.PlayerRemoving:Connect(function(player)
-        cleanupPlayerHitChamsConns(player)
-    end)
-end
-
-local function teardownHitChamsListeners()
-    if HitChamsState.PlayerAddedConn then
-        HitChamsState.PlayerAddedConn:Disconnect()
-        HitChamsState.PlayerAddedConn = nil
-    end
-    if HitChamsState.PlayerRemovingConn then
-        HitChamsState.PlayerRemovingConn:Disconnect()
-        HitChamsState.PlayerRemovingConn = nil
-    end
-    for player, conns in pairs(HitChamsState.PlayerConns) do
-        for _, conn in ipairs(conns) do
-            pcall(function() conn:Disconnect() end)
-        end
-    end
-    table.clear(HitChamsState.PlayerConns)
-    table.clear(HitChamsState.ObservedPlayers)
-end
-
-updateHitChams = function()
-    if not Toggles.MiscHitChams or not Toggles.MiscHitChams.Value then
-        teardownHitChamsListeners()
-        cleanupHitChams()
-        return
-    end
-    initHitChamsListeners()
 end
 
 
@@ -4521,9 +4260,11 @@ local ambienceTab = VisualTabbox:AddTab('Ambience')
 
 local VisualSections = {
     ThirdPerson = Tabs.Visual:AddLeftGroupbox('Third person'),
+    Radar = espTab,
     Menu = Tabs.Visual:AddLeftGroupbox('Menu'),
     Removals = Tabs.Visual:AddRightGroupbox('Removals'),
     Grenades = Tabs.Visual:AddRightGroupbox('Grenades'),
+    Arrows = espTab,
     Self = Tabs.Visual:AddRightGroupbox('Self'),
     Misc = Tabs.Visual:AddRightGroupbox('Misc'),
 }
@@ -4692,6 +4433,7 @@ RageSections.Ragebot:AddSlider('RagebotFOV', {Text = 'FOV', Default = 1, Min = 1
 RageSections.Ragebot:AddDropdown('RagebotHitbox', {Values = { 'Head', 'Body', 'Nearest', 'All' }, Default = 'Head', Text = 'Hit box'})
 RageSections.Ragebot:AddToggle('RagebotMultiPoint', {Text = 'Multipoint', Default = false})
 RageSections.Ragebot:AddToggle('RagebotBaim', {Text = 'Baim', Default = false, KeyPicker = {Idx = 'RagebotBaimKeybind', Default = 'None', Mode = 'Toggle', Text = 'Baim'}})
+RageSections.Ragebot:AddSlider('SilentAimMaxWalls', {Text = 'Max walls', Default = 3, Min = 1, Max = 10, Rounding = 0})
 
 RageSections.PeekAssist:AddToggle('PeekAssistEnable', {Text = 'Enable', Default = false, KeyPicker = {Idx = 'PeekAssistKeybind', Default = 'None', Mode = 'Hold', Text = 'Peek Assist'}})
 RageSections.PeekAssist:AddDropdown('PeekAssistRetreatMode', {Values = { 'On Key', 'On Shot' }, Default = 'On Key', Text = 'Retreat Mode'})
@@ -4803,7 +4545,7 @@ VisualSections.Misc:AddDropdown('MiscBulletTracerTexture', {
 VisualSections.Misc:AddToggle('MiscHitSound', {Text = 'Hit sound', Default = false})
 VisualSections.Misc:AddDropdown('MiscHitSoundType', {Values = { 'Skeet', 'Neverlose', 'Bameware', 'Bell', 'Bubble', 'Pick', 'Pop', 'Rust', 'Sans', 'Fart', 'Big', 'Vine', 'Bruh', 'Fatality', 'Bonk', 'Minecraft', 'Moan' }, Default = 'Skeet', Text = 'Hit sound type'})
 VisualSections.Misc:AddSlider('MiscHitSoundVolume', {Text = 'Volume', Default = 5, Min = 1, Max = 10, Rounding = 0})
-VisualSections.Misc:AddToggle('MiscHitChams', {Text = 'Hit chams', Default = false, ColorPicker = {Idx = 'MiscHitChamsColor', Default = Color3.fromRGB(255, 0, 0), Title = 'Hit chams color'}}):OnChanged(function() updateHitChams() end)
+VisualSections.Misc:AddToggle('MiscHitChams', {Text = 'Hit chams', Default = false, ColorPicker = {Idx = 'MiscHitChamsColor', Default = Color3.fromRGB(200, 30, 80), Title = 'Hit chams color'}})
 VisualSections.Misc:AddToggle('MiscHitMarker', {Text = 'Hit marker', Default = false, ColorPicker = {Idx = 'MiscHitMarkerColor', Default = Color3.fromRGB(255, 255, 255), Title = 'Hit marker color'}})
 VisualSections.Misc:AddSlider('MiscHitMarkerLifetime', {Text = 'Hit marker time (s)', Default = 0.6, Min = 0.2, Max = 5, Rounding = 1})
 VisualSections.Misc:AddToggle('MiscCenterDot', {Text = 'Center dot', Default = true, ColorPicker = {Idx = 'MiscCenterDotColor', Default = Color3.fromRGB(255, 255, 255), Title = 'Center dot color'}})
@@ -4842,6 +4584,16 @@ VisualSections.Grenades:AddToggle('GrenadesPrediction', {Text = 'Grenade predict
 VisualSections.Grenades:AddToggle('ExploitSuperToss', {Text = 'Super toss', Default = false, Callback = function() updateSuperToss() end, KeyPicker = {Idx = 'ExploitSuperTossKeybind', Default = 'None', Mode = 'Hold', Text = 'Super toss'}})
 VisualSections.Grenades:AddSlider('ExploitSuperTossPowerUp', {Text = 'Power up', Default = 500, Min = 0, Max = 2000, Rounding = 0})
 VisualSections.Grenades:AddSlider('ExploitSuperTossPowerFwd', {Text = 'Power forward', Default = 1000, Min = 0, Max = 3000, Rounding = 0})
+
+VisualSections.Radar:AddToggle('RadarEnable', {Text = 'Enable', Default = false, ColorPicker = {Idx = 'RadarPlayerDotColor', Default = Color3.fromRGB(60, 170, 255), Title = 'Dot color'}})
+VisualSections.Radar:AddToggle('RadarTeamCheck', {Text = 'Team check', Default = true})
+VisualSections.Radar:AddToggle('RadarHealthColor', {Text = 'Health color', Default = true})
+VisualSections.Radar:AddSlider('RadarRadius', {Text = 'Radius', Default = 125, Min = 50, Max = 500, Rounding = 0})
+VisualSections.Radar:AddSlider('RadarRange', {Text = 'Range (studs)', Default = 150, Min = 50, Max = 1000, Rounding = 0})
+
+VisualSections.Arrows:AddToggle('ArrowsEnable', {Text = 'Enable', Default = false, ColorPicker = {Idx = 'ArrowsColor', Default = Color3.fromRGB(255, 255, 255), Title = 'Arrow color'}})
+VisualSections.Arrows:AddSlider('ArrowsDistance', {Text = 'Distance', Default = 80, Min = 40, Max = 200, Rounding = 0})
+VisualSections.Arrows:AddSlider('ArrowsSize', {Text = 'Size', Default = 16, Min = 8, Max = 40, Rounding = 0})
 
 VisualSections.ThirdPerson:AddToggle('ThirdPersonEnable', {Text = 'Enable', Default = false, KeyPicker = {Idx = 'ThirdPersonKeybind', Default = 'None', Mode = 'Toggle', Text = 'Third person'}})
 VisualSections.ThirdPerson:AddSlider('ThirdPersonDistance', {Text = 'Distance', Default = 5, Min = 1, Max = 100, Rounding = 0})
@@ -5192,6 +4944,39 @@ task.spawn(function()
 end)
 end
 
+-- Silent aim helpers (ported from SilentAim.lua)
+local function buildSilentRay(targetPart)
+    local targetPos = targetPart.Position
+    local cam = getCamera()
+    local rayOrigin = cam.CFrame.Position
+    local dist = (rayOrigin - targetPos).Magnitude
+    local predicted = targetPos + Vector3.new(0, dist / 500, 0)
+    return Ray.new(rayOrigin, (predicted - rayOrigin).Unit * 500), rayOrigin, predicted
+end
+
+local function encodeHitPos(pos)
+    return Vector3.new(
+        ((pos.X - 156325) * 13 + 17854) * 16,
+        (pos.Y + 64000) * 7 - 142657,
+        (pos.Z * 9 - 47000) * 6
+    )
+end
+
+local function applySilentHitParl(args)
+    local tgt = getgenv().PSilentTarget
+    if not tgt or not tgt.Parent then return args end
+    local hitPos = tgt.CFrame and tgt.CFrame.p or tgt.Position
+    args[1] = tgt
+    args[2] = encodeHitPos(hitPos)
+    if typeof(args[10]) == "Vector3" and typeof(args[12]) == "Vector3" then
+        local dir = hitPos - args[10]
+        if dir.Magnitude > 0.001 then
+            args[12] = dir.Unit
+        end
+    end
+    return args
+end
+
 -- namecall hook
 local _oldNamecall
 
@@ -5206,10 +4991,27 @@ end
 
 
 pcall(function()
-    _oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
-        if checkcaller() then return _oldNamecall(self, ...) end
-
+    _oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
         local method = getnamecallmethod()
+        local silentTarget = getgenv().PSilentTarget
+        local silentActive = silentTarget and silentTarget.Parent ~= nil
+
+        -- Redirect FindPartOnRay variants
+        if silentActive and string.find(method, "FindPartOnRay") then
+            local fakeRay = buildSilentRay(silentTarget)
+            return _oldNamecall(self, fakeRay, select(2, ...))
+        end
+
+        -- Redirect workspace:Raycast
+        if silentActive and method == "Raycast" and self == Workspace then
+            local origin, direction = unpack({...})
+            if typeof(origin) == "Vector3" and typeof(direction) == "Vector3" then
+                local _, rayOrigin, predicted = buildSilentRay(silentTarget)
+                local mag = direction.Magnitude
+                if mag < 0.001 then mag = 500 end
+                return _oldNamecall(self, rayOrigin, (predicted - rayOrigin).Unit * mag, select(3, ...))
+            end
+        end
 
         if method == "FireServer" then
             local args = table.pack(...)
@@ -5231,25 +5033,48 @@ pcall(function()
                     end
                 end
             end
-            if args[1] == "HitParl" then
-                pcall(function()
-                    if Toggles.MiscHitSound and Toggles.MiscHitSound.Value then
-                        PlayHitSound()
-                    end
-                end)
-                pcall(function()
-                    if Toggles.MiscHitMarker and Toggles.MiscHitMarker.Value then
-                        ShowHitMarker()
-                    end
-                end)
-                pcall(function()
-                    if Toggles.MiscHitChams and Toggles.MiscHitChams.Value then
-                        local targetChar = findHitChamsTarget()
-                        if targetChar then
-                            runHitChamsOptimized(targetChar)
+            if self.Name == "HitParl" then
+                local args = table.pack(...)
+                local hitPart = args[1]
+                -- Silent aim: redirect hit to PSilentTarget
+                if silentActive then
+                    args = applySilentHitParl(args)
+                    hitPart = args[1]
+                end
+                if not hitPart or not hitPart.Parent then
+                    return _oldNamecall(self, unpack(args, 1, args.n))
+                end
+                -- Hit feedback runs async (spawn) like clarity.tk to avoid blocking the remote
+                task.spawn(function()
+                    pcall(function()
+                        if Toggles.MiscHitSound and Toggles.MiscHitSound.Value then
+                            PlayHitSound()
                         end
-                    end
+                    end)
+                    pcall(function()
+                        if Toggles.MiscHitMarker and Toggles.MiscHitMarker.Value then
+                            ShowHitMarker()
+                        end
+                    end)
+                    pcall(function()
+                        if Toggles.MiscHitChams and Toggles.MiscHitChams.Value then
+                            local targetChar = nil
+                            if hitPart and hitPart.Parent and hitPart.Parent:FindFirstChildOfClass("Humanoid") then
+                                targetChar = hitPart.Parent
+                            elseif silentTarget then
+                                if silentTarget.Parent and silentTarget.Parent:FindFirstChildOfClass("Humanoid") then
+                                    targetChar = silentTarget.Parent
+                                elseif silentTarget:FindFirstChildOfClass("Humanoid") then
+                                    targetChar = silentTarget
+                                end
+                            end
+                            if targetChar then
+                                hitChams(targetChar)
+                            end
+                        end
+                    end)
                 end)
+                return _oldNamecall(self, unpack(args, 1, args.n))
             end
 
             if self.Name == "ReplicateShot" then
@@ -5285,25 +5110,22 @@ pcall(function()
         if method == "Raycast" and self == Workspace and not getgenv().IgnoreRaycastHook then
             local targetPart = getgenv().PSilentTarget
             if targetPart and targetPart.Parent then
-                local targetPos = targetPart.Position
-
-                local Cam = Workspace.CurrentCamera
-                local camPos = Cam and Cam.CFrame.Position
-                if camPos then
-                    local delta = targetPos - camPos
-                    if delta.Magnitude > 1e-4 then
-                        local args = {...}
-                        getgenv().LastBulletTracerOrigin = camPos
-                        getgenv().LastBulletTracerTarget = targetPos
-                        args[2] = delta.Unit * 200
-                        return _oldNamecall(self, unpack(args))
-                    end
+                local _, rayOrigin, predicted = buildSilentRay(targetPart)
+                local rayArgs = {...}
+                local origin, direction = rayArgs[1], rayArgs[2]
+                if typeof(origin) == "Vector3" and typeof(direction) == "Vector3" then
+                    local mag = direction.Magnitude
+                    if mag < 0.001 then mag = 500 end
+                    getgenv().LastBulletTracerOrigin = rayOrigin
+                    getgenv().LastBulletTracerTarget = predicted
+                    rayArgs[2] = (predicted - rayOrigin).Unit * mag
+                    return _oldNamecall(self, unpack(rayArgs))
                 end
             end
         end
 
         return _oldNamecall(self, ...)
-    end))
+    end)
 end)
 
 
@@ -5314,14 +5136,6 @@ do
         end)
         pcall(function()
             if Toggles.MiscHitMarker and Toggles.MiscHitMarker.Value then ShowHitMarker() end
-        end)
-        pcall(function()
-            if Toggles.MiscHitChams and Toggles.MiscHitChams.Value then
-                local targetChar = findHitChamsTarget()
-                if targetChar then
-                    runHitChamsOptimized(targetChar)
-                end
-            end
         end)
     end
 
@@ -5366,13 +5180,14 @@ getgenv().ValenokFovCircles = { AimRuntime.AimFovCircle, AimRuntime.RageFovCircl
 _hitSoundObj = Instance.new("Sound")
 _hitSoundObj.Parent = workspace
 
+local RadarSystem = {}
 
 -- unload
 unloadValenok = function()
     restoreNamecallHook()
     getgenv().PSilentTarget = nil
 
-    teardownHitChamsListeners()
+    if RadarSystem.cleanup then RadarSystem.cleanup() end
 
     if HitMarkerState.HeartbeatConn then
         HitMarkerState.HeartbeatConn:Disconnect()
@@ -5407,6 +5222,16 @@ unloadValenok = function()
         end
         getgenv().ValenokCrosshair = nil
     end
+
+    if CrosshairState.Circle then
+        pcall(function() CrosshairState.Circle.Visible = false; CrosshairState.Circle:Remove() end)
+        CrosshairState.Circle = nil
+    end
+    if CrosshairState.Outline then
+        pcall(function() CrosshairState.Outline.Visible = false; CrosshairState.Outline:Remove() end)
+        CrosshairState.Outline = nil
+    end
+    CrosshairState.Created = false
 
     if getgenv().ValenokHitMarker then
         for _, d in ipairs(getgenv().ValenokHitMarker) do
@@ -5464,17 +5289,6 @@ unloadValenok = function()
     end
 
     if _hitSoundObj then pcall(function() _hitSoundObj:Destroy() end) end
-
-    if HitChamsState.ChamsFolder then
-        HitChamsState.ChamsFolder:Destroy()
-    end
-    for _, conns in pairs(HitChamsState.PlayerConns) do
-        for _, conn in ipairs(conns) do
-            pcall(function() conn:Disconnect() end)
-        end
-    end
-    table.clear(HitChamsState.PlayerConns)
-    table.clear(HitChamsState.ObservedPlayers)
 
     pcall(function()
         RunService:UnbindFromRenderStep("ValenokTPNoClip")
@@ -5761,8 +5575,270 @@ EspRuntime.Connections.PlayerRemoving = Players.PlayerRemoving:Connect(function(
             end)
             EspRuntime.Highlights[player] = nil
         end
+
+        if RadarSystem.removeDot then RadarSystem.removeDot(player) end
+        if RadarSystem.removeArrow then RadarSystem.removeArrow(player) end
     end)
 end)
+
+
+-- radar + off-screen arrows (scoped in its own function to avoid leaking local registers)
+;(function()
+    local function createCircle(thickness, color, radius, filled)
+        local circle = Drawing.new("Circle")
+        circle.Visible = false
+        circle.Thickness = thickness
+        circle.Transparency = 1
+        circle.Color = color
+        circle.Radius = radius
+        circle.Filled = filled
+        circle.NumSides = math.clamp(radius * 0.55, 10, 75)
+        return circle
+    end
+
+    local function createTriangle(color, filled, thickness)
+        local triangle = Drawing.new("Triangle")
+        triangle.Visible = false
+        triangle.Color = color
+        triangle.Filled = filled
+        triangle.Thickness = thickness
+        triangle.Transparency = 1
+        return triangle
+    end
+
+    local function lerpHealthColor(alpha)
+        alpha = math.clamp(alpha, 0, 1)
+        return Color3.new(1 - alpha, alpha, 0)
+    end
+
+    local RadarRuntime = {
+        Dots = {},
+        Border = nil,
+        LocalDot = nil,
+        Position = Vector2.new(152, 210),
+        Dragging = false,
+        DragOffset = Vector2.new(0, 0),
+    }
+
+    local ArrowRuntime = {
+        Arrows = {},
+    }
+
+    local function getRadarRadius()
+        return Options.RadarRadius and Options.RadarRadius.Value or 100
+    end
+
+    local function getRadarRange()
+        return Options.RadarRange and Options.RadarRange.Value or 150
+    end
+
+    local function getRadarRelative(pos)
+        local char = LocalPlayer.Character
+        local rootPart = char and char:FindFirstChild("HumanoidRootPart")
+        if not rootPart then return 0, 0 end
+
+        local camPos = Camera.CFrame.Position
+        local flatCamPos = Vector3.new(camPos.X, rootPart.Position.Y, camPos.Z)
+        local rel = CFrame.new(rootPart.Position, flatCamPos):PointToObjectSpace(pos)
+        return rel.X, rel.Z
+    end
+
+    local function rotateVector2(v, angleDeg)
+        local a = math.rad(angleDeg)
+        local cosA, sinA = math.cos(a), math.sin(a)
+        return Vector2.new(v.X * cosA - v.Y * sinA, v.X * sinA + v.Y * cosA)
+    end
+
+    RadarSystem.cleanup = function()
+        for player, dot in pairs(RadarRuntime.Dots) do
+            pcall(function() dot.Visible = false; dot:Remove() end)
+            RadarRuntime.Dots[player] = nil
+        end
+        if RadarRuntime.Border then
+            pcall(function() RadarRuntime.Border.Visible = false; RadarRuntime.Border:Remove() end)
+            RadarRuntime.Border = nil
+        end
+        if RadarRuntime.LocalDot then
+            pcall(function() RadarRuntime.LocalDot.Visible = false; RadarRuntime.LocalDot:Remove() end)
+            RadarRuntime.LocalDot = nil
+        end
+
+        for player, arrow in pairs(ArrowRuntime.Arrows) do
+            pcall(function() arrow.Visible = false; arrow:Remove() end)
+            ArrowRuntime.Arrows[player] = nil
+        end
+    end
+
+    RadarSystem.removeDot = function(player)
+        local dot = RadarRuntime.Dots[player]
+        if not dot then return end
+        pcall(function() dot.Visible = false; dot:Remove() end)
+        RadarRuntime.Dots[player] = nil
+    end
+
+    RadarSystem.updateDot = function(player)
+        if not (Toggles.RadarEnable and Toggles.RadarEnable.Value) then
+            local existing = RadarRuntime.Dots[player]
+            if existing then existing.Visible = false end
+            return
+        end
+
+        local character, humanoid, rootPart = getCharacterParts(player)
+        if not (humanoid and rootPart and humanoid.Health > 0) then
+            local existing = RadarRuntime.Dots[player]
+            if existing then existing.Visible = false end
+            return
+        end
+
+        local dot = RadarRuntime.Dots[player]
+        if not dot then
+            dot = createCircle(1, Color3.fromRGB(60, 170, 255), 3, true)
+            RadarRuntime.Dots[player] = dot
+        end
+
+        local radius = getRadarRadius()
+        local center = RadarRuntime.Position
+        local relX, relZ = getRadarRelative(rootPart.Position)
+        local newPos = center - Vector2.new(relX, relZ) * radius
+        local delta = newPos - center
+
+        if delta.Magnitude < radius - 2 then
+            dot.Radius = 3
+            dot.Position = newPos
+        else
+            dot.Radius = 2
+            dot.Position = center + delta.Unit * (radius - 2)
+        end
+
+        local dotColor = getOptionColor("RadarPlayerDotColor", Color3.fromRGB(60, 170, 255))
+        if Toggles.RadarTeamCheck and Toggles.RadarTeamCheck.Value then
+            local myTeamColor, theirTeamColor = LocalPlayer.TeamColor, player.TeamColor
+            if myTeamColor ~= nil and theirTeamColor ~= nil and theirTeamColor == myTeamColor then
+                dotColor = Color3.fromRGB(0, 255, 0)
+            else
+                dotColor = Color3.fromRGB(255, 0, 0)
+            end
+        end
+        if Toggles.RadarHealthColor and Toggles.RadarHealthColor.Value then
+            dotColor = lerpHealthColor(humanoid.Health / humanoid.MaxHealth)
+        end
+
+        dot.Color = dotColor
+        dot.Visible = true
+    end
+
+    RadarSystem.updateFrame = function()
+        if not (Toggles.RadarEnable and Toggles.RadarEnable.Value) then
+            if RadarRuntime.Border then RadarRuntime.Border.Visible = false end
+            if RadarRuntime.LocalDot then RadarRuntime.LocalDot.Visible = false end
+            return
+        end
+
+        if not RadarRuntime.Border then
+            RadarRuntime.Border = createCircle(1, Color3.fromRGB(0, 0, 0), getRadarRadius(), false)
+        end
+        if not RadarRuntime.LocalDot then
+            RadarRuntime.LocalDot = createTriangle(Color3.fromRGB(255, 255, 255), true, 1)
+        end
+
+        if RadarRuntime.Dragging then
+            RadarRuntime.Position = UserInputService:GetMouseLocation() + RadarRuntime.DragOffset
+            print(string.format("[Radar] Position: X=%d, Y=%d", RadarRuntime.Position.X, RadarRuntime.Position.Y))
+        end
+
+        local radius = getRadarRadius()
+        local center = RadarRuntime.Position
+
+        RadarRuntime.Border.Position = center
+        RadarRuntime.Border.Radius = radius
+        RadarRuntime.Border.Visible = true
+
+        RadarRuntime.LocalDot.PointA = center + Vector2.new(0, -6)
+        RadarRuntime.LocalDot.PointB = center + Vector2.new(-3, 6)
+        RadarRuntime.LocalDot.PointC = center + Vector2.new(3, 6)
+        RadarRuntime.LocalDot.Visible = true
+    end
+
+    EspRuntime.Connections.RadarInputBegan = UserInputService.InputBegan:Connect(function(input)
+        if not (Toggles.RadarEnable and Toggles.RadarEnable.Value) then return end
+        if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+
+        local mousePos = UserInputService:GetMouseLocation()
+        if (mousePos - RadarRuntime.Position).Magnitude <= getRadarRadius() then
+            RadarRuntime.DragOffset = RadarRuntime.Position - mousePos
+            RadarRuntime.Dragging = true
+        end
+    end)
+
+    EspRuntime.Connections.RadarInputEnded = UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            RadarRuntime.Dragging = false
+        end
+    end)
+
+    RadarSystem.removeArrow = function(player)
+        local arrow = ArrowRuntime.Arrows[player]
+        if not arrow then return end
+        pcall(function() arrow.Visible = false; arrow:Remove() end)
+        ArrowRuntime.Arrows[player] = nil
+    end
+
+    RadarSystem.updateArrow = function(player)
+        if not (Toggles.ArrowsEnable and Toggles.ArrowsEnable.Value) then
+            local existing = ArrowRuntime.Arrows[player]
+            if existing then existing.Visible = false end
+            return
+        end
+
+        local myCharacter = LocalPlayer.Character
+        local myRoot = myCharacter and myCharacter:FindFirstChild("HumanoidRootPart")
+        local character, humanoid, rootPart = getCharacterParts(player)
+        if not (humanoid and rootPart and humanoid.Health > 0 and myRoot) then
+            local existing = ArrowRuntime.Arrows[player]
+            if existing then existing.Visible = false end
+            return
+        end
+
+        local _, onScreen = Camera:WorldToViewportPoint(rootPart.Position)
+        if onScreen then
+            local existing = ArrowRuntime.Arrows[player]
+            if existing then existing.Visible = false end
+            return
+        end
+
+        local arrow = ArrowRuntime.Arrows[player]
+        if not arrow then
+            arrow = createTriangle(Color3.fromRGB(255, 255, 255), true, 1)
+            ArrowRuntime.Arrows[player] = arrow
+        end
+
+        local camPos = Camera.CFrame.Position
+        local flatCamPos = Vector3.new(myRoot.Position.X, camPos.Y, myRoot.Position.Z)
+        local relative = CFrame.new(flatCamPos, camPos):PointToObjectSpace(rootPart.Position)
+        local dir2 = Vector2.new(relative.X, relative.Z)
+        if dir2.Magnitude < 1e-4 then
+            arrow.Visible = false
+            return
+        end
+        local direction = dir2.Unit
+
+        local distFromCenter = Options.ArrowsDistance and Options.ArrowsDistance.Value or 80
+        local triHeight = Options.ArrowsSize and Options.ArrowsSize.Value or 16
+        local sideLength = triHeight / 2
+
+        local base = direction * distFromCenter
+        local baseL = base + rotateVector2(direction, 90) * sideLength
+        local baseR = base + rotateVector2(direction, -90) * sideLength
+        local tip = direction * (distFromCenter + triHeight)
+
+        local screenCenter = Camera.ViewportSize / 2
+        arrow.PointA = screenCenter - baseL
+        arrow.PointB = screenCenter - baseR
+        arrow.PointC = screenCenter - tip
+        arrow.Color = getOptionColor("ArrowsColor", Color3.fromRGB(255, 255, 255))
+        arrow.Visible = true
+    end
+end)()
 
 
 -- main loop
@@ -5782,7 +5858,27 @@ EspRuntime.Connections.RenderStepped = RunService.RenderStepped:Connect(function
 
         updateFovCircle()
         updateAimBot(dt)
-        updateRagebot()
+        
+        -- Silent aim keybind handling
+        local keybindActive = isKeybindActive(Options.RagebotKeybind)
+        if Toggles.RagebotEnable and Toggles.RagebotEnable.Value then
+            silentActive = keybindActive
+        else
+            silentActive = false
+        end
+        
+        -- Silent aim target update
+        if silentActive then
+            if UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+                local silentTarget = getNearestSilentTarget()
+                getgenv().PSilentTarget = silentTarget
+            else
+                getgenv().PSilentTarget = nil
+            end
+        else
+            getgenv().PSilentTarget = nil
+        end
+        
         updateCrosshair()
 
         -- ESP must be updated AFTER aimbot so it uses the final camera position
@@ -5791,9 +5887,14 @@ EspRuntime.Connections.RenderStepped = RunService.RenderStepped:Connect(function
             local plist = Players:GetPlayers()
             for i = 1, #plist do
                 updatePlayerEsp(plist[i])
+                if plist[i] ~= LocalPlayer then
+                    RadarSystem.updateDot(plist[i])
+                    RadarSystem.updateArrow(plist[i])
+                end
             end
             updateItemEsp()
             updateBombEsp()
+            RadarSystem.updateFrame()
         end
 
         if Toggles.MenuWatermark and Toggles.MenuWatermark.Value then
@@ -5971,7 +6072,7 @@ end
 
 
 -- Persist watermark & keybind list positions (fallback: separate file for when config is not saved)
-do
+;(function()
     local UI_POS_FILE = "Valenok/ui_positions.json"
     pcall(function() if makefolder and not isfolder("Valenok") then makefolder("Valenok") end end)
 
@@ -6018,4 +6119,4 @@ do
     if Library.KeybindFrame then
         Library:GiveSignal(Library.KeybindFrame:GetPropertyChangedSignal('Position'):Connect(saveUiPositions))
     end
-end
+end)()
