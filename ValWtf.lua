@@ -3999,7 +3999,10 @@ local HttpService = game:GetService("HttpService")
 local function SC_SaveSkins()
     pcall(function()
         local data = { knife = SC.State.SavedKnifeSkins, weapon = SC.State.SavedWeaponSkins, glove = SC.State.SavedGloveSkins }
-        writefile(SC.State.skinFile, HttpService:JSONEncode(data))
+        local json = HttpService:JSONEncode(data)
+        if json then
+            writefile(SC.State.skinFile, json)
+        end
     end)
 end
 SC.SaveSkins = SC_SaveSkins
@@ -6031,7 +6034,10 @@ do
                 local p = Library.KeybindFrame.Position
                 data.uiPositions.Keybind = { p.X.Scale, p.X.Offset, p.Y.Scale, p.Y.Offset }
             end
-            writefile(fullPath, HttpService:JSONEncode(data))
+            local json = HttpService:JSONEncode(data)
+            if json then
+                writefile(fullPath, json)
+            end
         end)
 
         return true
@@ -6154,7 +6160,10 @@ end
                 local data = {}
                 if Library.Watermark then data.Watermark = udimToTable(Library.Watermark.Position) end
                 if Library.KeybindFrame then data.Keybind = udimToTable(Library.KeybindFrame.Position) end
-                writefile(UI_POS_FILE, HttpService:JSONEncode(data))
+                local json = HttpService:JSONEncode(data)
+                if json then
+                    writefile(UI_POS_FILE, json)
+                end
             end)
         end)
     end
