@@ -321,8 +321,23 @@ end
 
 local function hasShield(character)
     if not character then return false end
-    local shield = character:FindFirstChild("Shield") or character:FindFirstChild("ForceField")
-    return shield ~= nil
+    
+    -- Check for Shield instance
+    local shield = character:FindFirstChild("Shield")
+    if shield then return true end
+    
+    -- Check for ForceField instance (may be in character or workspace)
+    local forceField = character:FindFirstChildOfClass("ForceField")
+    if forceField then return true end
+    
+    -- Check if character has ForceField protection
+    for _, child in ipairs(character:GetChildren()) do
+        if child:IsA("ForceField") then
+            return true
+        end
+    end
+    
+    return false
 end
 
 local function findCharacterPart(character, partName)
@@ -527,6 +542,10 @@ local function getNearestSilentTarget()
     local useVisibleCheck = Toggles.RagebotVisCheck and Toggles.RagebotVisCheck.Value
     local useTeamCheck = Toggles.RagebotTeamCheck and Toggles.RagebotTeamCheck.Value
     local selectedHitbox = Options.RagebotHitbox and Options.RagebotHitbox.Value or "Head"
+    
+    -- For Auto Fire, always check walls regardless of VisCheck setting
+    local autoFireActive = Toggles.RagebotAutoFire and Toggles.RagebotAutoFire.Value
+    local forceWallCheck = autoFireActive
 
     local nearestPart = nil
     local nearestDist = math.huge
@@ -561,7 +580,8 @@ local function getNearestSilentTarget()
         local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
         if not onScreen then continue end
 
-        if useVisibleCheck and not isVisibleWithWalls(targetPart, maxWalls) then continue end
+        -- Always check walls for Auto Fire, otherwise respect VisCheck setting
+        if (useVisibleCheck or forceWallCheck) and not isVisibleWithWalls(targetPart, maxWalls) then continue end
 
         local dist = (Vector2.new(screenPos.X, screenPos.Y) - aimPos).Magnitude
         if dist < nearestDist and dist <= fovPixels then
@@ -809,7 +829,7 @@ end
 -- forward declarations
 local updateRCS, updateRapidFire, updateFullAuto, restoreAllRapidFireRates, restoreAllFullAutoValues
 local applyNoRecoil, applyNoSpread, applyInstaEquip, applyInstaReload, fireSingleShot
-local updateBhop, updateLegitBhop, updateThirdPerson, updateThirdPersonNoClip, updateNoclip, updateFly, onAutoJumpChanged, updateAutoCrouch, updateSpeedHack
+local updateThirdPerson, updateThirdPersonNoClip, updateNoclip, updateFly, onAutoJumpChanged, updateAutoCrouch, updateSpeedHack, updateBhop, updateWallTransparency
 local updateGrenadePrediction, updateNoScope, updateNoFlash, applyNoScope, setupNoSmoke
 local ensureCrosshair, updateCrosshair, unloadValenok
 
@@ -2276,12 +2296,21 @@ end
 
 local function getAliveMovementRig()
     local character = LocalPlayer.Character
-    if not character then return nil end
+    if not character or not character.Parent then return nil end
 
     local humanoid = character:FindFirstChildOfClass("Humanoid")
-    if not humanoid or humanoid.Health <= 0 then return nil end
+    if not humanoid then return nil end
+    
+    -- Check if humanoid is dead (Health <= 0 or health is 0)
+    if humanoid.Health <= 0 then return nil end
+    
+    -- Check if character is still in workspace (not destroyed)
+    if not character:IsDescendantOf(Workspace) then return nil end
 
-    return character, humanoid, character:FindFirstChild("HumanoidRootPart")
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not rootPart then return nil end
+
+    return character, humanoid, rootPart
 end
 
 local function getMoveAxes()
@@ -2453,99 +2482,88 @@ updateAutoCrouch = function()
     end)
 end
 
-local BhopState = { Conn = nil }
-local LegitBhopState = { Conn = nil, JumpCount = 0, WasInAir = false, DefaultSpeed = 16 }
-local AutoJumpConn
 local NoclipState = { Conn = nil, DescendantConn = nil, Saved = {}, Parts = {}, Character = nil }
 local FlyState = { Conn = nil }
-
+local BhopState = { Conn = nil, JumpCount = 0, WasInAir = false, DefaultSpeed = 16 }
 
 updateBhop = function()
     if BhopState.Conn then
         BhopState.Conn:Disconnect()
         BhopState.Conn = nil
     end
+    BhopState.JumpCount = 0
+    BhopState.WasInAir = false
     local humanoid = MoveUtil.getLocalHumanoid()
     if humanoid then
-        humanoid.WalkSpeed = CONSTANTS.DEFAULT_WALK_SPEED
+        humanoid.WalkSpeed = BhopState.DefaultSpeed
     end
     if not (Toggles.BhopEnable and Toggles.BhopEnable.Value) then return end
 
     BhopState.Conn = RunService.RenderStepped:Connect(function(dt)
         pcall(function()
             local _, hum, rootPart = MoveUtil.getAliveMovementRig()
-            if not rootPart then return end
-
-            if UserInputService:IsKeyDown(MoveUtil.MOVE_KEY_SPACE) and hum.FloorMaterial ~= MoveUtil.AIR_MATERIAL then
-                hum.Jump = true
-            end
-
-            local multiplier = Options.BhopMultiplier and Options.BhopMultiplier.Value or 1
-            if not multiplier or multiplier <= 0 then multiplier = 1 end
-            local targetSpeed = CONSTANTS.DEFAULT_WALK_SPEED * multiplier
-            hum.WalkSpeed = targetSpeed
-
-            local cam = getCamera()
-            if not cam then return end
-            MoveUtil.applyCameraCFrameMove(rootPart, cam, targetSpeed, dt)
-        end)
-    end)
-end
-
-
-updateLegitBhop = function()
-    if LegitBhopState.Conn then
-        LegitBhopState.Conn:Disconnect()
-        LegitBhopState.Conn = nil
-    end
-    LegitBhopState.JumpCount = 0
-    LegitBhopState.WasInAir = false
-    local humanoid = MoveUtil.getLocalHumanoid()
-    if humanoid then
-        humanoid.WalkSpeed = LegitBhopState.DefaultSpeed
-    end
-    if not (Toggles.LegitBhopEnable and Toggles.LegitBhopEnable.Value) then return end
-
-    LegitBhopState.Conn = RunService.RenderStepped:Connect(function()
-        pcall(function()
-            local _, hum, rootPart = MoveUtil.getAliveMovementRig()
-            if not hum then return end
-
-            if not UserInputService:IsKeyDown(MoveUtil.MOVE_KEY_SPACE) then
-                LegitBhopState.JumpCount = 0
-                LegitBhopState.WasInAir = hum.FloorMaterial == MoveUtil.AIR_MATERIAL
+            if not hum or not rootPart then return end
+            
+            local autoJumpEnabled = Toggles.BhopAutoJump and Toggles.BhopAutoJump.Value
+            local spaceHeld = UserInputService:IsKeyDown(MoveUtil.MOVE_KEY_SPACE)
+            
+            if not autoJumpEnabled and not spaceHeld then
+                BhopState.JumpCount = 0
+                BhopState.WasInAir = hum.FloorMaterial == MoveUtil.AIR_MATERIAL
                 return
             end
-
+            
+            local add = 0
+            local keyHeld = false
+            
+            if UserInputService:IsKeyDown(Enum.KeyCode.W) or UserInputService:IsKeyDown(Enum.KeyCode.A) or UserInputService:IsKeyDown(Enum.KeyCode.S) or UserInputService:IsKeyDown(Enum.KeyCode.D) then 
+                keyHeld = true 
+            end
+            if UserInputService:IsKeyDown(Enum.KeyCode.A) then add = 90 end
+            if UserInputService:IsKeyDown(Enum.KeyCode.S) then add = 180 end
+            if UserInputService:IsKeyDown(Enum.KeyCode.D) then add = 270 end
+            if UserInputService:IsKeyDown(Enum.KeyCode.A) and UserInputService:IsKeyDown(Enum.KeyCode.W) then add = 45 end
+            if UserInputService:IsKeyDown(Enum.KeyCode.D) and UserInputService:IsKeyDown(Enum.KeyCode.W) then add = 315 end
+            if UserInputService:IsKeyDown(Enum.KeyCode.D) and UserInputService:IsKeyDown(Enum.KeyCode.S) then add = 225 end
+            if UserInputService:IsKeyDown(Enum.KeyCode.A) and UserInputService:IsKeyDown(Enum.KeyCode.S) then add = 135 end
+            
             local state = hum:GetState()
             local onGround = hum.FloorMaterial ~= MoveUtil.AIR_MATERIAL
                 and state ~= Enum.HumanoidStateType.Jumping
                 and state ~= Enum.HumanoidStateType.Freefall
-
+            
             if onGround then
                 hum:ChangeState(Enum.HumanoidStateType.Jumping)
                 hum.Jump = true
-                LegitBhopState.JumpCount = math.min(LegitBhopState.JumpCount + 1, 5)
-
-                -- speed gain ramps up with consecutive bhops, capped to avoid flinging
-                local maxMult = Options.LegitBhopMultiplier and Options.LegitBhopMultiplier.Value or 2
-                local multiplier = 1 + (LegitBhopState.JumpCount / 5) * (maxMult - 1)
-                if rootPart then
-                    local vel = rootPart.AssemblyLinearVelocity
-                    local horizontal = Vector3.new(vel.X, 0, vel.Z)
-                    if horizontal.Magnitude > 1 then
-                        local cap = hum.WalkSpeed * multiplier
-                        local newMag = math.min(horizontal.Magnitude * 1.15, cap)
-                        local boosted = horizontal.Unit * newMag
-                        rootPart.AssemblyLinearVelocity = Vector3.new(boosted.X, vel.Y, boosted.Z)
-                    end
-                end
+                BhopState.JumpCount = math.min(BhopState.JumpCount + 1, 5)
             end
-
-            LegitBhopState.WasInAir = not onGround
+            
+            if keyHeld then
+                local cam = getCamera()
+                if not cam then return end
+                
+                local camCF = cam.CFrame
+                local _, camY, _ = camCF:ToOrientation()
+                local rot = CFrame.new(camCF.Position) * CFrame.Angles(0, camY, 0) * CFrame.Angles(0, math.rad(add), 0)
+                
+                local multiplier = Options.BhopMultiplier and Options.BhopMultiplier.Value or 1
+                local baseSpeed = CONSTANTS.DEFAULT_WALK_SPEED
+                
+                -- Speed acceleration based on jump count
+                local speedMultiplier = 1 + (BhopState.JumpCount / 5) * (multiplier - 1)
+                local targetSpeed = baseSpeed * speedMultiplier
+                
+                local cfSpeed = targetSpeed / 300
+                local moveDir = rot.LookVector.Unit
+                rootPart.CFrame = rootPart.CFrame + Vector3.new(moveDir.X * cfSpeed, 0, moveDir.Z * cfSpeed)
+            end
+            
+            BhopState.WasInAir = not onGround
         end)
     end)
 end
+
+
 
 
 local function clearNoclipRuntime()
@@ -2658,16 +2676,6 @@ updateFly = function()
 end
 
 
-local function updateStrafe()
-    if not Toggles.StrafeEnable or not Toggles.StrafeEnable.Value then return end
-    MoveUtil.applyStrafeVelocity(false)
-end
-
-
-local function updateAirStrafe()
-    if not Toggles.AirStrafeEnable or not Toggles.AirStrafeEnable.Value then return end
-    MoveUtil.applyStrafeVelocity(true)
-end
 
 
 local ThirdPersonCache = { arms = nil, parts = nil, lastHideState = nil }
@@ -2789,8 +2797,44 @@ local GrenadeRuntime = {
 }
 
 local HitChamsState = {
-    Cooldown = false
+    Cooldown = false,
+    ActiveChams = {}
 }
+
+local WallTransparencyState = {
+    Conn = nil,
+    OriginalTransparency = {},
+    MapParts = {}
+}
+
+updateWallTransparency = function()
+    local mapObj = Workspace:FindFirstChild("Map")
+    if not mapObj then return end
+    
+    local geometry = mapObj:FindFirstChild("Geometry")
+    if not geometry then return end
+    
+    local transparencyValue = Options.WallTransparencyValue and Options.WallTransparencyValue.Value or 50
+    local targetTransparency = transparencyValue / 100
+    
+    if Toggles.WallTransparency and Toggles.WallTransparency.Value then
+        for _, part in ipairs(geometry:GetDescendants()) do
+            if part:IsA("BasePart") and part.Transparency ~= 1 then
+                if WallTransparencyState.OriginalTransparency[part] == nil then
+                    WallTransparencyState.OriginalTransparency[part] = part.Transparency
+                end
+                part.Transparency = targetTransparency
+            end
+        end
+    else
+        for part, originalTrans in pairs(WallTransparencyState.OriginalTransparency) do
+            if part and part.Parent then
+                pcall(function() part.Transparency = originalTrans end)
+            end
+        end
+        table.clear(WallTransparencyState.OriginalTransparency)
+    end
+end
 
 local function hitChams(targetChar)
     if not targetChar or not targetChar.Parent then return end
@@ -2802,7 +2846,7 @@ local function hitChams(targetChar)
 
     local color = getOptionColor("MiscHitChamsColor", Color3.fromRGB(200, 30, 80))
     local container = Instance.new("Model")
-    container.Name = "HitCham"
+    container.Name = "HitCham_" .. tick()
     local parts = {}
     for _, v in next, targetChar:GetChildren() do
         if v:IsA("BasePart") and v.Transparency ~= 1 then
@@ -2819,10 +2863,18 @@ local function hitChams(targetChar)
         end
     end
     container.Parent = Workspace.CurrentCamera
+    HitChamsState.ActiveChams[container] = true
+    
     for _, p in next, parts do
         TweenService:Create(p, TweenInfo.new(1.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Transparency = 1}):Play()
     end
-    Debris:AddItem(container, 1.3)
+    
+    task.delay(1.3, function()
+        if container and container.Parent then
+            pcall(function() container:Destroy() end)
+        end
+        HitChamsState.ActiveChams[container] = nil
+    end)
 end
 
 local AmbienceSavedLighting
@@ -4400,25 +4452,11 @@ MovementSections.SpeedHack:AddSlider('SpeedHackSpeed', {Text = 'Speed', Default 
 MovementSections.Exploits:AddToggle('NoclipEnable', {Text = 'Noclip', Default = false, Callback = function() updateNoclip() end})
 MovementSections.Exploits:AddToggle('FlyEnable', {Text = 'Fly', Default = false, Callback = function() updateFly() end})
 MovementSections.Exploits:AddSlider('FlySpeed', {Text = 'Fly speed', Default = 50, Min = 10, Max = 300, Rounding = 0})
-MovementSections.LegitBhop:AddToggle('LegitBhopEnable', {Text = 'Enable', Default = false, Callback = function() updateLegitBhop() end})
+MovementSections.LegitBhop:AddToggle('LegitBhopEnable', {Text = 'Enable', Default = false})
 MovementSections.LegitBhop:AddSlider('LegitBhopMultiplier', {Text = 'Multiplier', Default = 2, Min = 1, Max = 3, Rounding = 1})
 MovementSections.Bhop:AddToggle('BhopEnable', {Text = 'Enable', Default = false, Callback = function() updateBhop() end})
 MovementSections.Bhop:AddSlider('BhopMultiplier', {Text = 'Bhop multiplier', Default = 1, Min = 1, Max = 5, Rounding = 2})
-MovementSections.Bhop:AddToggle('BhopAutoJump', {Text = 'Auto jump', Default = false, Callback = function()
-    if AutoJumpConn then AutoJumpConn:Disconnect(); AutoJumpConn = nil end
-    if not (Toggles.BhopAutoJump and Toggles.BhopAutoJump.Value) then return end
-    AutoJumpConn = RunService.RenderStepped:Connect(function()
-        if not (Toggles.BhopAutoJump and Toggles.BhopAutoJump.Value) then return end
-        if not UserInputService:IsKeyDown(Enum.KeyCode.Space) then return end
-        local character = LocalPlayer.Character
-        if not character then return end
-        local humanoid = character:FindFirstChildOfClass("Humanoid")
-        if not humanoid or humanoid.Health <= 0 then return end
-        if humanoid.FloorMaterial ~= Enum.Material.Air then
-            humanoid.Jump = true
-        end
-    end)
-end})
+MovementSections.Bhop:AddToggle('BhopAutoJump', {Text = 'Auto jump', Default = false, Callback = function() updateBhop() end})
 MovementSections.Strafe:AddToggle('StrafeEnable', {Text = 'Strafe', Default = false})
 MovementSections.Strafe:AddToggle('AirStrafeEnable', {Text = 'Air strafe', Default = false})
 
@@ -4604,6 +4642,8 @@ ambienceTab:AddToggle('AmbienceCustomTime', {Text = 'Custom time', Default = fal
 ambienceTab:AddSlider('AmbienceTime', {Text = 'Time', Default = 12, Min = 0, Max = 24, Rounding = 1}):OnChanged(function() MiscState.ambienceDirty = true end)
 ambienceTab:AddToggle('AmbienceCustomSkybox', {Text = 'Custom skybox', Default = false, ColorPicker = {Idx = 'AmbienceSkyboxColor', Default = Color3.fromRGB(0, 0, 0), Title = 'Skybox color', Callback = function() MiscState.ambienceDirty = true end}}):OnChanged(function() MiscState.ambienceDirty = true end)
 ambienceTab:AddToggle('AmbienceSkyColor', {Text = 'Sky color', Default = false, ColorPicker = {Idx = 'AmbienceSkyColorValue', Default = Color3.fromRGB(0, 0, 0), Title = 'Sky color', Callback = function() MiscState.ambienceDirty = true end}}):OnChanged(function() MiscState.ambienceDirty = true end)
+ambienceTab:AddToggle('WallTransparency', {Text = 'Visualize penetration', Default = false, Callback = function() updateWallTransparency() end})
+ambienceTab:AddSlider('WallTransparencyValue', {Text = 'Penetration amount', Default = 50, Min = 0, Max = 99, Rounding = 0, Callback = function() updateWallTransparency() end})
 ambienceTab:AddToggle('AmbienceNightMode', {Text = 'Night mode (walls)', Default = false, ColorPicker = {Idx = 'AmbienceNightColor', Default = Color3.fromRGB(20, 20, 40), Title = 'Night mode color', Callback = function() MiscState.ambienceDirty = true end}}):OnChanged(function() MiscState.ambienceDirty = true end)
 ambienceTab:AddToggle('AmbienceNoShadow', {Text = 'No shadow', Default = false}):OnChanged(function() MiscState.ambienceDirty = true end)
 ambienceTab:AddSlider('AmbienceBrightness', {Text = 'Brightness', Default = 0, Min = -10, Max = 10, Rounding = 1}):OnChanged(function() MiscState.ambienceDirty = true end)
@@ -5879,6 +5919,28 @@ EspRuntime.Connections.RenderStepped = RunService.RenderStepped:Connect(function
             getgenv().PSilentTarget = nil
         end
         
+        -- Auto Fire logic for Ragebot
+        if Toggles.RagebotAutoFire and Toggles.RagebotAutoFire.Value then
+            local keybindActive = isKeybindActive(Options.RagebotKeybind)
+            if keybindActive then
+                local silentTarget = getNearestSilentTarget()
+                if silentTarget then
+                    getgenv().PSilentTarget = silentTarget
+                    -- Auto click mouse button 1 when target is found
+                    if not UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+                        local mousePos = UserInputService:GetMouseLocation()
+                        VirtualInputManager:SendMouseButtonEvent(mousePos.X, mousePos.Y, 0, true, game, 1)
+                        task.wait(0.05)
+                        VirtualInputManager:SendMouseButtonEvent(mousePos.X, mousePos.Y, 0, false, game, 1)
+                    end
+                else
+                    getgenv().PSilentTarget = nil
+                end
+            else
+                getgenv().PSilentTarget = nil
+            end
+        end
+        
         updateCrosshair()
 
         -- ESP must be updated AFTER aimbot so it uses the final camera position
@@ -5925,8 +5987,6 @@ end)
 EspRuntime.Connections.KillAllHeartbeat = RunService.Heartbeat:Connect(function()
     pcall(function()
         updateKillAll()
-        updateStrafe()
-        updateAirStrafe()
     end)
 end)
 
