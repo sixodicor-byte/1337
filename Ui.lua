@@ -2339,7 +2339,10 @@ do
             end;
         end;
 
-        function Dropdown:SetValues()
+        function Dropdown:SetValues(NewValues)
+            if NewValues then
+                Dropdown.Values = NewValues;
+            end
             local Values = Dropdown.Values;
             local Buttons = {};
 
