@@ -113,6 +113,17 @@ local CONSTANTS = {
     RAPID_FIRE_MULTIPLIERS = {
         AWP = 9, Scout = 10, G3SG1 = 8, USP = 7, DesertEagle = 7, ["AK-47"] = 8,
     },
+    GRENADE_PARAMS = {
+        LOOK_SPEED = 100,
+        PLR_FACTOR = 1.0,
+        UP_BIAS = 12,
+        default = { maxBounces = 3, bounceDamping = 0.42 },
+        molotov = { maxBounces = 5, bounceDamping = 0.4 },
+        he = { maxBounces = 4, bounceDamping = 0.55 },
+        smoke = { maxBounces = 3, bounceDamping = 0.38 },
+        flash = { maxBounces = 4, bounceDamping = 0.55 },
+        decoy = { maxBounces = 3, bounceDamping = 0.42 },
+    },
 }
 
 
@@ -686,6 +697,293 @@ local function hitChams(player, customColor, transparency, lifetime)
         end
     end
 end
+
+local GrenadeRuntime = {
+    Folder = nil,
+    Attachments = {},
+    Beams = {},
+    Sphere = nil,
+    LmbDown = false,
+    RmbDown = false,
+    PulseVal = 1.0,
+    PulseDir = 1,
+    RP = nil,
+    FilterList = nil,
+    TrajectoryCache = {
+        lastPos = nil,
+        lastLook = nil,
+        lastNadeType = nil,
+        lastVel = nil,
+        cachedPoints = nil,
+        cachedSpherePos = nil,
+    },
+}
+
+local function isHoldingNade()
+    local lp = LocalPlayer
+    if not lp or not lp.Character then return false end
+    local gun = lp.Character:FindFirstChild("Gun")
+    if gun and gun:FindFirstChild("Grenade") then return true end
+    local eqVal = lp.Character:FindFirstChild("EquippedTool")
+    if eqVal and type(eqVal.Value) == "string" then
+        local weaponDef = getWeaponsFolder()
+        if weaponDef then
+            local w = weaponDef:FindFirstChild(eqVal.Value)
+            if w and w:FindFirstChild("Grenade") then return true end
+        end
+        local n = eqVal.Value:lower()
+        if n:find("flash") or n:find("hegren") or n:find("smoke") or n:find("molotov") or n:find("incen") or n:find("decoy") or n:find("grenade") or n:find("nade") then
+            return true
+        end
+    end
+    return false
+end
+
+local function getNadePosition()
+    local cam = getCamera()
+    if not cam then return Vector3.new() end
+    return (cam.CFrame * CFrame.new(0.1, -0.4, -2.5)).Position
+end
+
+local function getNadeType()
+    local lp = LocalPlayer
+    if not lp or not lp.Character then return "default" end
+    local eqVal = lp.Character:FindFirstChild("EquippedTool")
+    if not eqVal or type(eqVal.Value) ~= "string" then return "default" end
+    local v = eqVal.Value
+    if v == "Molotov" or v == "Incendiary Grenade" then return "molotov" end
+    if v == "HE Grenade" then return "he" end
+    if v == "Smoke Grenade" then return "smoke" end
+    if v == "Flashbang" then return "flash" end
+    if v == "Decoy Grenade" then return "decoy" end
+    local lv = v:lower()
+    if lv:find("molotov") or lv:find("incen") then return "molotov" end
+    if lv:find("hegren") or lv == "he grenade" then return "he" end
+    if lv:find("smoke") then return "smoke" end
+    if lv:find("flash") then return "flash" end
+    if lv:find("decoy") then return "decoy" end
+    return "default"
+end
+
+local function ensureGrenadePredictionObjects()
+    if GrenadeRuntime.Folder then return end
+    local folder = Instance.new("Folder")
+    folder.Name = "ValenokGrenadePredictor"
+    pcall(function() folder.Parent = workspace.Terrain end)
+    GrenadeRuntime.Folder = folder
+
+    for i = 1, 40 do
+        local att = Instance.new("Attachment", folder)
+        GrenadeRuntime.Attachments[i] = att
+        if i > 1 then
+            local beam = Instance.new("Beam", folder)
+            beam.Attachment0 = GrenadeRuntime.Attachments[i-1]
+            beam.Attachment1 = att
+            beam.Width0 = 0.08
+            beam.Width1 = 0.08
+            beam.FaceCamera = true
+            beam.Segments = 10
+            beam.LightEmission = 1
+            beam.LightInfluence = 0
+            beam.Transparency = NumberSequence.new(0.2)
+            beam.Enabled = false
+            GrenadeRuntime.Beams[i-1] = beam
+        end
+    end
+
+    local sphere = Instance.new("Part")
+    sphere.Shape = Enum.PartType.Ball
+    sphere.Size = Vector3.new(1.2, 1.2, 1.2)
+    sphere.Material = Enum.Material.Neon
+    sphere.Anchored = true
+    sphere.CanCollide = false
+    sphere.Parent = folder
+    sphere.CastShadow = false
+    sphere.Transparency = 1
+    GrenadeRuntime.Sphere = sphere
+end
+
+local grenadeHidden = true
+
+local function updateGrenadePrediction(dt)
+    if not Toggles.GrenadesPrediction or not Toggles.GrenadesPrediction.Value then
+        if not grenadeHidden then
+            for _, b in pairs(GrenadeRuntime.Beams) do b.Enabled = false end
+            if GrenadeRuntime.Sphere then GrenadeRuntime.Sphere.Transparency = 1 end
+            grenadeHidden = true
+        end
+        return
+    end
+
+    ensureGrenadePredictionObjects()
+
+    if not isHoldingNade() or not (GrenadeRuntime.LmbDown or GrenadeRuntime.RmbDown) then
+        if not grenadeHidden then
+            for _, b in pairs(GrenadeRuntime.Beams) do b.Enabled = false end
+            if GrenadeRuntime.Sphere then GrenadeRuntime.Sphere.Transparency = 1 end
+            grenadeHidden = true
+        end
+        return
+    end
+    grenadeHidden = false
+
+    local cam = getCamera()
+    if not cam then return end
+
+    local rgb = Options.GrenadesPredictionColor and Options.GrenadesPredictionColor.Value or Color3.fromRGB(255, 50, 50)
+    local c3 = typeof(rgb) == "Color3" and rgb or Color3.new(1, 0.2, 0.2)
+
+    for _, b in pairs(GrenadeRuntime.Beams) do
+        b.Color = ColorSequence.new(c3)
+        b.Enabled = false
+    end
+    GrenadeRuntime.Sphere.Color = c3
+
+    GrenadeRuntime.PulseVal = GrenadeRuntime.PulseVal + (GrenadeRuntime.PulseDir * (dt or 0.016) * 2.5)
+    if GrenadeRuntime.PulseVal >= 1.6 then GrenadeRuntime.PulseDir = -1 end
+    if GrenadeRuntime.PulseVal <= 0.7 then GrenadeRuntime.PulseDir = 1 end
+    GrenadeRuntime.Sphere.Size = Vector3.new(GrenadeRuntime.PulseVal, GrenadeRuntime.PulseVal, GrenadeRuntime.PulseVal)
+
+    local lp = LocalPlayer
+    local hrp = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+    local plrVel = hrp and hrp.AssemblyLinearVelocity or Vector3.new()
+    local nadeType = getNadeType()
+    local camLook = cam.CFrame.LookVector
+    local startPos = getNadePosition()
+
+    local needsRecalc = false
+    if not GrenadeRuntime.TrajectoryCache.lastPos or (startPos - GrenadeRuntime.TrajectoryCache.lastPos).Magnitude > 0.5 then
+        needsRecalc = true
+    elseif not GrenadeRuntime.TrajectoryCache.lastLook or camLook:Dot(GrenadeRuntime.TrajectoryCache.lastLook) < 0.9994 then
+        needsRecalc = true
+    elseif nadeType ~= GrenadeRuntime.TrajectoryCache.lastNadeType then
+        needsRecalc = true
+    elseif not GrenadeRuntime.TrajectoryCache.lastVel or (plrVel - GrenadeRuntime.TrajectoryCache.lastVel).Magnitude > 5 then
+        needsRecalc = true
+    end
+
+    if not needsRecalc and GrenadeRuntime.TrajectoryCache.cachedPoints then
+        local numPoints = #GrenadeRuntime.TrajectoryCache.cachedPoints
+        for j = 1, numPoints do
+            local pt = GrenadeRuntime.TrajectoryCache.cachedPoints[j]
+            GrenadeRuntime.Attachments[j].WorldPosition = pt.pos
+            if j > 1 and GrenadeRuntime.Beams[j-1] then
+                GrenadeRuntime.Beams[j-1].Transparency = NumberSequence.new(pt.transparency)
+                GrenadeRuntime.Beams[j-1].Enabled = true
+            end
+        end
+        for j = numPoints, 39 do
+            if GrenadeRuntime.Beams[j] then GrenadeRuntime.Beams[j].Enabled = false end
+        end
+        GrenadeRuntime.Sphere.CFrame = CFrame.new(GrenadeRuntime.TrajectoryCache.cachedSpherePos)
+        GrenadeRuntime.Sphere.Transparency = 0.3
+        return
+    end
+
+    GrenadeRuntime.TrajectoryCache.lastPos = startPos
+    GrenadeRuntime.TrajectoryCache.lastLook = camLook
+    GrenadeRuntime.TrajectoryCache.lastNadeType = nadeType
+    GrenadeRuntime.TrajectoryCache.lastVel = plrVel
+
+    local params = CONSTANTS.GRENADE_PARAMS[nadeType] or CONSTANTS.GRENADE_PARAMS.default
+    local maxBounces = params.maxBounces
+    local bounceDamping = params.bounceDamping
+    local velocity = cam.CFrame.LookVector * CONSTANTS.GRENADE_PARAMS.LOOK_SPEED + plrVel * CONSTANTS.GRENADE_PARAMS.PLR_FACTOR + Vector3.new(0, CONSTANTS.GRENADE_PARAMS.UP_BIAS, 0)
+    local grav = Vector3.new(0, -workspace.Gravity, 0)
+
+    local tStep = 1/60
+    local maxSteps = 240
+    local currentPos = startPos
+
+    if not GrenadeRuntime.RP then
+        local rp = RaycastParams.new()
+        rp.FilterType = Enum.RaycastFilterType.Exclude
+        GrenadeRuntime.RP = rp
+        GrenadeRuntime.FilterList = {lp.Character, workspace:FindFirstChild("Ray_Ignore"), GrenadeRuntime.Folder}
+        local mapObj = workspace:FindFirstChild("Map")
+        if mapObj then
+            local clips = mapObj:FindFirstChild("Clips")
+            if clips then table.insert(GrenadeRuntime.FilterList, clips) end
+        end
+    end
+    GrenadeRuntime.FilterList[1] = lp.Character
+    GrenadeRuntime.RP.FilterDescendantsInstances = GrenadeRuntime.FilterList
+    local rp = GrenadeRuntime.RP
+
+    local bounces = 0
+    local pointCount = 1
+    GrenadeRuntime.Attachments[1].WorldPosition = startPos
+
+    local samplePeriod = 2
+    local stepIdx = 0
+    for s = 1, maxSteps do
+        local nextVel = velocity + (grav * tStep)
+        local moveDelta = (velocity + nextVel) * 0.5 * tStep
+        local nextPos = currentPos + moveDelta
+
+        local rayOk, ray = pcall(function() return workspace:Raycast(currentPos, nextPos - currentPos, rp) end)
+        ray = rayOk and ray or nil
+        if ray then
+            bounces = bounces + 1
+            nextPos = ray.Position + ray.Normal * 0.05
+            local normal = ray.Normal
+            local reflected = nextVel - (2 * nextVel:Dot(normal) * normal)
+            velocity = reflected * bounceDamping
+            local isFloor = normal.Y > 0.6
+            if (nadeType == "molotov" and isFloor) or bounces >= maxBounces or velocity.Magnitude < 5 then
+                pointCount = pointCount + 1
+                if pointCount <= 40 then
+                    GrenadeRuntime.Attachments[pointCount].WorldPosition = nextPos
+                    GrenadeRuntime.Beams[pointCount-1].Transparency = NumberSequence.new(0.15 + (pointCount/40)*0.85)
+                end
+                currentPos = nextPos
+                break
+            end
+        else
+            velocity = nextVel
+        end
+
+        currentPos = nextPos
+        stepIdx = stepIdx + 1
+        if stepIdx % samplePeriod == 0 or ray then
+            pointCount = pointCount + 1
+            if pointCount > 40 then break end
+            GrenadeRuntime.Attachments[pointCount].WorldPosition = nextPos
+            GrenadeRuntime.Beams[pointCount-1].Transparency = NumberSequence.new(0.15 + (pointCount/40)*0.85)
+        end
+    end
+
+    for j = 1, math.min(pointCount - 1, 39) do
+        if GrenadeRuntime.Beams[j] then
+            GrenadeRuntime.Beams[j].Enabled = true
+        end
+    end
+    for j = pointCount, 39 do
+        if GrenadeRuntime.Beams[j] then GrenadeRuntime.Beams[j].Enabled = false end
+    end
+
+    local cachedPoints = {}
+    for j = 1, pointCount do
+        cachedPoints[j] = {
+            pos = GrenadeRuntime.Attachments[j].WorldPosition,
+            transparency = 0.15 + (j/40)*0.85,
+        }
+    end
+    GrenadeRuntime.TrajectoryCache.cachedPoints = cachedPoints
+    GrenadeRuntime.TrajectoryCache.cachedSpherePos = currentPos
+
+    GrenadeRuntime.Sphere.CFrame = CFrame.new(currentPos)
+    GrenadeRuntime.Sphere.Transparency = 0.3
+end
+
+EspRuntime.Connections.GrenadeInputBegan = UserInputService.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then GrenadeRuntime.LmbDown = true end
+    if input.UserInputType == Enum.UserInputType.MouseButton2 then GrenadeRuntime.RmbDown = true end
+end)
+EspRuntime.Connections.GrenadeInputEnded = UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then GrenadeRuntime.LmbDown = false end
+    if input.UserInputType == Enum.UserInputType.MouseButton2 then GrenadeRuntime.RmbDown = false end
+end)
 
 local function ensureHitMarkerLines()
     if HitMarkerState.Created then return end
@@ -1337,89 +1635,91 @@ local function isPartVisibleMultiPoint(part, useMulti, scale)
         return isStrictRayVisible(part)
     end
 
-    MultiPointState.frame = MultiPointState.frame + 1
+    local mpScale = scale or ((Options.RagebotMultiPointScale and Options.RagebotMultiPointScale.Value or 50) / 100)
+    local mpPoints = Options.RagebotMultiPointPoints and Options.RagebotMultiPointPoints.Value or 10
 
     local cached = MultiPointState.cache[part]
     if cached then
         if MultiPointState.frame - cached.frame <= 3 then
-            local cf = part.CFrame
-            if (cf.Position - cached.pos).Magnitude < 0.1 then
+            if (part.CFrame.Position - cached.pos).Magnitude < 0.1 then
                 return cached.result
             end
         end
     end
 
+    local pos = part.CFrame.Position
+
     -- center first
     if isStrictRayVisible(part) then
-        MultiPointState.cache[part] = { result = true, frame = MultiPointState.frame, pos = part.CFrame.Position }
+        MultiPointState.cache[part] = { result = true, frame = MultiPointState.frame, pos = pos }
         return true
     end
 
-    -- multipoint: check offset points on the part's bounding box
-    local size = part.Size
-    local cf = part.CFrame
-    local halfX = size.X * 0.5 * (scale or 0.5)
-    local halfY = size.Y * 0.5 * (scale or 0.5)
-    local halfZ = size.Z * 0.5 * (scale or 0.5)
+    -- multipoint: check points on the part's bounding box
+    local origin = Camera.CFrame.Position
+    RayIgnoreList[2] = LocalPlayer.Character
+    RayIgnoreList[3] = getCachedRayIgnore()
+    VisibilityParams.FilterDescendantsInstances = RayIgnoreList
 
-    local offsets = {
-        cf * CFrame.new(halfX, 0, 0),
-        cf * CFrame.new(-halfX, 0, 0),
-        cf * CFrame.new(0, halfY, 0),
-        cf * CFrame.new(0, -halfY, 0),
-        cf * CFrame.new(0, 0, halfZ),
-        cf * CFrame.new(0, 0, -halfZ),
-    }
-
-    for _, offCF in ipairs(offsets) do
-        local origin = Camera.CFrame.Position
-        local target = offCF.Position
+    for _, target in ipairs(getMultipointPositions(part, mpScale, mpPoints)) do
         local dir = target - origin
         if dir.Magnitude > 0.1 then
-            RayIgnoreList[2] = LocalPlayer.Character
-            RayIgnoreList[3] = getCachedRayIgnore()
-            VisibilityParams.FilterDescendantsInstances = RayIgnoreList
             getgenv().IgnoreRaycastHook = true
-            local ok, result = pcall(function() return Workspace:Raycast(origin, dir, VisibilityParams) end)
+            local result = Workspace:Raycast(origin, dir, VisibilityParams)
             getgenv().IgnoreRaycastHook = false
-            if ok and result and result.Instance then
+            if result and result.Instance then
                 local hit = result.Instance
                 if hit == part then
-                    MultiPointState.cache[part] = { result = true, frame = MultiPointState.frame, pos = part.CFrame.Position }
+                    MultiPointState.cache[part] = { result = true, frame = MultiPointState.frame, pos = pos }
                     return true
                 end
                 local hitParent = hit.Parent
                 if hitParent and hitParent:IsA("Accessory") and hitParent.Parent == part.Parent then
-                    MultiPointState.cache[part] = { result = true, frame = MultiPointState.frame, pos = part.CFrame.Position }
+                    MultiPointState.cache[part] = { result = true, frame = MultiPointState.frame, pos = pos }
                     return true
                 end
             end
         end
     end
 
-    MultiPointState.cache[part] = { result = false, frame = MultiPointState.frame, pos = part.CFrame.Position }
+    MultiPointState.cache[part] = { result = false, frame = MultiPointState.frame, pos = pos }
     return false
 end
 
-local function getMultipointPositions(part, scale)
+local MULTIPOINT_DIRS = {
+    { 0, 0, 0 },
+    { 1, 1, 1 }, { -1, 1, 1 }, { 1, -1, 1 }, { -1, -1, 1 },
+    { 1, 1, -1 }, { -1, 1, -1 }, { 1, -1, -1 }, { -1, -1, -1 },
+    { 0, 1, 0 }, { 0, -1, 0 }, { 1, 0, 0 }, { -1, 0, 0 }, { 0, 0, 1 }, { 0, 0, -1 },
+    { 1, 1, 0 }, { -1, 1, 0 }, { 1, -1, 0 }, { -1, -1, 0 },
+    { 1, 0, 1 }, { -1, 0, 1 }, { 1, 0, -1 }, { -1, 0, -1 },
+    { 0, 1, 1 }, { 0, -1, 1 }, { 0, 1, -1 }, { 0, -1, -1 },
+}
+
+local function getMultipointPositions(part, scale, maxPoints)
     local size = part.Size
     local cf = part.CFrame
-    local halfX = size.X * 0.5 * (scale or 0.5)
-    local halfY = size.Y * 0.5 * (scale or 0.5)
-    local halfZ = size.Z * 0.5 * (scale or 0.5)
+    local s = scale or 0.5
+    local fullX = size.X * 0.5
+    local fullY = size.Y * 0.5
+    local fullZ = size.Z * 0.5
+    local numDirs = #MULTIPOINT_DIRS
+    local count = math.min(maxPoints or numDirs, 100)
 
-    return {
-        cf.Position,
-        (cf * CFrame.new(halfX, halfY, halfZ)).Position,
-        (cf * CFrame.new(halfX, halfY, -halfZ)).Position,
-        (cf * CFrame.new(-halfX, halfY, halfZ)).Position,
-        (cf * CFrame.new(-halfX, halfY, -halfZ)).Position,
-        (cf * CFrame.new(halfX, -halfY, halfZ)).Position,
-        (cf * CFrame.new(halfX, -halfY, -halfZ)).Position,
-        (cf * CFrame.new(-halfX, -halfY, halfZ)).Position,
-        (cf * CFrame.new(-halfX, -halfY, -halfZ)).Position,
-        (cf * CFrame.new(0, halfY, 0)).Position,
-    }
+    local allPoints = {}
+    for i = 1, count do
+        local dirIdx = ((i - 1) % numDirs) + 1
+        local fracIdx = math.floor((i - 1) / numDirs)
+        local baseFrac = (fracIdx + 1) / (math.floor(count / numDirs) + 1)
+        local f = baseFrac * s
+        local d = MULTIPOINT_DIRS[dirIdx]
+        allPoints[i] = cf:PointToWorldSpace(Vector3.new(
+            fullX * f * d[1],
+            fullY * f * d[2],
+            fullZ * f * d[3]
+        ))
+    end
+    return allPoints
 end
 
 local RAGEBOT_ALL_HITBOXES = {
@@ -1585,7 +1885,7 @@ local function findTriggerbotMultipointTarget(cam)
             local part = findCharacterPart(character, partName)
             if not part then continue end
 
-            for _, point in ipairs(getMultipointPositions(part, 0.75)) do
+            for _, point in ipairs(getMultipointPositions(part, (Options.TriggerbotMultiPointScale and Options.TriggerbotMultiPointScale.Value or 50) / 100, Options.TriggerbotMultiPointPoints and Options.TriggerbotMultiPointPoints.Value or 10)) do
                 local screenPoint = cam:WorldToViewportPoint(point)
                 if screenPoint.Z <= 0 then continue end
 
@@ -2454,14 +2754,14 @@ updateLegitBhop = function()
     LegitBhopState.WasInAir = false
     local humanoid = MoveUtil.getLocalHumanoid()
     if humanoid then
-        humanoid.WalkSpeed = LegitBhopState.DefaultSpeed
+        humanoid.WalkSpeed = CONSTANTS.DEFAULT_WALK_SPEED
     end
     if not (Toggles.LegitBhopEnable and Toggles.LegitBhopEnable.Value) then return end
 
     LegitBhopState.Conn = RunService.RenderStepped:Connect(function()
         pcall(function()
             local _, hum, rootPart = MoveUtil.getAliveMovementRig()
-            if not hum then return end
+            if not hum or not rootPart then return end
 
             if not UserInputService:IsKeyDown(MoveUtil.MOVE_KEY_SPACE) then
                 LegitBhopState.JumpCount = 0
@@ -2469,32 +2769,31 @@ updateLegitBhop = function()
                 return
             end
 
-            local state = hum:GetState()
-            local onGround = hum.FloorMaterial ~= MoveUtil.AIR_MATERIAL
-                and state ~= Enum.HumanoidStateType.Jumping
-                and state ~= Enum.HumanoidStateType.Freefall
+            local inAir = hum.FloorMaterial == MoveUtil.AIR_MATERIAL
 
-            if onGround then
-                hum:ChangeState(Enum.HumanoidStateType.Jumping)
+            if inAir then
+                LegitBhopState.WasInAir = true
+            elseif LegitBhopState.WasInAir then
+                -- just landed - jump immediately
                 hum.Jump = true
                 LegitBhopState.JumpCount = math.min(LegitBhopState.JumpCount + 1, 5)
 
-                -- speed gain ramps up with consecutive bhops, capped to avoid flinging
                 local maxMult = Options.LegitBhopMultiplier and Options.LegitBhopMultiplier.Value or 2
                 local multiplier = 1 + (LegitBhopState.JumpCount / 5) * (maxMult - 1)
-                if rootPart then
-                    local vel = rootPart.AssemblyLinearVelocity
-                    local horizontal = Vector3.new(vel.X, 0, vel.Z)
-                    if horizontal.Magnitude > 1 then
-                        local cap = hum.WalkSpeed * multiplier
-                        local newMag = math.min(horizontal.Magnitude * 1.15, cap)
-                        local boosted = horizontal.Unit * newMag
-                        rootPart.AssemblyLinearVelocity = Vector3.new(boosted.X, vel.Y, boosted.Z)
-                    end
+                local vel = rootPart.AssemblyLinearVelocity
+                local horizontal = Vector3.new(vel.X, 0, vel.Z)
+                if horizontal.Magnitude > 1 then
+                    local cap = CONSTANTS.DEFAULT_WALK_SPEED * multiplier
+                    local newMag = math.min(horizontal.Magnitude * 1.12, cap)
+                    local boosted = horizontal.Unit * newMag
+                    rootPart.AssemblyLinearVelocity = Vector3.new(boosted.X, vel.Y, boosted.Z)
                 end
-            end
 
-            LegitBhopState.WasInAir = not onGround
+                LegitBhopState.WasInAir = false
+            else
+                -- on ground but wasn't in air (e.g. walking) - jump to start bhop
+                hum.Jump = true
+            end
         end)
     end)
 end
@@ -3870,6 +4169,8 @@ LegitSections.Triggerbot:AddToggle('TriggerbotOnStopOnly', {Text = 'On stop only
 LegitSections.Triggerbot:AddToggle('TriggerbotSmokeCheck', {Text = 'Smoke check', Default = false})
 LegitSections.Triggerbot:AddToggle('TriggerbotJumpCheck', {Text = 'Jump check', Default = false})
 LegitSections.Triggerbot:AddToggle('TriggerbotMultiPoint', {Text = 'Multipoint', Default = false})
+LegitSections.Triggerbot:AddSlider('TriggerbotMultiPointScale', {Text = 'Multipoint scale', Default = 50, Min = 1, Max = 100, Rounding = 0, Suffix = '%'})
+LegitSections.Triggerbot:AddSlider('TriggerbotMultiPointPoints', {Text = 'Multipoint points', Default = 10, Min = 1, Max = 100, Rounding = 0})
 LegitSections.Triggerbot:AddToggle('TriggerbotMagnet', {Text = 'Magnet', Default = false})
 LegitSections.Triggerbot:AddSlider('TriggerbotDelay', {Text = 'Trigger bot delay', Default = 0, Min = 0, Max = 300, Rounding = 0})
 
@@ -4036,6 +4337,8 @@ RageSections.Ragebot:AddToggle('RagebotShowFOV', {Text = 'Show FOV', Default = f
 RageSections.Ragebot:AddSlider('RagebotFOV', {Text = 'FOV', Default = 1, Min = 1, Max = 180, Rounding = 0})
 RageSections.Ragebot:AddDropdown('RagebotHitbox', {Values = { 'Head', 'Body', 'Nearest', 'All' }, Default = 'Head', Text = 'Hit box'})
 RageSections.Ragebot:AddToggle('RagebotMultiPoint', {Text = 'Multipoint', Default = false})
+RageSections.Ragebot:AddSlider('RagebotMultiPointScale', {Text = 'Multipoint scale', Default = 50, Min = 1, Max = 100, Rounding = 0, Suffix = '%'})
+RageSections.Ragebot:AddSlider('RagebotMultiPointPoints', {Text = 'Multipoint points', Default = 10, Min = 1, Max = 100, Rounding = 0})
 RageSections.Ragebot:AddToggle('RagebotBaim', {Text = 'Baim', Default = false, KeyPicker = {Idx = 'RagebotBaimKeybind', Default = 'None', Mode = 'Toggle', Text = 'Baim'}})
 RageSections.Ragebot:AddToggle('RagebotWallPenetration', {Text = 'Wall penetration', Default = true})
 RageSections.Ragebot:AddSlider('SilentAimMaxWalls', {Text = 'Max walls', Default = 3, Min = 1, Max = 10, Rounding = 0})
@@ -4143,6 +4446,8 @@ VisualSections.BulletImpact:AddDropdown('MiscBulletTracerTexture', {
     Values = {"Solid","Lightning","Laser","Twisted Energy","Anime Lazer","Arrow","Minecraft","Alien Energy Ray","Energy Ray","Matrix","Cartoony Eletric"},
     Default = "Solid",
 })
+
+VisualSections.Grenades:AddToggle('GrenadesPrediction', {Text = 'Grenade prediction', Default = false, ColorPicker = {Idx = 'GrenadesPredictionColor', Default = Color3.fromRGB(255, 50, 50), Title = 'Prediction color'}})
 
 VisualSections.DamageIndicators:AddToggle('MiscHitSound', {Text = 'Hit sound', Default = false})
 VisualSections.DamageIndicators:AddDropdown('MiscHitSoundType', {Values = { 'Skeet', 'Neverlose', 'Bameware', 'Bell', 'Bubble', 'Pick', 'Pop', 'Rust', 'Sans', 'Fart', 'Big', 'Vine', 'Bruh', 'Fatality', 'Bonk', 'Minecraft', 'Moan' }, Default = 'Skeet', Text = 'Hit sound type'})
@@ -4904,6 +5209,13 @@ unloadValenok = function()
         end
     end)
 
+    -- cleanup GrenadeRuntime
+    pcall(function()
+        if GrenadeRuntime and GrenadeRuntime.Folder then
+            GrenadeRuntime.Folder:Destroy()
+        end
+    end)
+
     -- cleanup AmbienceState (new runtime)
     pcall(function()
         local LightingSvc = game:GetService("Lighting")
@@ -5053,6 +5365,7 @@ EspRuntime.Connections.RenderStepped = RunService.RenderStepped:Connect(function
     pcall(function()
         local now = tick()
         LoopState.wFrames = LoopState.wFrames + 1
+        MultiPointState.frame = MultiPointState.frame + 1
 
         if now - LoopState.removalsCheck >= 2 then
             LoopState.removalsCheck = now
@@ -5137,6 +5450,7 @@ EspRuntime.Connections.RenderStepped = RunService.RenderStepped:Connect(function
         end
         updateTriggerbot()
         updateAntiAim()
+        updateGrenadePrediction(dt)
         updatePeekAssist()
     end)
 end)
