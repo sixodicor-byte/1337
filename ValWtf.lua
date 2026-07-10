@@ -7,7 +7,7 @@ local CONSTANTS = {
     GITHUB_THEME_URL = "https://raw.githubusercontent.com/bdimka251212-del/NewLib/refs/heads/main/addons/ThemeManager.lua",
     GITHUB_SAVE_URL = "https://raw.githubusercontent.com/bdimka251212-del/NewLib/refs/heads/main/addons/SaveManager.lua",
     DISCORD_URL = "https://discord.gg/9fwC4wJVyE",
-    MAIN_SCRIPT = "https://raw.githubusercontent.com/bdimka251212-del/ValenokRecode/refs/heads/main/Loader.lua",
+    MAIN_SCRIPT = "https://raw.githubusercontent.com/sixodicor-byte/1337/refs/heads/main/ValWtfVelocity.lua",
     VALID_KEY = "7K9-F2W-M8B",
 }
 
