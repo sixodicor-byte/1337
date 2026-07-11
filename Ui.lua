@@ -2950,6 +2950,10 @@ function Library:CreateWindow(...)
 
     Library:MakeDraggable(Outer, 25);
 
+    function Library:IsMenuVisible()
+        return Outer.Visible
+    end
+
     local Inner = Library:Create('Frame', {
         BackgroundColor3 = Library.MainColor;
         BorderColor3 = Library.AccentColor;
