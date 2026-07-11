@@ -6265,6 +6265,11 @@ end)
         local success, err = origLoad(self, name, ...)
         if not success then return false, err end
 
+        -- Re-apply skybox after all options are loaded
+        task.delay(0.1, function()
+            pcall(function() applySkyboxChanger() end)
+        end)
+
         -- restore UI positions from the same config file
         pcall(function()
             local fullPath = self.Folder .. '/settings/' .. name .. '.json'
