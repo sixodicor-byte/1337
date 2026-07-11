@@ -9,26 +9,14 @@ local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Debris = game:GetService("Debris")
 local VirtualInputManager = game:GetService("VirtualInputManager")
 
 local ConnectionManager = {
     _conns = {},
 }
-function ConnectionManager:Add(key, conn)
-    if self._conns[key] then pcall(function() self._conns[key]:Disconnect() end) end
-    self._conns[key] = conn
-    return conn
-end
-function ConnectionManager:Remove(key)
-    if self._conns[key] then
-        pcall(function() self._conns[key]:Disconnect() end)
-        self._conns[key] = nil
-    end
-end
 function ConnectionManager:CleanupAll()
     for key, conn in pairs(self._conns) do
-        pcall(function() conn:Disconnect() end)
+        if conn then conn:Disconnect() end
     end
     table.clear(self._conns)
 end
@@ -37,12 +25,10 @@ end
 
 local CONSTANTS = {
     DEFAULT_WALK_SPEED = 16,
-    SC_MODELS_ASSET_ID = "rbxassetid://7285197035",
     SKIN_FILE = "Valenok/skins.json",
     GITHUB_LIB_URL = "https://raw.githubusercontent.com/sixodicor-byte/1337/refs/heads/main/Ui.lua",
     GITHUB_THEME_URL = "https://raw.githubusercontent.com/bdimka251212-del/NewLib/refs/heads/main/addons/ThemeManager.lua",
     GITHUB_SAVE_URL = "https://raw.githubusercontent.com/bdimka251212-del/NewLib/refs/heads/main/addons/SaveManager.lua",
-    FOV_LINE_COUNT = 164,
     MAX_HIT_CHAMS_CLONES = 20,
     ESP_HEIGHT_STUDS = 6.2,
     ESP_WIDTH_STUDS = 3.5,
@@ -171,11 +157,6 @@ function Cache:invalidate(key)
     CacheExpiry[key] = nil
 end
 
-function Cache:clear()
-    table.clear(CacheData)
-    table.clear(CacheExpiry)
-end
-
 function Cache:getOrSet(key, ttl, factoryFn)
     local value = Cache:get(key)
     if value ~= nil then return value end
@@ -194,11 +175,108 @@ local EspRuntime = {
     Connections = {},
 }
 
+local EspFrameCache = {
+    tick = 0,
+    anyEnabled = false,
+    toggles = {},
+    options = {},
+    colors = {},
+    boxFillTransparency = 1,
+    chamsTransparency = 0.35,
+}
+
+local EspPlayerCache = {}
+
+local function invalidateEspPlayerCache(player)
+    EspPlayerCache[player] = nil
+end
+
+local function getCachedCharacterParts(player)
+    local cached = EspPlayerCache[player]
+    local character = player.Character
+    if not character or not character.Parent then
+        EspPlayerCache[player] = nil
+        return nil, nil, nil
+    end
+    if cached and cached.character == character then
+        if cached.humanoid and cached.humanoid.Parent and cached.rootPart and cached.rootPart.Parent then
+            return character, cached.humanoid, cached.rootPart
+        end
+    end
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not humanoid or not rootPart then
+        EspPlayerCache[player] = nil
+        return character, humanoid, rootPart
+    end
+    EspPlayerCache[player] = {
+        character = character,
+        humanoid = humanoid,
+        rootPart = rootPart,
+        boneParts = nil,
+    }
+    return character, humanoid, rootPart
+end
+
+local function getCachedHead(player, character)
+    local cached = EspPlayerCache[player]
+    if cached and cached.character == character then
+        if cached.head and cached.head.Parent then return cached.head end
+        if cached.head == false then return nil end
+    end
+    local head = character:FindFirstChild("Head") or character:FindFirstChild("HeadHB")
+    if cached and cached.character == character then
+        cached.head = head or false
+    end
+    return head
+end
+
+local function getCachedEquippedTool(player, character)
+    local tool = character:FindFirstChild("EquippedTool")
+    return tool and tostring(tool.Value) or ""
+end
+
+local function getCachedBoneParts(player, character)
+    local cached = EspPlayerCache[player]
+    if cached and cached.character == character then
+        if cached.boneParts then
+            local allValid = true
+            for i = 1, #cached.boneParts do
+                local bp = cached.boneParts[i]
+                if (bp[1] and not bp[1].Parent) or (bp[2] and not bp[2].Parent) then
+                    allValid = false
+                    break
+                end
+            end
+            if allValid then
+                return cached.boneParts
+            end
+        end
+        local boneParts = {}
+        for i, bone in ipairs(CONSTANTS.SkeletonBones) do
+            boneParts[i] = {
+                character:FindFirstChild(bone[1]),
+                character:FindFirstChild(bone[2]),
+            }
+        end
+        cached.boneParts = boneParts
+        return boneParts
+    end
+    local boneParts = {}
+    for i, bone in ipairs(CONSTANTS.SkeletonBones) do
+        boneParts[i] = {
+            character:FindFirstChild(bone[1]),
+            character:FindFirstChild(bone[2]),
+        }
+    end
+    return boneParts
+end
+
 local VisibilityParams = RaycastParams.new()
 VisibilityParams.FilterType = Enum.RaycastFilterType.Exclude
 VisibilityParams.IgnoreWater = true
 
-local RayIgnoreList = {Camera, nil, nil}
+local RayIgnoreList = { nil, nil, nil, nil, nil, nil, nil }
 
 -- Silent aim state
 local silentActive = false
@@ -209,14 +287,56 @@ local function getCamera()
     return Camera
 end
 
+local _mapFolder, _mapClips, _mapSpawns, _weaponsFolder, _playerGui, _guiFrame
+
+local function getMapFolder()
+    if _mapFolder and _mapFolder.Parent then return _mapFolder end
+    _mapFolder = Workspace:FindFirstChild("Map")
+    _mapClips = nil
+    _mapSpawns = nil
+    return _mapFolder
+end
+
+local function getMapClips()
+    local map = getMapFolder()
+    if not map then return nil end
+    if _mapClips and _mapClips.Parent then return _mapClips end
+    _mapClips = map:FindFirstChild("Clips")
+    return _mapClips
+end
+
+local function getMapSpawns()
+    local map = getMapFolder()
+    if not map then return nil end
+    if _mapSpawns and _mapSpawns.Parent then return _mapSpawns end
+    _mapSpawns = map:FindFirstChild("SpawnPoints")
+    return _mapSpawns
+end
+
 local function getWeaponsFolder()
-    return ReplicatedStorage:FindFirstChild("Weapons")
+    if _weaponsFolder and _weaponsFolder.Parent then return _weaponsFolder end
+    _weaponsFolder = ReplicatedStorage:FindFirstChild("Weapons")
+    return _weaponsFolder
+end
+
+local function getPlayerGui()
+    if _playerGui and _playerGui.Parent then return _playerGui end
+    _playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+    return _playerGui
+end
+
+local function getGuiFrame()
+    local pg = getPlayerGui()
+    if not pg then return nil end
+    if _guiFrame and _guiFrame.Parent then return _guiFrame end
+    _guiFrame = pg:FindFirstChild("GUI")
+    return _guiFrame
 end
 
 
 local function getCachedClient()
     return Cache:getOrSet("Client", 5, function()
-        local pg = LocalPlayer:FindFirstChild("PlayerGui")
+        local pg = getPlayerGui()
         local cg = pg and pg:FindFirstChild("Client")
         if not cg then return nil end
         local success, client = pcall(getsenv, cg)
@@ -229,6 +349,20 @@ local function getCachedRayIgnore()
     return Cache:getOrSet("RayIgnore", 1.5, function()
         return Workspace:FindFirstChild("Ray_Ignore")
     end)
+end
+
+local function buildRayIgnoreList()
+    local cam = getCamera()
+    local char = LocalPlayer.Character
+    local rayIgnore = getCachedRayIgnore()
+    RayIgnoreList[1] = cam
+    RayIgnoreList[2] = char
+    RayIgnoreList[3] = rayIgnore
+    RayIgnoreList[4] = getMapClips()
+    RayIgnoreList[5] = getMapSpawns()
+    RayIgnoreList[6] = GrenadeRuntime and GrenadeRuntime.Folder or nil
+    RayIgnoreList[7] = HitChamsState and HitChamsState.Folder or nil
+    return RayIgnoreList
 end
 
 
@@ -322,20 +456,8 @@ end
 local function hasShield(character)
     if not character then return false end
     
-    -- Check for Shield instance
-    local shield = character:FindFirstChild("Shield")
-    if shield then return true end
-    
-    -- Check for ForceField instance (may be in character or workspace)
-    local forceField = character:FindFirstChildOfClass("ForceField")
-    if forceField then return true end
-    
-    -- Check if character has ForceField protection
-    for _, child in ipairs(character:GetChildren()) do
-        if child:IsA("ForceField") then
-            return true
-        end
-    end
+    if character:FindFirstChild("Shield") then return true end
+    if character:FindFirstChildOfClass("ForceField") then return true end
     
     return false
 end
@@ -396,10 +518,7 @@ local function createLine(thickness, color)
 end
 
 local function getCharacterParts(player)
-    local character = player.Character
-    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-    local rootPart = character and character:FindFirstChild("HumanoidRootPart")
-    return character, humanoid, rootPart
+    return getCachedCharacterParts(player)
 end
 
 
@@ -427,13 +546,12 @@ end
 local function isStrictRayVisible(targetPart)
     if not targetPart or not targetPart.Parent then return false end
 
-    local origin = Camera.CFrame.Position
+    local cam = getCamera()
+    local origin = cam.CFrame.Position
     local direction = targetPart.Position - origin
     if direction.Magnitude <= 1e-4 then return false end
 
-    RayIgnoreList[2] = LocalPlayer.Character
-    RayIgnoreList[3] = getCachedRayIgnore()
-    VisibilityParams.FilterDescendantsInstances = RayIgnoreList
+    VisibilityParams.FilterDescendantsInstances = buildRayIgnoreList()
 
     getgenv().IgnoreRaycastHook = true
     local success, result = pcall(function() return Workspace:Raycast(origin, direction, VisibilityParams) end)
@@ -454,7 +572,7 @@ local function isStrictRayVisible(targetPart)
     end
 
     local hitName = hitInst.Name
-    local isSmoke = hitName == "Smoke" or hitName:find("Smoke") or (hitInst.Material and hitInst.Material.Name == "Smoke")
+    local isSmoke = hitName == "Smoke" or hitName:find("Smoke") or (hitInst.Material == Enum.Material.Glass and hitInst.Transparency > 0.5)
     if isSmoke then
         return true
     end
@@ -470,8 +588,8 @@ local function isVisibleTarget(character)
 
     for _, partName in ipairs(fallbacks) do
         local part = findCharacterPart(character, partName)
-        if part then
-            return isStrictRayVisible(part)
+        if part and isStrictRayVisible(part) then
+            return true
         end
     end
 
@@ -480,24 +598,20 @@ end
 
 
 -- Check how many walls are between player and target
+
 local function getWallCount(originPos, targetPos, maxWalls)
     local direction = (targetPos - originPos).Unit
     local distance = (targetPos - originPos).Magnitude
     local rayLength = math.min(distance, 500)
-    
-    local ignoreList = {
-        LocalPlayer.Character,
-        getCachedRayIgnore(),
-        Workspace:FindFirstChild("Map") and Workspace.Map:FindFirstChild("Clips"),
-        Workspace:FindFirstChild("Map") and Workspace.Map:FindFirstChild("SpawnPoints")
-    }
-    
+
+    local ignoreList = buildRayIgnoreList()
+
     local wallCount = 0
     local lastHitPos = originPos
     local remainingDistance = rayLength
-    local maxIterations = maxWalls + 2 -- Limit iterations to prevent lag
+    local maxIterations = maxWalls + 2
     local iterationCount = 0
-    
+
     while remainingDistance > 0.1 and wallCount <= maxWalls + 1 and iterationCount < maxIterations do
         iterationCount = iterationCount + 1
         local checkRay = Ray.new(lastHitPos, direction * remainingDistance)
@@ -505,7 +619,7 @@ local function getWallCount(originPos, targetPos, maxWalls)
         
         if hitPart then
             local parent = hitPart.Parent
-            if parent and not parent:FindFirstChild("Humanoid") and not parent:IsDescendantOf(LocalPlayer.Character) then
+            if parent and not parent:FindFirstChildOfClass("Humanoid") and not (LocalPlayer.Character and parent:IsDescendantOf(LocalPlayer.Character)) then
                 wallCount = wallCount + 1
                 lastHitPos = hitPos + direction * 0.1
                 remainingDistance = (targetPos - lastHitPos).Magnitude
@@ -544,6 +658,16 @@ local function getNearestSilentTarget()
     local useTeamCheck = Toggles.RagebotTeamCheck and Toggles.RagebotTeamCheck.Value
     local selectedHitbox = Options.RagebotHitbox and Options.RagebotHitbox.Value or "Head"
 
+    local baimActive = false
+    if Toggles.RagebotBaim and Toggles.RagebotBaim.Value then
+        local baimKey = Options.RagebotBaimKeybind
+        if not baimKey or baimKey.Value == "None" or baimKey.Mode == "Always" then
+            baimActive = true
+        else
+            baimActive = isKeybindActive(baimKey)
+        end
+    end
+
     local nearestPart = nil
     local nearestDist = math.huge
 
@@ -559,14 +683,15 @@ local function getNearestSilentTarget()
         local character = player.Character
         if not character then continue end
         
-        local humanoid = character:FindFirstChildOfClass("Humanoid")
-        local rootPart = character:FindFirstChild("HumanoidRootPart")
-        local head = character:FindFirstChild("Head") or character:FindFirstChild("HeadHB")
+        local _, humanoid, rootPart = getCachedCharacterParts(player)
+        local head = getCachedHead(player, character)
         if not humanoid or humanoid.Health <= 0 or not rootPart then continue end
+
+        if character:FindFirstChildOfClass("ForceField") then continue end
 
         -- Determine target part based on hitbox selection
         local targetPart
-        if selectedHitbox == "Body" then
+        if baimActive or selectedHitbox == "Body" then
             targetPart = rootPart
         else
             targetPart = head or rootPart
@@ -590,6 +715,41 @@ local function getNearestSilentTarget()
 end
 
 
+local TracerPool = {}
+
+local function getTracerFromPool()
+    for i = #TracerPool, 1, -1 do
+        local set = TracerPool[i]
+        if not set.inUse then
+            set.inUse = true
+            return set
+        end
+    end
+    local set = {
+        att0 = Instance.new("Attachment"),
+        att1 = Instance.new("Attachment"),
+        beam = Instance.new("Beam"),
+        inUse = true,
+    }
+    set.att0.Parent = workspace.Terrain
+    set.att1.Parent = workspace.Terrain
+    set.beam.Attachment0 = set.att0
+    set.beam.Attachment1 = set.att1
+    set.beam.Width0 = 0.5
+    set.beam.Width1 = 0.5
+    set.beam.LightEmission = 1
+    set.beam.LightInfluence = 0
+    set.beam.Parent = workspace.Terrain
+    return set
+end
+
+local function returnTracerToPool(set)
+    set.inUse = false
+    set.beam.Enabled = false
+    set.att0.WorldPosition = Vector3.zero
+    set.att1.WorldPosition = Vector3.zero
+end
+
 local function drawBulletTracer(startPos, endPos)
     if not Toggles.MiscBulletTracer or not Toggles.MiscBulletTracer.Value then return end
 
@@ -598,32 +758,21 @@ local function drawBulletTracer(startPos, endPos)
     local textureId = CONSTANTS.TracerTextureMap[tracerMode] or CONSTANTS.TracerTextureMap["Solid"]
     local faceCamera = Toggles.MiscBulletTracerFaceCamera and Toggles.MiscBulletTracerFaceCamera.Value or false
 
-    local att0 = Instance.new("Attachment")
-    local att1 = Instance.new("Attachment")
-    att0.WorldPosition = startPos
-    att1.WorldPosition = endPos
-    att0.Parent = workspace.Terrain
-    att1.Parent = workspace.Terrain
-
-    local beam = Instance.new("Beam")
-    beam.Attachment0 = att0
-    beam.Attachment1 = att1
-    beam.Width0 = 0.5
-    beam.Width1 = 0.5
-    beam.Color = ColorSequence.new(color)
-    beam.FaceCamera = faceCamera
-    beam.Texture = textureId
-    beam.LightEmission = 1
-    beam.LightInfluence = 0
-    beam.Transparency = NumberSequence.new({
+    local set = getTracerFromPool()
+    set.att0.WorldPosition = startPos
+    set.att1.WorldPosition = endPos
+    set.beam.Color = ColorSequence.new(color)
+    set.beam.FaceCamera = faceCamera
+    set.beam.Texture = textureId
+    set.beam.Transparency = NumberSequence.new({
         NumberSequenceKeypoint.new(0, 0),
         NumberSequenceKeypoint.new(1, 0),
     })
-    beam.Parent = workspace.Terrain
+    set.beam.Enabled = true
 
-    Debris:AddItem(beam, 1)
-    Debris:AddItem(att0, 1)
-    Debris:AddItem(att1, 1)
+    task.delay(1, function()
+        returnTracerToPool(set)
+    end)
 end
 
 local _hitSoundObj, PlayHitMarker
@@ -643,7 +792,18 @@ local HitMarkerState = {
 local HitChamsState = {
     Cooldown = false,
     ActiveChams = 0,
+    Folder = nil,
 }
+
+local function ensureHitChamsFolder()
+    if not HitChamsState.Folder or not HitChamsState.Folder.Parent then
+        local folder = Instance.new("Folder")
+        folder.Name = "ValenokHitChams"
+        folder.Parent = workspace
+        HitChamsState.Folder = folder
+    end
+    return HitChamsState.Folder
+end
 
 local HIT_CHAMS_IGNORE = {
     "HumanoidRootPart",
@@ -678,7 +838,7 @@ local function hitChams(player, customColor, transparency, lifetime)
                 clone.Color = color
                 clone.Anchored = true
                 clone.Transparency = transparency or 0
-                clone.Parent = workspace
+                clone.Parent = ensureHitChamsFolder()
                 
                 if clone:FindFirstChild("TextureID") then
                     clone.TextureID = ""
@@ -719,12 +879,18 @@ local GrenadeRuntime = {
     },
 }
 
+local function getLocalEquippedTool()
+    local char = LocalPlayer.Character
+    if not char then return nil end
+    return char:FindFirstChild("EquippedTool")
+end
+
 local function isHoldingNade()
     local lp = LocalPlayer
     if not lp or not lp.Character then return false end
     local gun = lp.Character:FindFirstChild("Gun")
     if gun and gun:FindFirstChild("Grenade") then return true end
-    local eqVal = lp.Character:FindFirstChild("EquippedTool")
+    local eqVal = getLocalEquippedTool()
     if eqVal and type(eqVal.Value) == "string" then
         local weaponDef = getWeaponsFolder()
         if weaponDef then
@@ -748,7 +914,7 @@ end
 local function getNadeType()
     local lp = LocalPlayer
     if not lp or not lp.Character then return "default" end
-    local eqVal = lp.Character:FindFirstChild("EquippedTool")
+    local eqVal = getLocalEquippedTool()
     if not eqVal or type(eqVal.Value) ~= "string" then return "default" end
     local v = eqVal.Value
     if v == "Molotov" or v == "Incendiary Grenade" then return "molotov" end
@@ -769,7 +935,7 @@ local function ensureGrenadePredictionObjects()
     if GrenadeRuntime.Folder then return end
     local folder = Instance.new("Folder")
     folder.Name = "ValenokGrenadePredictor"
-    pcall(function() folder.Parent = workspace.Terrain end)
+    if workspace and workspace.Terrain then folder.Parent = workspace.Terrain end
     GrenadeRuntime.Folder = folder
 
     for i = 1, 40 do
@@ -845,7 +1011,7 @@ local function updateGrenadePrediction(dt)
     GrenadeRuntime.Sphere.Size = Vector3.new(GrenadeRuntime.PulseVal, GrenadeRuntime.PulseVal, GrenadeRuntime.PulseVal)
 
     local lp = LocalPlayer
-    local hrp = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+    local _, _, hrp = getCachedCharacterParts(lp)
     local plrVel = hrp and hrp.AssemblyLinearVelocity or Vector3.new()
     local nadeType = getNadeType()
     local camLook = cam.CFrame.LookVector
@@ -899,14 +1065,14 @@ local function updateGrenadePrediction(dt)
         local rp = RaycastParams.new()
         rp.FilterType = Enum.RaycastFilterType.Exclude
         GrenadeRuntime.RP = rp
-        GrenadeRuntime.FilterList = {lp.Character, workspace:FindFirstChild("Ray_Ignore"), GrenadeRuntime.Folder}
-        local mapObj = workspace:FindFirstChild("Map")
-        if mapObj then
-            local clips = mapObj:FindFirstChild("Clips")
-            if clips then table.insert(GrenadeRuntime.FilterList, clips) end
-        end
+        GrenadeRuntime.FilterList = {lp.Character, getCachedRayIgnore(), GrenadeRuntime.Folder}
+        local clips = getMapClips()
+        if clips then table.insert(GrenadeRuntime.FilterList, clips) end
+        local spawns = getMapSpawns()
+        if spawns then table.insert(GrenadeRuntime.FilterList, spawns) end
     end
     GrenadeRuntime.FilterList[1] = lp.Character
+    GrenadeRuntime.FilterList[#GrenadeRuntime.FilterList + 1] = HitChamsState and HitChamsState.Folder or nil
     GrenadeRuntime.RP.FilterDescendantsInstances = GrenadeRuntime.FilterList
     local rp = GrenadeRuntime.RP
 
@@ -990,7 +1156,7 @@ local function ensureHitMarkerLines()
     -- remove leftover drawings from a previous injection
     if getgenv().ValenokHitMarker then
         for _, d in ipairs(getgenv().ValenokHitMarker) do
-            pcall(function() d.Visible = false; d:Remove() end)
+            if d then d.Visible = false; d:Remove() end
         end
     end
     local all = {}
@@ -1025,9 +1191,8 @@ ShowHitMarker = function()
 
     local gap, len = 2, 5
     local thickness = 1
-    local color = nil
-    pcall(function() color = Options.MiscHitMarkerColor.Value end)
-    color = color or Color3.fromRGB(255, 255, 255)
+    local colorOpt = Options.MiscHitMarkerColor
+    local color = colorOpt and colorOpt.Value or Color3.fromRGB(255, 255, 255)
     local outlineColor = Color3.fromRGB(0, 0, 0)
 
     local segs = {
@@ -1041,34 +1206,31 @@ ShowHitMarker = function()
         local from, to = seg[1], seg[2]
         local d = (to - from)
         local unit = d.Magnitude > 0 and d.Unit or Vector2.new(0, 0)
-        if HitMarkerState.OutlineLines[i] then
-            pcall(function()
-                HitMarkerState.OutlineLines[i].From = from - unit * 1
-                HitMarkerState.OutlineLines[i].To = to + unit * 1
-                HitMarkerState.OutlineLines[i].Thickness = thickness + 2
-                HitMarkerState.OutlineLines[i].Color = outlineColor
-                HitMarkerState.OutlineLines[i].Transparency = 1
-                HitMarkerState.OutlineLines[i].Visible = true
-            end)
+        local ol = HitMarkerState.OutlineLines[i]
+        if ol then
+            ol.From = from - unit * 1
+            ol.To = to + unit * 1
+            ol.Thickness = thickness + 2
+            ol.Color = outlineColor
+            ol.Transparency = 1
+            ol.Visible = true
         end
-        if HitMarkerState.FillLines[i] then
-            pcall(function()
-                HitMarkerState.FillLines[i].From = from
-                HitMarkerState.FillLines[i].To = to
-                HitMarkerState.FillLines[i].Thickness = thickness
-                HitMarkerState.FillLines[i].Color = color
-                HitMarkerState.FillLines[i].Transparency = 1
-                HitMarkerState.FillLines[i].Visible = true
-            end)
+        local fl = HitMarkerState.FillLines[i]
+        if fl then
+            fl.From = from
+            fl.To = to
+            fl.Thickness = thickness
+            fl.Color = color
+            fl.Transparency = 1
+            fl.Visible = true
         end
     end
 
     -- re-trigger on each hit; generation guard prevents an old fade from hiding a fresh marker
     HitMarkerState.Gen = HitMarkerState.Gen + 1
 
-    local lifetime = 1
-    pcall(function() lifetime = Options.MiscHitMarkerLifetime.Value end)
-    lifetime = lifetime or 1
+    local lifetimeOpt = Options.MiscHitMarkerLifetime
+    local lifetime = lifetimeOpt and lifetimeOpt.Value or 1
     local fadeTime = math.min(0.3, lifetime)
     local holdTime = lifetime - fadeTime
 
@@ -1085,12 +1247,12 @@ ShowHitMarker = function()
             local elapsed = now - HitMarkerState.HoldUntil
             local alpha = 1 - math.clamp(elapsed / HitMarkerState.FadeDuration, 0, 1)
 
-            for _, obj in ipairs(HitMarkerState.OutlineLines) do if obj then pcall(function() obj.Transparency = alpha end) end end
-            for _, obj in ipairs(HitMarkerState.FillLines) do if obj then pcall(function() obj.Transparency = alpha end) end end
+            for _, obj in ipairs(HitMarkerState.OutlineLines) do if obj then obj.Transparency = alpha end end
+            for _, obj in ipairs(HitMarkerState.FillLines) do if obj then obj.Transparency = alpha end end
 
             if alpha <= 0 then
-                for _, obj in ipairs(HitMarkerState.OutlineLines) do if obj then pcall(function() obj.Visible = false; obj.Transparency = 1 end) end end
-                for _, obj in ipairs(HitMarkerState.FillLines) do if obj then pcall(function() obj.Visible = false; obj.Transparency = 1 end) end end
+                for _, obj in ipairs(HitMarkerState.OutlineLines) do if obj then obj.Visible = false; obj.Transparency = 1 end end
+                for _, obj in ipairs(HitMarkerState.FillLines) do if obj then obj.Visible = false; obj.Transparency = 1 end end
                 HitMarkerState.Fading = false
             end
         end)
@@ -1123,12 +1285,59 @@ local function isAnyEspEnabled()
 end
 
 
+local function updateEspFrameCache()
+    local now = tick()
+    if now == EspFrameCache.tick then return end
+    EspFrameCache.tick = now
+
+    EspFrameCache.anyEnabled = isAnyEspEnabled()
+
+    EspFrameCache.toggles = {
+        teamCheck = Toggles.ESPTeamCheck and Toggles.ESPTeamCheck.Value,
+        box = Toggles.ESPBox and Toggles.ESPBox.Value,
+        name = Toggles.ESPName and Toggles.ESPName.Value,
+        boxFill = Toggles.ESPBoxFill and Toggles.ESPBoxFill.Value,
+        weapon = Toggles.ESPWeapon and Toggles.ESPWeapon.Value,
+        healthBar = Toggles.ESPHealthBar and Toggles.ESPHealthBar.Value,
+        healthBarOutline = Toggles.ESPHealthBarOutline and Toggles.ESPHealthBarOutline.Value,
+        chams = Toggles.ESPChams and Toggles.ESPChams.Value,
+        chamsOutline = Toggles.ESPChamsOutline and Toggles.ESPChamsOutline.Value,
+        skeleton = Toggles.ESPSkeleton and Toggles.ESPSkeleton.Value,
+    }
+
+    EspFrameCache.options = {
+        boxType = Options.ESPBoxType and Options.ESPBoxType.Value or "Full",
+    }
+
+    EspFrameCache.colors = {
+        box = getOptionColor("ESPBoxColor", Color3.fromRGB(255, 255, 255)),
+        name = getOptionColor("ESPNameColor", Color3.fromRGB(255, 255, 255)),
+        weapon = getOptionColor("ESPWeaponColor", Color3.fromRGB(255, 255, 255)),
+        healthBar = getOptionColor("ESPHealthBarColor", Color3.fromRGB(0, 255, 0)),
+        boxFill = getOptionColor("ESPBoxFillColor", Color3.fromRGB(255, 255, 255)),
+        skeleton = getOptionColor("ESPSkeletonColor", Color3.fromRGB(255, 255, 255)),
+        chamsFill = getOptionColor("ESPChamsColor", Color3.fromRGB(255, 255, 255)),
+        chamsOutline = getOptionColor("ESPChamsOutlineColor", Color3.fromRGB(255, 255, 255)),
+    }
+
+    local fillOpt = Options.ESPBoxFillColor
+    EspFrameCache.boxFillTransparency = 1
+    if fillOpt and fillOpt.Transparency then
+        EspFrameCache.boxFillTransparency = math.clamp(1 - fillOpt.Transparency, 0, 1)
+    end
+
+    EspFrameCache.chamsTransparency = getChamsTransparency()
+end
+
+
 -- forward declarations
 local updateRCS, updateRapidFire, updateFullAuto, restoreAllRapidFireRates, restoreAllFullAutoValues
 local applyNoRecoil, applyNoSpread, applyInstaEquip, applyInstaReload, fireSingleShot
 local updateBhop, updateLegitBhop, updateThirdPerson, updateThirdPersonNoClip, updateNoclip, updateFly, updateAutoJump, updateAutoCrouch, updateSpeedHack
 local updateNoScope, updateNoFlash, applyNoScope, setupNoSmoke
 local ensureCrosshair, updateCrosshair, unloadValenok
+local updateViewModelVisuals
+local applySkyboxChanger
 
 
 
@@ -1140,13 +1349,12 @@ local AimRuntime = {
 }
 
 local TriggerbotState = {
-    AwaitingRelease = false,
     NextFireTime = 0,
     StopTime = 0,
     WasMoving = false,
-    Holding = false,
     DelayUntil = 0,
     DelayActive = false,
+    IsFiring = false,
 }
 
 local PeekAssist = {
@@ -1278,8 +1486,7 @@ local function retreatToSaved(savedCF)
     PeekAssist.Returning = true
     task.spawn(function()
         local char = LocalPlayer.Character
-        local hrp  = char and char:FindFirstChild("HumanoidRootPart")
-        local hum  = char and char:FindFirstChildOfClass("Humanoid")
+        local _, hum, hrp = getCachedCharacterParts(LocalPlayer)
         if hrp then
             local baseSpeed = (hum and hum.WalkSpeed and hum.WalkSpeed > 0) and hum.WalkSpeed or 16
             local moveSpeed = baseSpeed * 4
@@ -1300,24 +1507,24 @@ local function retreatToSaved(savedCF)
                 local toTarget = targetPos - cur
                 local dist     = toTarget.Magnitude
                 if dist < 0.5 then
-                    pcall(function() h2.CFrame = savedCF end)
+                    if h2 then h2.CFrame = savedCF end
                     break
                 end
 
                 local step = moveSpeed * dt
                 if step >= dist then
-                    pcall(function() h2.CFrame = savedCF end)
+                    if h2 then h2.CFrame = savedCF end
                     break
                 else
                     local newPos = cur + toTarget.Unit * step
-                    pcall(function() h2.CFrame = CFrame.new(newPos, newPos + h2.CFrame.lookVector) end)
+                    if h2 then h2.CFrame = CFrame.new(newPos, newPos + h2.CFrame.lookVector) end
                 end
                 RunService.RenderStepped:Wait()
             end
 
             local c3 = LocalPlayer.Character
             local h3 = c3 and c3:FindFirstChild("HumanoidRootPart")
-            if h3 then pcall(function() h3.CFrame = savedCF end) end
+            if h3 then h3.CFrame = savedCF end
         end
         PeekAssist.Returning   = false
         PeekAssist.SavedCFrame = nil
@@ -1339,8 +1546,7 @@ local function updatePeekAssist()
     local bindOn = isKeybindActive(Options.PeekAssistKeybind)
 
     local char     = LocalPlayer.Character
-    local hrp      = char and char:FindFirstChild("HumanoidRootPart")
-    local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+    local _, humanoid, hrp = getCachedCharacterParts(LocalPlayer)
 
     if bindOn and not PeekAssist.LastBindOn then
         if hrp then
@@ -1376,9 +1582,7 @@ local function updatePeekAssist()
             local origin = hrp.Position
             local target = PeekAssist.SavedCFrame.Position
             local dir    = target - origin
-            PeekDraw.FilterList[1] = LocalPlayer.Character
-            PeekDraw.FilterList[2] = getCachedRayIgnore()
-            PeekWallParams.FilterDescendantsInstances = PeekDraw.FilterList
+            PeekWallParams.FilterDescendantsInstances = buildRayIgnoreList()
             local hit = Workspace:Raycast(origin, dir, PeekWallParams)
             if hit and hit.Instance and hit.Instance.CanCollide then
                 local isPlayer = false
@@ -1436,7 +1640,7 @@ local function getAimFovRadius()
     local aimFov = getAimFov()
     local cam = getCamera()
     local key = "AimFovRadius_" .. aimFov .. "_" .. cam.FieldOfView .. "_" .. cam.ViewportSize.Y
-    return Cache:getOrSet(key, 0, function()
+    return Cache:getOrSet(key, 10, function()
         if aimFov >= 180 then return 999999 end
         local halfViewport = cam.ViewportSize.Y * 0.5
         local camFovHalfRad = math.rad(cam.FieldOfView * 0.5)
@@ -1459,10 +1663,11 @@ local function getAimHitboxPart(character, humanoid)
 
         local bestPart = nil
         local bestDistance = math.huge
-        local screenCenter = Vector2.new(Camera.ViewportSize.X * 0.5, Camera.ViewportSize.Y * 0.5)
+        local cam = getCamera()
+        local screenCenter = Vector2.new(cam.ViewportSize.X * 0.5, cam.ViewportSize.Y * 0.5)
 
         for _, part in ipairs(allParts) do
-            local screenPoint = Camera:WorldToViewportPoint(part.Position)
+            local screenPoint = cam:WorldToViewportPoint(part.Position)
             if screenPoint.Z > 0 then
                 local distance = (Vector2.new(screenPoint.X, screenPoint.Y) - screenCenter).Magnitude
                 if distance < bestDistance then
@@ -1498,8 +1703,9 @@ local function getClosestAimTarget(screenCenter, fovRadius)
     local bestMetric = math.huge
     local useVisible = Toggles.AimbotVisibleCheck and Toggles.AimbotVisibleCheck.Value
     local isFullCircle = getAimFov() >= 180
-    local camLook = Camera.CFrame.LookVector
-    local camPos = Camera.CFrame.Position
+    local cam = getCamera()
+    local camLook = cam.CFrame.LookVector
+    local camPos = cam.CFrame.Position
 
     local function evaluatePart(targetPart, character)
         if isFullCircle then
@@ -1513,7 +1719,7 @@ local function getClosestAimTarget(screenCenter, fovRadius)
                 bestPart = targetPart
             end
         else
-            local screenPoint = Camera:WorldToViewportPoint(targetPart.Position)
+            local screenPoint = cam:WorldToViewportPoint(targetPart.Position)
             if screenPoint.Z <= 0 then return end
             local distanceFromCrosshair = (Vector2.new(screenPoint.X, screenPoint.Y) - screenCenter).Magnitude
             if distanceFromCrosshair > fovRadius then return end
@@ -1532,8 +1738,7 @@ local function getClosestAimTarget(screenCenter, fovRadius)
         if not character then continue end
         if hasShield(character) then continue end
 
-        local humanoid = character:FindFirstChildOfClass("Humanoid")
-        local rootPart = character:FindFirstChild("HumanoidRootPart")
+        local _, humanoid, rootPart = getCachedCharacterParts(player)
         if not humanoid or humanoid.Health <= 0 or not rootPart then continue end
 
         local targetPart
@@ -1575,7 +1780,8 @@ local function isPartTargetable(targetPart, screenCenter, fovRadius)
 
     if getAimFov() >= 180 then return true end
 
-    local screenPoint = Camera:WorldToViewportPoint(targetPart.Position)
+    local cam = getCamera()
+    local screenPoint = cam:WorldToViewportPoint(targetPart.Position)
     if screenPoint.Z <= 0 then return false end
 
     local distanceFromCrosshair = (Vector2.new(screenPoint.X, screenPoint.Y) - screenCenter).Magnitude
@@ -1600,13 +1806,14 @@ local function updateAimBot(dt)
     local targetPart = Cache:get("AimTarget")
     if not isPartTargetable(targetPart, screenCenter, fovRadius) then
         targetPart = getClosestAimTarget(screenCenter, fovRadius)
-        Cache:set("AimTarget", targetPart, 0)
+        Cache:set("AimTarget", targetPart, 0.15)
     end
 
     if not targetPart then return end
 
     local smoothValue = getAimSmooth()
     local aimPos = targetPart.Position
+
     local camPos = cam.CFrame.Position
     local aimDelta = aimPos - camPos
     if aimDelta.Magnitude < 1e-4 then return end
@@ -1616,8 +1823,7 @@ local function updateAimBot(dt)
         cam.CFrame = targetCFrame
     else
         dt = dt or (1 / 60)
-        local responsiveness = 1.7 * (11 - smoothValue) ^ 2
-        local alpha = math.clamp(1 - math.exp(-responsiveness * dt), 0.01, 1)
+        local alpha = math.clamp(1 / smoothValue * dt * 60, 0.01, 1)
         cam.CFrame = cam.CFrame:Lerp(targetCFrame, alpha)
     end
 end
@@ -1628,7 +1834,7 @@ end
 
 
 -- multipoint scan: check multiple points on a part's surface for visibility
-local MultiPointState = { cache = {}, frame = 0 }
+local MultiPointState = { cache = {}, frame = 0, lastClean = 0 }
 
 local function isPartVisibleMultiPoint(part, useMulti, scale)
     if not useMulti then
@@ -1657,9 +1863,7 @@ local function isPartVisibleMultiPoint(part, useMulti, scale)
 
     -- multipoint: check points on the part's bounding box
     local origin = Camera.CFrame.Position
-    RayIgnoreList[2] = LocalPlayer.Character
-    RayIgnoreList[3] = getCachedRayIgnore()
-    VisibilityParams.FilterDescendantsInstances = RayIgnoreList
+    VisibilityParams.FilterDescendantsInstances = buildRayIgnoreList()
 
     for _, target in ipairs(getMultipointPositions(part, mpScale, mpPoints)) do
         local dir = target - origin
@@ -1731,18 +1935,6 @@ local RAGEBOT_ALL_HITBOXES = {
     "RightUpperLeg", "RightLowerLeg", "RightFoot",
 }
 
--- hitbox priority: higher = preferred
-local RAGEBOT_HITBOX_PRIORITY = {
-    HeadHB = 100, Head = 95, FakeHead = 90,
-    UpperTorso = 80, LowerTorso = 75, Torso = 70, HumanoidRootPart = 65,
-    LeftUpperArm = 40, RightUpperArm = 40,
-    LeftLowerArm = 35, RightLowerArm = 35,
-    LeftHand = 30, RightHand = 30,
-    LeftUpperLeg = 25, RightUpperLeg = 25,
-    LeftLowerLeg = 20, RightLowerLeg = 20,
-    LeftFoot = 15, RightFoot = 15,
-}
-
 
 
 
@@ -1770,14 +1962,15 @@ local function findTriggerbotTarget(cam)
     if (not hitInstance or not hitInstance.Parent) and not (Toggles.TriggerbotSmokeCheck and Toggles.TriggerbotSmokeCheck.Value) then
         local mousePos = UserInputService:GetMouseLocation()
         local ray = cam:ViewportPointToRay(mousePos.X, mousePos.Y)
-        RayIgnoreList[2] = LocalPlayer.Character
-        RayIgnoreList[3] = getCachedRayIgnore()
-        VisibilityParams.FilterDescendantsInstances = RayIgnoreList
+        VisibilityParams.FilterDescendantsInstances = buildRayIgnoreList()
+        getgenv().IgnoreRaycastHook = true
         local rayResult = Workspace:Raycast(ray.Origin, ray.Direction * 5000, VisibilityParams)
+        getgenv().IgnoreRaycastHook = false
         if rayResult and rayResult.Instance then
             local resultName = rayResult.Instance.Name
-            if resultName == "Smoke" or resultName:find("Smoke") or (rayResult.Instance.Material and rayResult.Instance.Material.Name == "Smoke") then
-                local smokeIgnore = {Camera, LocalPlayer.Character, getCachedRayIgnore(), rayResult.Instance}
+            if resultName == "Smoke" or resultName:find("Smoke") or (rayResult.Instance.Material == Enum.Material.Glass and rayResult.Instance.Transparency > 0.5) then
+                local smokeIgnore = buildRayIgnoreList()
+                table.insert(smokeIgnore, rayResult.Instance)
                 local smokeParams = RaycastParams.new()
                 smokeParams.FilterType = Enum.RaycastFilterType.Exclude
                 smokeParams.FilterDescendantsInstances = smokeIgnore
@@ -1795,30 +1988,21 @@ local function findTriggerbotTarget(cam)
         if hitChar then
             local hitPlayer = Players:GetPlayerFromCharacter(hitChar)
 
-            if hitPlayer and Toggles.TriggerbotTeamCheck and Toggles.TriggerbotTeamCheck.Value then
-                local myTeam, theirTeam = LocalPlayer.Team, hitPlayer.Team
-                local myTeamColor, theirTeamColor = LocalPlayer.TeamColor, hitPlayer.TeamColor
-                if (myTeam ~= nil and theirTeam ~= nil and theirTeam == myTeam) or
-                   (myTeamColor ~= nil and theirTeamColor ~= nil and theirTeamColor == myTeamColor) then
-                    return nil
-                end
-            end
-
             if hitPlayer and isTriggerEnemy(hitPlayer) then
-                local humanoid = hitChar:FindFirstChildOfClass("Humanoid")
+                local _, humanoid = getCachedCharacterParts(hitPlayer)
                 if humanoid and humanoid.Health > 0 then
                     if isStrictRayVisible(hitInstance) then
                         -- smoke check
                         if Toggles.TriggerbotSmokeCheck and Toggles.TriggerbotSmokeCheck.Value then
                             local origin = cam.CFrame.Position
                             local direction = hitInstance.Position - origin
-                            RayIgnoreList[2] = LocalPlayer.Character
-                            RayIgnoreList[3] = getCachedRayIgnore()
-                            VisibilityParams.FilterDescendantsInstances = RayIgnoreList
+                            VisibilityParams.FilterDescendantsInstances = buildRayIgnoreList()
+                            getgenv().IgnoreRaycastHook = true
                             local rayResult = Workspace:Raycast(origin, direction, VisibilityParams)
+                            getgenv().IgnoreRaycastHook = false
                             if rayResult and rayResult.Instance then
                                 local resultName = rayResult.Instance.Name
-                                if resultName == "Smoke" or resultName:find("Smoke") or (rayResult.Instance.Material and rayResult.Instance.Material.Name == "Smoke") then
+                                if resultName == "Smoke" or resultName:find("Smoke") or (rayResult.Instance.Material == Enum.Material.Glass and rayResult.Instance.Transparency > 0.5) then
                                     return nil
                                 end
                             end
@@ -1838,9 +2022,7 @@ local function isTriggerbotPointVisible(cam, character, part, targetPos)
     local direction = targetPos - origin
     if direction.Magnitude <= 0.1 then return false end
 
-    RayIgnoreList[2] = LocalPlayer.Character
-    RayIgnoreList[3] = getCachedRayIgnore()
-    VisibilityParams.FilterDescendantsInstances = RayIgnoreList
+    VisibilityParams.FilterDescendantsInstances = buildRayIgnoreList()
 
     getgenv().IgnoreRaycastHook = true
     local ok, rayResult = pcall(function()
@@ -1853,7 +2035,7 @@ local function isTriggerbotPointVisible(cam, character, part, targetPos)
     local hit = rayResult.Instance
     if Toggles.TriggerbotSmokeCheck and Toggles.TriggerbotSmokeCheck.Value then
         local hitName = hit.Name
-        if hitName == "Smoke" or hitName:find("Smoke") or (hit.Material and hit.Material.Name == "Smoke") then
+        if hitName == "Smoke" or hitName:find("Smoke") or (hit.Material == Enum.Material.Glass and hit.Transparency > 0.5) then
             return false
         end
     end
@@ -1878,7 +2060,7 @@ local function findTriggerbotMultipointTarget(cam)
         local character = player.Character
         if not character or hasShield(character) then continue end
 
-        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        local _, humanoid = getCachedCharacterParts(player)
         if not humanoid or humanoid.Health <= 0 then continue end
 
         for _, partName in ipairs(RAGEBOT_ALL_HITBOXES) do
@@ -1907,7 +2089,7 @@ local function applyTriggerbotMagnet(cam, now)
     if not Toggles.TriggerbotMagnet or not Toggles.TriggerbotMagnet.Value then return end
 
     local magnetFov = 25
-    local smooth = math.clamp(5, 1, 10)
+    local smoothFactor = 0.15
     local mousePos = UserInputService:GetMouseLocation()
     local magnetTarget = nil
     local bestDistance = math.huge
@@ -1931,7 +2113,7 @@ local function applyTriggerbotMagnet(cam, now)
 
             local character = player.Character
             if not character then continue end
-            local humanoid = character:FindFirstChildOfClass("Humanoid")
+            local _, humanoid = getCachedCharacterParts(player)
             if not humanoid or humanoid.Health <= 0 then continue end
 
             local magnetHitboxes = {"Head", "HeadHB", "HumanoidRootPart", "UpperTorso", "Torso"}
@@ -1960,7 +2142,6 @@ local function applyTriggerbotMagnet(cam, now)
 
     if magnetTarget then
         local targetPosition = magnetTarget.Position
-        local smoothFactor = smooth / 60
         local targetCF = CFrame.new(cam.CFrame.Position, targetPosition)
         cam.CFrame = cam.CFrame:Lerp(targetCF, smoothFactor)
     end
@@ -1969,30 +2150,36 @@ end
 
 fireSingleShot = function()
     local character = LocalPlayer.Character
-    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    local _, humanoid = getCachedCharacterParts(LocalPlayer)
     if not character or not humanoid or humanoid.Health <= 0 then return end
+    if TriggerbotState.IsFiring then return end
 
     local mouse = LocalPlayer:GetMouse()
     local mouseX = mouse.X
     local mouseY = mouse.Y
 
-    TriggerbotState.NextFireTime = tick() + 0.15
+    local holdMs = Options.TriggerbotHoldTime and Options.TriggerbotHoldTime.Value or 50
+    local intervalMs = Options.TriggerbotInterval and Options.TriggerbotInterval.Value or 150
+    TriggerbotState.NextFireTime = tick() + (intervalMs / 1000)
+    TriggerbotState.IsFiring = true
     task.spawn(function()
         pcall(function()
             VirtualInputManager:SendMouseButtonEvent(mouseX, mouseY, 0, true, game, 1)
-            task.wait(0.1)
+            task.wait(holdMs / 1000)
             VirtualInputManager:SendMouseButtonEvent(mouseX, mouseY, 0, false, game, 1)
         end)
+        TriggerbotState.IsFiring = false
     end)
 end
 
 
 local function updateTriggerbot()
+    if Library and Library.IsMenuVisible and Library:IsMenuVisible() then return end
     local cam = getCamera()
     if not cam then return end
 
     local character = LocalPlayer.Character
-    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    local _, humanoid = getCachedCharacterParts(LocalPlayer)
     if not checkTriggerbotConditions(character, humanoid) then return end
 
     local now = tick()
@@ -2032,10 +2219,7 @@ local function updateTriggerbot()
 
     if targetPart then
         local currentTime = tick()
-        if TriggerbotState.NextFireTime - currentTime > 2 then
-            TriggerbotState.NextFireTime = 0
-        end
-        local delayMs = Options.TriggerbotDelay.Value or 0
+        local delayMs = (Options.TriggerbotDelay and Options.TriggerbotDelay.Value) or 0
         if not TriggerbotState.DelayActive then
             TriggerbotState.DelayActive = true
             TriggerbotState.DelayUntil = currentTime + (delayMs / 1000)
@@ -2045,6 +2229,8 @@ local function updateTriggerbot()
         end
     else
         TriggerbotState.DelayActive = false
+        TriggerbotState.NextFireTime = 0
+        TriggerbotState.IsFiring = false
     end
 end
 
@@ -2058,6 +2244,7 @@ local AntiAimState = {
     YawJitterPoints = {},
     YawJitterLastSwitch = 0,
     YawJitterFlip = false,
+    YawJitterIndex = 1,
     YawRandomAngle = 0,
     YawRandomLastSwitch = 0,
     YawSpinAngle = 0,
@@ -2069,8 +2256,7 @@ local function updateAntiAim()
     local enabled = Toggles.AntiAimPitchEnable and Toggles.AntiAimPitchEnable.Value
     local character = LocalPlayer.Character
     if not character then return end
-    local humanoid = character:FindFirstChildOfClass("Humanoid")
-    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    local _, humanoid, rootPart = getCachedCharacterParts(LocalPlayer)
     if not humanoid or not rootPart or humanoid.Health <= 0 then return end
 
     if not enabled then
@@ -2120,9 +2306,14 @@ local function updateAntiAim()
                 baseYaw = math.deg(math.atan2(lookVector.X, lookVector.Z))
             end
         else
+            local useTeamCheck = Toggles.RagebotTeamCheck and Toggles.RagebotTeamCheck.Value
             local bestPart, bestDist = nil, math.huge
             for _, plr in ipairs(Players:GetPlayers()) do
-                if not isEnemy(plr) then continue end
+                if plr == LocalPlayer then continue end
+                if useTeamCheck then
+                    local myTeam, theirTeam = LocalPlayer.Team, plr.Team
+                    if myTeam and theirTeam and theirTeam == myTeam then continue end
+                end
                 local ch = plr.Character
                 local hrpTarget = ch and ch:FindFirstChild("HumanoidRootPart")
                 local humTarget = ch and ch:FindFirstChildOfClass("Humanoid")
@@ -2171,14 +2362,16 @@ local function updateAntiAim()
                 for i = 1, 3 do
                     AntiAimState.YawJitterPoints[i] = math.random(-jitterValue, jitterValue)
                 end
+                AntiAimState.YawJitterIndex = math.random(1, 3)
             end
             if (tick() - AntiAimState.YawJitterLastSwitch) * 1000 >= jitterSpeed then
                 for i = 1, 3 do
                     AntiAimState.YawJitterPoints[i] = math.random(-jitterValue, jitterValue)
                 end
+                AntiAimState.YawJitterIndex = math.random(1, 3)
                 AntiAimState.YawJitterLastSwitch = tick()
             end
-            yawAngle = yawAngle + AntiAimState.YawJitterPoints[math.random(1, 3)]
+            yawAngle = yawAngle + AntiAimState.YawJitterPoints[AntiAimState.YawJitterIndex]
         elseif yawType == "Jitter 5 way" then
             local jitterValue = Options.AntiAimYawJitterAngle and Options.AntiAimYawJitterAngle.Value or 90
             local jitterSpeed = Options.AntiAimYawJitterDelay and Options.AntiAimYawJitterDelay.Value or 100
@@ -2188,14 +2381,16 @@ local function updateAntiAim()
                 for i = 1, 5 do
                     AntiAimState.YawJitterPoints[i] = math.random(-jitterValue, jitterValue)
                 end
+                AntiAimState.YawJitterIndex = math.random(1, 5)
             end
             if (tick() - AntiAimState.YawJitterLastSwitch) * 1000 >= jitterSpeed then
                 for i = 1, 5 do
                     AntiAimState.YawJitterPoints[i] = math.random(-jitterValue, jitterValue)
                 end
+                AntiAimState.YawJitterIndex = math.random(1, 5)
                 AntiAimState.YawJitterLastSwitch = tick()
             end
-            yawAngle = yawAngle + AntiAimState.YawJitterPoints[math.random(1, 5)]
+            yawAngle = yawAngle + AntiAimState.YawJitterPoints[AntiAimState.YawJitterIndex]
         elseif yawType == "Random" then
             local randomSpeed = Options.AntiAimYawRandomDelay and Options.AntiAimYawRandomDelay.Value or 200
             if (tick() - AntiAimState.YawRandomLastSwitch) * 1000 >= randomSpeed then
@@ -2316,7 +2511,7 @@ local function getCurrentWeaponFireRateObject()
     if not character then return nil, nil end
 
     local weaponName = nil
-    local equippedToolValue = character:FindFirstChild("EquippedTool")
+    local equippedToolValue = getLocalEquippedTool()
     if equippedToolValue then
         weaponName = tostring(equippedToolValue.Value)
     end
@@ -2469,11 +2664,11 @@ local function updateKillAll()
 
     local character = LocalPlayer.Character
     if not character then return end
-    local humanoid = character:FindFirstChild("Humanoid")
+    local _, humanoid = getCachedCharacterParts(LocalPlayer)
     if not humanoid or humanoid.Health <= 0 then return end
 
     local gun = character:FindFirstChild("Gun")
-    local equippedToolValue = character:FindFirstChild("EquippedTool")
+    local equippedToolValue = getLocalEquippedTool()
     if not gun or not equippedToolValue then return end
 
     local gunName = "AWP"
@@ -2484,7 +2679,7 @@ local function updateKillAll()
 
     local cam = getCamera()
     if not cam then return end
-    local camPos = cam.CFrame.p
+    local camPos = cam.CFrame.Position
     local serverTime = Workspace:GetServerTimeNow()
     local burstCount = 2
     local nanBypass = true
@@ -2499,8 +2694,8 @@ local function updateKillAll()
         local playerCharacter = plr.Character
         if not playerCharacter then continue end
 
-        local head = playerCharacter:FindFirstChild("Head") or playerCharacter:FindFirstChild("HeadHB")
-        local playerHumanoid = playerCharacter:FindFirstChild("Humanoid")
+        local head = getCachedHead(plr, playerCharacter)
+        local _, playerHumanoid = getCachedCharacterParts(plr)
         if not head or not playerHumanoid or playerHumanoid.Health <= 0 then continue end
 
         if not KillAllHitRemote then continue end
@@ -2526,7 +2721,7 @@ end
 
 local MoveUtil = {}
 
-do
+;(function()
 local MOVE_KEY_W = Enum.KeyCode.W
 local MOVE_KEY_A = Enum.KeyCode.A
 local MOVE_KEY_S = Enum.KeyCode.S
@@ -2537,15 +2732,15 @@ local MOVE_KEY_CTRL = Enum.KeyCode.LeftControl
 local AIR_MATERIAL = Enum.Material.Air
 
 local function getLocalHumanoid()
-    local character = LocalPlayer.Character
-    return character and character:FindFirstChildOfClass("Humanoid")
+    local _, humanoid = getCachedCharacterParts(LocalPlayer)
+    return humanoid
 end
 
 local function getAliveMovementRig()
     local character = LocalPlayer.Character
     if not character or not character.Parent then return nil end
 
-    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    local _, humanoid, rootPart = getCachedCharacterParts(LocalPlayer)
     if not humanoid then return nil end
     
     -- Check if humanoid is dead (Health <= 0 or health is 0)
@@ -2554,7 +2749,6 @@ local function getAliveMovementRig()
     -- Check if character is still in workspace (not destroyed)
     if not character:IsDescendantOf(Workspace) then return nil end
 
-    local rootPart = character:FindFirstChild("HumanoidRootPart")
     if not rootPart then return nil end
 
     return character, humanoid, rootPart
@@ -2611,11 +2805,21 @@ MoveUtil.MOVE_KEY_SPACE = MOVE_KEY_SPACE
 MoveUtil.MOVE_KEY_CTRL = MOVE_KEY_CTRL
 MoveUtil.AIR_MATERIAL = AIR_MATERIAL
 MoveUtil.ZERO_VECTOR = Vector3.new(0, 0, 0)
-end
+end)()
 
-local SpeedHackState = { Conn = nil, OrigSpeed = nil, Humanoid = nil }
+local SpeedHackState, BhopState, LegitBhopState, AutoCrouchState, NoclipState, FlyState, AutoJumpState
+local CrosshairState, VMState, SkyboxState, SKYBOX_PRESETS, AmbienceSavedLighting, MiscState
+local ThirdPersonNoClipConn, ThirdPersonCache
+local restoreSpeedHackOriginal, restoreNoclipParts, restoreFlyPhysics, clearNoclipRuntime
+local updateAmbience, updateFovCircle, ensureFovCircles, updateThirdPersonNoClip
+local removeDrawingSet, removeHighlight, updatePlayerEsp, updateItemEsp, updatePlayerChams
+local getMovementStateText, getDrawingSet, hideDrawingSet, setCornerSeg
+local pushHitLog
 
-local function restoreSpeedHackOriginal()
+;(function()
+SpeedHackState = { Conn = nil, OrigSpeed = nil, Humanoid = nil }
+
+restoreSpeedHackOriginal = function()
     local humanoid = SpeedHackState.Humanoid
     if (not humanoid or not humanoid.Parent) then
         humanoid = MoveUtil.getLocalHumanoid()
@@ -2640,36 +2844,34 @@ updateSpeedHack = function()
     end
 
     SpeedHackState.Conn = RunService.RenderStepped:Connect(function(dt)
-        pcall(function()
-            if not isKeybindActive(Options.SpeedHackKeybind) then
-                restoreSpeedHackOriginal()
-                return
+        if not isKeybindActive(Options.SpeedHackKeybind) then
+            restoreSpeedHackOriginal()
+            return
+        end
+
+        local _, hum, hrp = MoveUtil.getAliveMovementRig()
+        if not hum or not hrp then return end
+
+        if SpeedHackState.Humanoid ~= hum then
+            if SpeedHackState.Humanoid and SpeedHackState.Humanoid.Parent and SpeedHackState.OrigSpeed ~= nil then
+                SpeedHackState.Humanoid.WalkSpeed = SpeedHackState.OrigSpeed
             end
+            SpeedHackState.Humanoid = hum
+            SpeedHackState.OrigSpeed = hum.WalkSpeed
+        elseif SpeedHackState.OrigSpeed == nil then
+            SpeedHackState.OrigSpeed = hum.WalkSpeed
+        end
 
-            local _, hum, hrp = MoveUtil.getAliveMovementRig()
-            if not hum or not hrp then return end
+        local speed = Options.SpeedHackSpeed and Options.SpeedHackSpeed.Value or 50
+        hum.WalkSpeed = speed
 
-            if SpeedHackState.Humanoid ~= hum then
-                if SpeedHackState.Humanoid and SpeedHackState.Humanoid.Parent and SpeedHackState.OrigSpeed ~= nil then
-                    SpeedHackState.Humanoid.WalkSpeed = SpeedHackState.OrigSpeed
-                end
-                SpeedHackState.Humanoid = hum
-                SpeedHackState.OrigSpeed = hum.WalkSpeed
-            elseif SpeedHackState.OrigSpeed == nil then
-                SpeedHackState.OrigSpeed = hum.WalkSpeed
-            end
-
-            local speed = Options.SpeedHackSpeed and Options.SpeedHackSpeed.Value or 50
-            hum.WalkSpeed = speed
-
-            local cam = getCamera()
-            if not cam then return end
-            MoveUtil.applyCameraCFrameMove(hrp, cam, speed, dt)
-        end)
+        local cam = getCamera()
+        if not cam then return end
+        MoveUtil.applyCameraCFrameMove(hrp, cam, speed, dt)
     end)
 end
 
-local AutoCrouchState = { Conn = nil, WasInAir = false }
+AutoCrouchState = { Conn = nil, WasInAir = false }
 
 updateAutoCrouch = function()
     if AutoCrouchState.Conn then
@@ -2678,32 +2880,29 @@ updateAutoCrouch = function()
     end
     AutoCrouchState.WasInAir = false
     if not (Toggles.AutoCrouchEnable and Toggles.AutoCrouchEnable.Value) then
-        pcall(function() VirtualInputManager:SendKeyEvent(false, MoveUtil.MOVE_KEY_CTRL, false, game) end)
+        VirtualInputManager:SendKeyEvent(false, MoveUtil.MOVE_KEY_CTRL, false, game)
         return
     end
 
     AutoCrouchState.Conn = RunService.RenderStepped:Connect(function()
-        pcall(function()
-            local _, hum = MoveUtil.getAliveMovementRig()
-            if not hum then return end
-            local inAir = hum.FloorMaterial == MoveUtil.AIR_MATERIAL
-            if inAir and not AutoCrouchState.WasInAir then
-                VirtualInputManager:SendKeyEvent(true, MoveUtil.MOVE_KEY_CTRL, false, game)
-                AutoCrouchState.WasInAir = true
-            elseif not inAir and AutoCrouchState.WasInAir then
-                VirtualInputManager:SendKeyEvent(false, MoveUtil.MOVE_KEY_CTRL, false, game)
-                AutoCrouchState.WasInAir = false
-            end
-        end)
+        local _, hum = MoveUtil.getAliveMovementRig()
+        if not hum then return end
+        local inAir = hum.FloorMaterial == MoveUtil.AIR_MATERIAL
+        if inAir and not AutoCrouchState.WasInAir then
+            VirtualInputManager:SendKeyEvent(true, MoveUtil.MOVE_KEY_CTRL, false, game)
+            AutoCrouchState.WasInAir = true
+        elseif not inAir and AutoCrouchState.WasInAir then
+            VirtualInputManager:SendKeyEvent(false, MoveUtil.MOVE_KEY_CTRL, false, game)
+            AutoCrouchState.WasInAir = false
+        end
     end)
 end
 
-local BhopState = { Conn = nil }
-local LegitBhopState = { Conn = nil, JumpCount = 0, WasInAir = false, DefaultSpeed = 16 }
-local AutoJumpState = { Conn = nil }
-local NoclipState = { Conn = nil, DescendantConn = nil, Saved = {}, Parts = {}, Character = nil }
-local FlyState = { Conn = nil }
-
+BhopState = { Conn = nil }
+LegitBhopState = { Conn = nil, JumpCount = 0, WasInAir = false, DefaultSpeed = 16 }
+AutoJumpState = { Conn = nil }
+NoclipState = { Conn = nil, DescendantConn = nil, Saved = {}, Parts = {}, Character = nil }
+FlyState = { Conn = nil }
 
 updateBhop = function()
     if BhopState.Conn then
@@ -2717,30 +2916,32 @@ updateBhop = function()
     if not (Toggles.BhopEnable and Toggles.BhopEnable.Value) then return end
 
     BhopState.Conn = RunService.RenderStepped:Connect(function(dt)
-        pcall(function()
-            local _, hum, rootPart = MoveUtil.getAliveMovementRig()
-            if not rootPart then return end
+        local _, hum, rootPart = MoveUtil.getAliveMovementRig()
+        if not rootPart then return end
 
-            local spaceHeld = UserInputService:IsKeyDown(MoveUtil.MOVE_KEY_SPACE)
+        local spaceHeld = UserInputService:IsKeyDown(MoveUtil.MOVE_KEY_SPACE)
 
-         if not spaceHeld then
-                hum.WalkSpeed = CONSTANTS.DEFAULT_WALK_SPEED
-                return
-            end
- 
-            if hum.FloorMaterial ~= MoveUtil.AIR_MATERIAL then
-                hum.Jump = true
-            end
+        if not spaceHeld then
+            hum.WalkSpeed = CONSTANTS.DEFAULT_WALK_SPEED
+            return
+        end
 
-            local multiplier = Options.BhopMultiplier and Options.BhopMultiplier.Value or 1
-            if not multiplier or multiplier <= 0 then multiplier = 1 end
-            local targetSpeed = CONSTANTS.DEFAULT_WALK_SPEED * multiplier
-            hum.WalkSpeed = targetSpeed
+        if hum.FloorMaterial ~= MoveUtil.AIR_MATERIAL then
+            hum.Jump = true
+        end
 
+        local multiplier = Options.BhopMultiplier and Options.BhopMultiplier.Value or 1
+        if not multiplier or multiplier <= 0 then multiplier = 1 end
+        local targetSpeed = CONSTANTS.DEFAULT_WALK_SPEED * multiplier
+        hum.WalkSpeed = targetSpeed
+
+        if multiplier > 1 then
             local cam = getCamera()
-            if not cam then return end
-            MoveUtil.applyCameraCFrameMove(rootPart, cam, targetSpeed, dt)
-        end)
+            if cam then
+                local boostSpeed = targetSpeed - CONSTANTS.DEFAULT_WALK_SPEED
+                MoveUtil.applyCameraCFrameMove(rootPart, cam, boostSpeed, dt)
+            end
+        end
     end)
 end
 
@@ -2759,47 +2960,38 @@ updateLegitBhop = function()
     if not (Toggles.LegitBhopEnable and Toggles.LegitBhopEnable.Value) then return end
 
     LegitBhopState.Conn = RunService.RenderStepped:Connect(function()
-        pcall(function()
-            local _, hum, rootPart = MoveUtil.getAliveMovementRig()
-            if not hum or not rootPart then return end
+        local _, hum, rootPart = MoveUtil.getAliveMovementRig()
+        if not hum or not rootPart then return end
 
-            if not UserInputService:IsKeyDown(MoveUtil.MOVE_KEY_SPACE) then
-                LegitBhopState.JumpCount = 0
-                LegitBhopState.WasInAir = hum.FloorMaterial == MoveUtil.AIR_MATERIAL
-                return
-            end
+        if not UserInputService:IsKeyDown(MoveUtil.MOVE_KEY_SPACE) then
+            LegitBhopState.JumpCount = 0
+            LegitBhopState.WasInAir = hum.FloorMaterial == MoveUtil.AIR_MATERIAL
+            hum.WalkSpeed = CONSTANTS.DEFAULT_WALK_SPEED
+            return
+        end
 
-            local inAir = hum.FloorMaterial == MoveUtil.AIR_MATERIAL
+        local inAir = hum.FloorMaterial == MoveUtil.AIR_MATERIAL
 
-            if inAir then
-                LegitBhopState.WasInAir = true
-            elseif LegitBhopState.WasInAir then
-                -- just landed - jump immediately
-                hum.Jump = true
-                LegitBhopState.JumpCount = math.min(LegitBhopState.JumpCount + 1, 5)
+        if inAir then
+            LegitBhopState.WasInAir = true
+        elseif LegitBhopState.WasInAir then
+            hum.Jump = true
+            LegitBhopState.JumpCount = math.min(LegitBhopState.JumpCount + 1, 15)
+            LegitBhopState.WasInAir = false
+        else
+            hum.Jump = true
+        end
 
-                local maxMult = Options.LegitBhopMultiplier and Options.LegitBhopMultiplier.Value or 2
-                local multiplier = 1 + (LegitBhopState.JumpCount / 5) * (maxMult - 1)
-                local vel = rootPart.AssemblyLinearVelocity
-                local horizontal = Vector3.new(vel.X, 0, vel.Z)
-                if horizontal.Magnitude > 1 then
-                    local cap = CONSTANTS.DEFAULT_WALK_SPEED * multiplier
-                    local newMag = math.min(horizontal.Magnitude * 1.12, cap)
-                    local boosted = horizontal.Unit * newMag
-                    rootPart.AssemblyLinearVelocity = Vector3.new(boosted.X, vel.Y, boosted.Z)
-                end
-
-                LegitBhopState.WasInAir = false
-            else
-                -- on ground but wasn't in air (e.g. walking) - jump to start bhop
-                hum.Jump = true
-            end
-        end)
+        local maxMult = Options.LegitBhopMultiplier and Options.LegitBhopMultiplier.Value or 2
+        if not maxMult or maxMult < 1 then maxMult = 1 end
+        local multiplier = 1 + (LegitBhopState.JumpCount / 15) * (maxMult - 1)
+        local targetSpeed = CONSTANTS.DEFAULT_WALK_SPEED * multiplier
+        hum.WalkSpeed = targetSpeed
     end)
 end
 
 
-local function clearNoclipRuntime()
+clearNoclipRuntime = function()
     if NoclipState.DescendantConn then
         NoclipState.DescendantConn:Disconnect()
         NoclipState.DescendantConn = nil
@@ -2808,11 +3000,9 @@ local function clearNoclipRuntime()
     NoclipState.Parts = {}
 end
 
-local function restoreNoclipParts()
+restoreNoclipParts = function()
     for part, canCollide in pairs(NoclipState.Saved) do
-        pcall(function()
-            if part and part.Parent then part.CanCollide = canCollide end
-        end)
+        if part and part.Parent then part.CanCollide = canCollide end
     end
     NoclipState.Saved = {}
     clearNoclipRuntime()
@@ -2852,28 +3042,26 @@ updateNoclip = function()
     if not (Toggles.NoclipEnable and Toggles.NoclipEnable.Value) then return end
 
     NoclipState.Conn = RunService.Stepped:Connect(function()
-        pcall(function()
-            local character = LocalPlayer.Character
-            if not character then return end
+        local character = LocalPlayer.Character
+        if not character then return end
 
-            setNoclipCharacter(character)
-            local parts = NoclipState.Parts
-            for i = #parts, 1, -1 do
-                local part = parts[i]
-                if part and part.Parent then
-                    if part.CanCollide then
-                        part.CanCollide = false
-                    end
-                else
-                    table.remove(parts, i)
+        setNoclipCharacter(character)
+        local parts = NoclipState.Parts
+        for i = #parts, 1, -1 do
+            local part = parts[i]
+            if part and part.Parent then
+                if part.CanCollide then
+                    part.CanCollide = false
                 end
+            else
+                table.remove(parts, i)
             end
-        end)
+        end
     end)
 end
 
 
-local function restoreFlyPhysics()
+restoreFlyPhysics = function()
     local hum = MoveUtil.getLocalHumanoid()
     if hum then hum.PlatformStand = false end
 end
@@ -2889,27 +3077,25 @@ updateFly = function()
     if not (Toggles.FlyEnable and Toggles.FlyEnable.Value) then return end
 
     FlyState.Conn = RunService.RenderStepped:Connect(function(dt)
-        pcall(function()
-            local _, humanoid, rootPart = MoveUtil.getAliveMovementRig()
-            if not rootPart then
-                if humanoid then humanoid.PlatformStand = false end
-                return
-            end
+        local _, humanoid, rootPart = MoveUtil.getAliveMovementRig()
+        if not rootPart then
+            if humanoid then humanoid.PlatformStand = false end
+            return
+        end
 
-            humanoid.PlatformStand = true
+        humanoid.PlatformStand = true
 
-            local cam = getCamera()
-            if not cam then return end
+        local cam = getCamera()
+        if not cam then return end
 
-            local speed = Options.FlySpeed and Options.FlySpeed.Value or 50
-            MoveUtil.applyFlyMove(rootPart, cam.CFrame, speed, dt)
-            rootPart.AssemblyLinearVelocity = MoveUtil.ZERO_VECTOR
-        end)
+        local speed = Options.FlySpeed and Options.FlySpeed.Value or 50
+        MoveUtil.applyFlyMove(rootPart, cam.CFrame, speed, dt)
+        rootPart.AssemblyLinearVelocity = MoveUtil.ZERO_VECTOR
     end)
 end
 
 
-local ThirdPersonCache = { arms = nil, parts = nil, lastHideState = nil }
+ThirdPersonCache = { arms = nil, parts = nil, lastHideState = nil }
 
 updateThirdPerson = function()
     local thirdPersonEnabled = Toggles.ThirdPersonEnable and Toggles.ThirdPersonEnable.Value
@@ -2917,51 +3103,49 @@ updateThirdPerson = function()
     local isThirdPersonActive = thirdPersonEnabled and isKeyActive
     local targetDist = isThirdPersonActive and (Options.ThirdPersonDistance and Options.ThirdPersonDistance.Value or 5) or 0.5
 
-    pcall(function()
-        LocalPlayer.CameraMaxZoomDistance = targetDist
-        LocalPlayer.CameraMinZoomDistance = targetDist
+    LocalPlayer.CameraMaxZoomDistance = targetDist
+    LocalPlayer.CameraMinZoomDistance = targetDist
 
-        local character = LocalPlayer.Character
-        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-        if humanoid then
-            humanoid.AutoRotate = not isThirdPersonActive
-        end
+    local character = LocalPlayer.Character
+    local _, humanoid = getCachedCharacterParts(LocalPlayer)
+    if humanoid then
+        humanoid.AutoRotate = not isThirdPersonActive
+    end
 
-        -- hide / show viewmodel (Arms)
-        local cam = getCamera()
-        if cam then
-            local arms = cam:FindFirstChild("Arms")
-            if arms then
-                local hideVM = Toggles.ThirdPersonHideVM and Toggles.ThirdPersonHideVM.Value
-                local hideState = isThirdPersonActive and hideVM
-                if arms ~= ThirdPersonCache.arms then
-                    ThirdPersonCache.arms = arms
-                    ThirdPersonCache.parts = nil
-                    for _, part in ipairs(arms:GetDescendants()) do
-                        if part:IsA("BasePart") or part:IsA("MeshPart") then
-                            if not ThirdPersonCache.parts then ThirdPersonCache.parts = {} end
-                            ThirdPersonCache.parts[#ThirdPersonCache.parts + 1] = part
-                        end
+    -- hide / show viewmodel (Arms)
+    local cam = getCamera()
+    if cam then
+        local arms = cam:FindFirstChild("Arms")
+        if arms then
+            local hideVM = Toggles.ThirdPersonHideVM and Toggles.ThirdPersonHideVM.Value
+            local hideState = isThirdPersonActive and hideVM
+            if arms ~= ThirdPersonCache.arms then
+                ThirdPersonCache.arms = arms
+                ThirdPersonCache.parts = nil
+                for _, part in ipairs(arms:GetDescendants()) do
+                    if part:IsA("BasePart") or part:IsA("MeshPart") then
+                        if not ThirdPersonCache.parts then ThirdPersonCache.parts = {} end
+                        ThirdPersonCache.parts[#ThirdPersonCache.parts + 1] = part
                     end
-                    ThirdPersonCache.lastHideState = nil
                 end
-                if ThirdPersonCache.parts and hideState ~= ThirdPersonCache.lastHideState then
-                    ThirdPersonCache.lastHideState = hideState
-                    local ltm = hideState and 1 or 0
-                    for i = 1, #ThirdPersonCache.parts do
-                        ThirdPersonCache.parts[i].LocalTransparencyModifier = ltm
-                    end
+                ThirdPersonCache.lastHideState = nil
+            end
+            if ThirdPersonCache.parts and hideState ~= ThirdPersonCache.lastHideState then
+                ThirdPersonCache.lastHideState = hideState
+                local ltm = hideState and 1 or 0
+                for i = 1, #ThirdPersonCache.parts do
+                    ThirdPersonCache.parts[i].LocalTransparencyModifier = ltm
                 end
             end
         end
+    end
 
-        -- camera through walls: manually position camera behind player, bypassing wall clipping
-        -- (handled by ThirdPersonNoClipConn below)
-    end)
+    -- camera through walls: manually position camera behind player, bypassing wall clipping
+    -- (handled by ThirdPersonNoClipConn below)
 end
 
-local ThirdPersonNoClipConn = nil
-local function updateThirdPersonNoClip()
+ThirdPersonNoClipConn = nil
+updateThirdPersonNoClip = function()
     if ThirdPersonNoClipConn then
         ThirdPersonNoClipConn:Disconnect()
         ThirdPersonNoClipConn = nil
@@ -2970,24 +3154,21 @@ local function updateThirdPersonNoClip()
         and Toggles.ThirdPersonNoClip and Toggles.ThirdPersonNoClip.Value) then return end
 
     ThirdPersonNoClipConn = RunService:BindToRenderStep("ValenokTPNoClip", Enum.RenderPriority.Camera.Value + 1, function()
-        pcall(function()
-            local tpEnabled = Toggles.ThirdPersonEnable and Toggles.ThirdPersonEnable.Value
-            local isKeyActive = isKeybindActive(Options.ThirdPersonKeybind)
-            if not (tpEnabled and isKeyActive) then return end
+        local tpEnabled = Toggles.ThirdPersonEnable and Toggles.ThirdPersonEnable.Value
+        local isKeyActive = isKeybindActive(Options.ThirdPersonKeybind)
+        if not (tpEnabled and isKeyActive) then return end
 
-            local cam = getCamera()
-            if not cam then return end
-            local char = LocalPlayer.Character
-            if not char then return end
-            local hrp = char:FindFirstChild("HumanoidRootPart")
-            local hum = char:FindFirstChildOfClass("Humanoid")
-            if not hrp or not hum or hum.Health <= 0 then return end
+        local cam = getCamera()
+        if not cam then return end
+        local char = LocalPlayer.Character
+        if not char then return end
+        local _, hum, hrp = getCachedCharacterParts(LocalPlayer)
+        if not hrp or not hum or hum.Health <= 0 then return end
 
-            local dist = Options.ThirdPersonDistance and Options.ThirdPersonDistance.Value or 5
-            local lookDir = cam.CFrame.LookVector
-            local camPos = hrp.Position - lookDir * dist + Vector3.new(0, 2, 0)
-            cam.CFrame = CFrame.new(camPos) * cam.CFrame.Rotation
-        end)
+        local dist = Options.ThirdPersonDistance and Options.ThirdPersonDistance.Value or 5
+        local lookDir = cam.CFrame.LookVector
+        local camPos = hrp.Position - lookDir * dist + Vector3.new(0, 2, 0)
+        cam.CFrame = CFrame.new(camPos) * cam.CFrame.Rotation
     end)
 end
 
@@ -3000,14 +3181,12 @@ updateAutoJump = function()
     if not (Toggles.AutoJumpEnable and Toggles.AutoJumpEnable.Value) then return end
 
     AutoJumpState.Conn = RunService.RenderStepped:Connect(function()
-        pcall(function()
-            if not UserInputService:IsKeyDown(MoveUtil.MOVE_KEY_SPACE) then return end
+        if not UserInputService:IsKeyDown(MoveUtil.MOVE_KEY_SPACE) then return end
 
-            local _, humanoid = MoveUtil.getAliveMovementRig()
-            if not humanoid then return end
+        local _, humanoid = MoveUtil.getAliveMovementRig()
+        if not humanoid then return end
 
-            humanoid.Jump = true
-        end)
+        humanoid.Jump = true
     end)
 end
 
@@ -3016,18 +3195,18 @@ end
 
 -- visuals
 
-local AmbienceSavedLighting
-local MiscState = { ambienceDirty = false }
+AmbienceSavedLighting = nil
+MiscState = { ambienceDirty = false }
 
 
 
-local function setCornerSeg(line, outline, fx, fy, tx, ty, color, visible)
+setCornerSeg = function(line, outline, fx, fy, tx, ty, color, visible)
     line.From = Vector2.new(fx, fy); line.To = Vector2.new(tx, ty)
     line.Color = color; line.Visible = visible
     outline.From = line.From; outline.To = line.To; outline.Visible = visible
 end
 
-local function hideDrawingSet(drawingSet, resetRect)
+hideDrawingSet = function(drawingSet, resetRect)
     if not drawingSet then return end
 
     drawingSet.Box.Visible = false
@@ -3054,17 +3233,17 @@ local function hideDrawingSet(drawingSet, resetRect)
 end
 
 
-local function removeDrawingSet(player)
+removeDrawingSet = function(player)
     local drawingSet = EspRuntime.Drawings[player]
     if not drawingSet then return end
 
     for _, item in drawingSet do
         if type(item) == "userdata" and item.Remove then
-            pcall(function() item.Visible = false; item:Remove() end)
+            item.Visible = false; item:Remove()
         elseif type(item) == "table" then
             for _, subItem in ipairs(item) do
                 if type(subItem) == "userdata" and subItem.Remove then
-                    pcall(function() subItem.Visible = false; subItem:Remove() end)
+                    subItem.Visible = false; subItem:Remove()
                 end
             end
         end
@@ -3074,16 +3253,16 @@ local function removeDrawingSet(player)
 end
 
 
-local function removeHighlight(player)
+removeHighlight = function(player)
     local highlight = EspRuntime.Highlights[player]
     if not highlight then return end
 
-    pcall(function() highlight:Destroy() end)
+    highlight:Destroy()
     EspRuntime.Highlights[player] = nil
 end
 
 
-local function getDrawingSet(player)
+getDrawingSet = function(player)
     local drawingSet = EspRuntime.Drawings[player]
     if drawingSet then return drawingSet end
 
@@ -3134,13 +3313,13 @@ local function getDrawingSet(player)
 end
 
 
-local function updatePlayerChams(player, character)
+updatePlayerChams = function(player, character)
     if player == LocalPlayer or not character then
         removeHighlight(player)
         return
     end
 
-    local showChams = Toggles.ESPChams and Toggles.ESPChams.Value
+    local showChams = EspFrameCache.toggles.chams
     if not showChams then
         local highlight = EspRuntime.Highlights[player]
         if highlight then highlight.Enabled = false end
@@ -3158,11 +3337,11 @@ local function updatePlayerChams(player, character)
     if highlight.Adornee ~= character then highlight.Adornee = character end
     if highlight.Parent ~= character then highlight.Parent = character end
 
-    highlight.FillColor = getOptionColor("ESPChamsColor", Color3.fromRGB(255, 255, 255))
-    highlight.FillTransparency = getChamsTransparency()
-    if Toggles.ESPChamsOutline and Toggles.ESPChamsOutline.Value then
+    highlight.FillColor = EspFrameCache.colors.chamsFill
+    highlight.FillTransparency = EspFrameCache.chamsTransparency
+    if EspFrameCache.toggles.chamsOutline then
         highlight.OutlineTransparency = 0
-        highlight.OutlineColor = getOptionColor("ESPChamsOutlineColor", Color3.fromRGB(255, 255, 255))
+        highlight.OutlineColor = EspFrameCache.colors.chamsOutline
     else
         highlight.OutlineTransparency = 1
     end
@@ -3170,7 +3349,7 @@ local function updatePlayerChams(player, character)
 end
 
 
-local function updatePlayerEsp(player)
+updatePlayerEsp = function(player)
     if not player or not player.Parent then return end
 
     if player == LocalPlayer then
@@ -3179,7 +3358,7 @@ local function updatePlayerEsp(player)
         return
     end
 
-    if not isAnyEspEnabled() then
+    if not EspFrameCache.anyEnabled then
         local drawingSet = EspRuntime.Drawings[player]
         if drawingSet then hideDrawingSet(drawingSet, true) end
         updatePlayerChams(player, nil)
@@ -3188,7 +3367,7 @@ local function updatePlayerEsp(player)
 
     local drawingSet = getDrawingSet(player)
 
-    if Toggles.ESPTeamCheck and Toggles.ESPTeamCheck.Value then
+    if EspFrameCache.toggles.teamCheck then
         local myTeam, theirTeam = LocalPlayer.Team, player.Team
         if myTeam ~= nil and theirTeam ~= nil and theirTeam == myTeam then
             hideDrawingSet(drawingSet, true)
@@ -3197,7 +3376,7 @@ local function updatePlayerEsp(player)
         end
     end
 
-    local character, humanoid, rootPart = getCharacterParts(player)
+    local character, humanoid, rootPart = getCachedCharacterParts(player)
     if not character then
         updatePlayerChams(player, nil)
         hideDrawingSet(drawingSet, true)
@@ -3222,13 +3401,13 @@ local function updatePlayerEsp(player)
     local bottom = top + height
     local centerX = left + width * 0.5
 
-    local showBox = Toggles.ESPBox and Toggles.ESPBox.Value
-    local showName = Toggles.ESPName and Toggles.ESPName.Value
-    local boxType = Options.ESPBoxType and Options.ESPBoxType.Value or "Full"
-    local showBoxFill = Toggles.ESPBoxFill and Toggles.ESPBoxFill.Value
+    local showBox = EspFrameCache.toggles.box
+    local showName = EspFrameCache.toggles.name
+    local boxType = EspFrameCache.options.boxType
+    local showBoxFill = EspFrameCache.toggles.boxFill
 
-    local boxColor = getOptionColor("ESPBoxColor", Color3.fromRGB(255, 255, 255))
-    local nameColor = getOptionColor("ESPNameColor", Color3.fromRGB(255, 255, 255))
+    local boxColor = EspFrameCache.colors.box
+    local nameColor = EspFrameCache.colors.name
 
     if boxType == "Corner" then
         drawingSet.Box.Visible = false
@@ -3262,11 +3441,8 @@ local function updatePlayerEsp(player)
     if showBoxFill then
         drawingSet.BoxFill.Position = Vector2.new(left, top)
         drawingSet.BoxFill.Size = Vector2.new(width, height)
-        drawingSet.BoxFill.Color = getOptionColor("ESPBoxFillColor", Color3.fromRGB(255, 255, 255))
-        local fillOpt = Options.ESPBoxFillColor
-        local fillTrans = 1
-        if fillOpt and fillOpt.Transparency then fillTrans = math.clamp(1 - fillOpt.Transparency, 0, 1) end
-        drawingSet.BoxFill.Transparency = fillTrans
+        drawingSet.BoxFill.Color = EspFrameCache.colors.boxFill
+        drawingSet.BoxFill.Transparency = EspFrameCache.boxFillTransparency
         drawingSet.BoxFill.Visible = true
     else
         drawingSet.BoxFill.Visible = false
@@ -3277,18 +3453,15 @@ local function updatePlayerEsp(player)
     drawingSet.Name.Color = nameColor
     drawingSet.Name.Visible = showName
 
-    local showWeapon = Toggles.ESPWeapon and Toggles.ESPWeapon.Value
-    local weaponColor = getOptionColor("ESPWeaponColor", Color3.fromRGB(255, 255, 255))
-    local weaponName = ""
-    if character and character:FindFirstChild("EquippedTool") then
-        weaponName = tostring(character.EquippedTool.Value)
-    end
+    local showWeapon = EspFrameCache.toggles.weapon
+    local weaponColor = EspFrameCache.colors.weapon
+    local weaponName = getCachedEquippedTool(player, character)
     drawingSet.Weapon.Text = weaponName
     drawingSet.Weapon.Position = Vector2.new(centerX, bottom + 5)
     drawingSet.Weapon.Color = weaponColor
     drawingSet.Weapon.Visible = showWeapon and weaponName ~= ""
 
-    local showHealthBar = Toggles.ESPHealthBar and Toggles.ESPHealthBar.Value
+    local showHealthBar = EspFrameCache.toggles.healthBar
     if showHealthBar and humanoid then
         local hpPercent = math.clamp(humanoid.Health / humanoid.MaxHealth, 0, 1)
         local barWidth = 3.5
@@ -3296,7 +3469,7 @@ local function updatePlayerEsp(player)
         local barX = left - barWidth - 2
         local barY = top
 
-        local showHealthOutline = Toggles.ESPHealthBarOutline and Toggles.ESPHealthBarOutline.Value
+        local showHealthOutline = EspFrameCache.toggles.healthBarOutline
         drawingSet.HealthBarOutline.Position = Vector2.new(barX, barY)
         drawingSet.HealthBarOutline.Size = Vector2.new(barWidth, barHeight)
         drawingSet.HealthBarOutline.Color = Color3.fromRGB(0, 0, 0)
@@ -3307,7 +3480,7 @@ local function updatePlayerEsp(player)
         local fillY = barY + inset + ((barHeight - inset * 2) - fillHeight)
         drawingSet.HealthBarFill.Position = Vector2.new(barX + inset, fillY)
         drawingSet.HealthBarFill.Size = Vector2.new(barWidth - inset * 2, fillHeight)
-        drawingSet.HealthBarFill.Color = getOptionColor("ESPHealthBarColor", Color3.fromRGB(0, 255, 0))
+        drawingSet.HealthBarFill.Color = EspFrameCache.colors.healthBar
         drawingSet.HealthBarFill.Filled = true
         drawingSet.HealthBarFill.Visible = true
 
@@ -3326,12 +3499,13 @@ local function updatePlayerEsp(player)
         drawingSet.HealthText.Visible = false
     end
 
-    local showSkeleton = Toggles.ESPSkeleton and Toggles.ESPSkeleton.Value
-    local skeletonColor = getOptionColor("ESPSkeletonColor", Color3.fromRGB(255, 255, 255))
+    local showSkeleton = EspFrameCache.toggles.skeleton
+    local skeletonColor = EspFrameCache.colors.skeleton
     if showSkeleton and drawingSet.SkeletonLines then
-        for i, bone in ipairs(CONSTANTS.SkeletonBones) do
-            local p1 = character:FindFirstChild(bone[1])
-            local p2 = character:FindFirstChild(bone[2])
+        local boneParts = getCachedBoneParts(player, character)
+        for i = 1, #CONSTANTS.SkeletonBones do
+            local p1 = boneParts[i][1]
+            local p2 = boneParts[i][2]
             local sl = drawingSet.SkeletonLines[i]
             local so = drawingSet.SkeletonOutlines[i]
             if p1 and p2 and sl and so then
@@ -3358,7 +3532,7 @@ local function updatePlayerEsp(player)
 end
 
 
-local function updateItemEsp()
+updateItemEsp = function()
     if not Toggles.ESPItemESP or not Toggles.ESPItemESP.Value then
         for item, text in pairs(EspRuntime.ItemDrawings) do
             text.Visible = false
@@ -3400,14 +3574,14 @@ local function updateItemEsp()
 
     for item, text in pairs(EspRuntime.ItemDrawings) do
         if not seenItems[item] or not item.Parent then
-            pcall(function() text.Visible = false; text:Remove() end)
+            if text then text.Visible = false; text:Remove() end
             EspRuntime.ItemDrawings[item] = nil
         end
     end
 end
 
 
-local function ensureFovCircles()
+ensureFovCircles = function()
     if not AimRuntime.AimFovCircle then
         local ok, c = pcall(Drawing.new, "Circle")
         if ok and c then
@@ -3432,7 +3606,7 @@ local function ensureFovCircles()
     end
 end
 
-local function updateFovCircle()
+updateFovCircle = function()
     ensureFovCircles()
     local cam = getCamera()
     if not cam then return end
@@ -3447,12 +3621,10 @@ local function updateFovCircle()
         if show then
             local radius = getAimFovRadius()
             local col = getOptionColor("AimbotFOVColor", Color3.fromRGB(255, 255, 255))
-            pcall(function()
-                aimCircle.Position = center
-                aimCircle.Radius = math.min(radius, 100000)
-                aimCircle.Color = col
-                aimCircle.Visible = true
-            end)
+            aimCircle.Position = center
+            aimCircle.Radius = math.min(radius, 100000)
+            aimCircle.Color = col
+            aimCircle.Visible = true
         else
             aimCircle.Visible = false
         end
@@ -3466,12 +3638,10 @@ local function updateFovCircle()
             local fovValue = Options.RagebotFOV and Options.RagebotFOV.Value or 1
             local radius = fovValue * (viewport.Y / cam.FieldOfView)
             local col = getOptionColor("RagebotFOVColor", Color3.fromRGB(255, 255, 255))
-            pcall(function()
-                rageCircle.Position = center
-                rageCircle.Radius = math.min(radius, 100000)
-                rageCircle.Color = col
-                rageCircle.Visible = true
-            end)
+            rageCircle.Position = center
+            rageCircle.Radius = math.min(radius, 100000)
+            rageCircle.Color = col
+            rageCircle.Visible = true
         else
             rageCircle.Visible = false
         end
@@ -3481,7 +3651,7 @@ end
 
 
 -- crosshair
-local CrosshairState = { Circle = nil, Outline = nil, Created = false }
+CrosshairState = { Circle = nil, Outline = nil, StateText = nil, Created = false }
 
 ensureCrosshair = function()
     if CrosshairState.Created then return end
@@ -3507,7 +3677,53 @@ ensureCrosshair = function()
         outline.ZIndex = 1
         CrosshairState.Outline = outline
     end
+    local success3, stateText = pcall(Drawing.new, "Text")
+    if success3 and stateText then
+        stateText.Visible = false
+        stateText.Center = true
+        stateText.Outline = true
+        stateText.Transparency = 1
+        stateText.Size = 13
+        stateText.Font = Drawing.Fonts.Plex
+        stateText.Color = Color3.fromRGB(255, 255, 255)
+        stateText.ZIndex = 2
+        CrosshairState.StateText = stateText
+    end
     CrosshairState.Created = true
+end
+
+getMovementStateText = function()
+    local _, humanoid, rootPart = MoveUtil.getAliveMovementRig()
+    if not humanoid or not rootPart then return "" end
+
+    local ctrlHeld = UserInputService:IsKeyDown(Enum.KeyCode.LeftControl)
+    local hipHeight = humanoid.HipHeight
+    local isCrouching = ctrlHeld or hipHeight < 1.5
+
+    if isCrouching then
+        if humanoid.FloorMaterial == Enum.Material.Air then
+            return "Ducking"
+        end
+        return "Crouching"
+    end
+
+    if humanoid.FloorMaterial == Enum.Material.Air then
+        return "In air"
+    end
+
+    local vel = rootPart.AssemblyLinearVelocity
+    local horizMag = math.sqrt(vel.X * vel.X + vel.Z * vel.Z)
+
+    if humanoid.Sit then
+        return "Sitting"
+    end
+
+    if horizMag > 1 then
+        if horizMag > 20 then return "Running" end
+        return "Walking"
+    end
+
+    return "Standing"
 end
 
 updateCrosshair = function()
@@ -3515,9 +3731,12 @@ updateCrosshair = function()
     if not CrosshairState.Circle then return end
 
     local enabled = Toggles.MiscCenterDot and Toggles.MiscCenterDot.Value
-    if not enabled then
+    local showState = Toggles.MiscStateIndicator and Toggles.MiscStateIndicator.Value
+
+    if not enabled and not showState then
         CrosshairState.Circle.Visible = false
         if CrosshairState.Outline then CrosshairState.Outline.Visible = false end
+        if CrosshairState.StateText then CrosshairState.StateText.Visible = false end
         return
     end
 
@@ -3525,19 +3744,434 @@ updateCrosshair = function()
     if not cam then return end
     local viewport = cam.ViewportSize
     local center = Vector2.new(viewport.X / 2, viewport.Y / 2)
-    local col = getOptionColor("MiscCenterDotColor", Color3.fromRGB(255, 255, 255))
-    CrosshairState.Circle.Position = center
-    CrosshairState.Circle.Color = col
-    CrosshairState.Circle.Visible = true
-    if CrosshairState.Outline then
-        CrosshairState.Outline.Position = center
-        CrosshairState.Outline.Visible = true
+
+    if enabled then
+        local col = getOptionColor("MiscCenterDotColor", Color3.fromRGB(255, 255, 255))
+        CrosshairState.Circle.Position = center
+        CrosshairState.Circle.Color = col
+        CrosshairState.Circle.Visible = true
+        if CrosshairState.Outline then
+            CrosshairState.Outline.Position = center
+            CrosshairState.Outline.Visible = true
+        end
+    else
+        CrosshairState.Circle.Visible = false
+        if CrosshairState.Outline then CrosshairState.Outline.Visible = false end
+    end
+
+    if showState and CrosshairState.StateText then
+        local stateStr = getMovementStateText()
+        if stateStr ~= "" then
+            CrosshairState.StateText.Text = stateStr
+            CrosshairState.StateText.Position = Vector2.new(center.X, center.Y + 20)
+            CrosshairState.StateText.Color = getOptionColor("MiscStateIndicatorColor", Color3.fromRGB(255, 255, 255))
+            CrosshairState.StateText.Visible = true
+        else
+            CrosshairState.StateText.Visible = false
+        end
+    else
+        if CrosshairState.StateText then CrosshairState.StateText.Visible = false end
     end
 end
 
 
+-- hit log (ported from clarity.tk, uses Linoria-style notifications positioned below crosshair)
+local HitLogGui, HitLogContainer, HitLogCount
+HitLogCount = 0
+
+pushHitLog = function(text)
+    if not (Toggles.MiscHitLog and Toggles.MiscHitLog.Value) then return end
+
+    if not HitLogGui then
+        local coreGui = game:GetService("CoreGui")
+        HitLogGui = Instance.new("ScreenGui")
+        HitLogGui.Name = "ValenokHitLog"
+        HitLogGui.ResetOnSpawn = false
+        HitLogGui.IgnoreGuiInset = true
+        HitLogGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+        pcall(function() HitLogGui.Parent = coreGui end)
+
+        HitLogContainer = Instance.new("Frame")
+        HitLogContainer.Name = "Container"
+        HitLogContainer.BackgroundTransparency = 1
+        HitLogContainer.AnchorPoint = Vector2.new(0.5, 0)
+        HitLogContainer.Position = UDim2.new(0.5, 0, 0.5, 40)
+        HitLogContainer.Size = UDim2.new(0, 400, 0, 200)
+        HitLogContainer.Parent = HitLogGui
+
+        local layout = Instance.new("UIListLayout")
+        layout.Padding = UDim.new(0, 2)
+        layout.FillDirection = Enum.FillDirection.Vertical
+        layout.SortOrder = Enum.SortOrder.LayoutOrder
+        layout.VerticalAlignment = Enum.VerticalAlignment.Top
+        layout.Parent = HitLogContainer
+    end
+
+    HitLogCount = HitLogCount + 1
+    if HitLogCount > 5 then
+        local oldest = HitLogContainer:GetChildren()
+        for _, child in ipairs(oldest) do
+            if child:IsA("Frame") then
+                child:Destroy()
+                HitLogCount = HitLogCount - 1
+                break
+            end
+        end
+    end
+
+    local XSize = Library.GetTextBounds and Library:GetTextBounds(text, Library.Font, 14) or {text:len() * 7, 20}
+    local textWidth = type(XSize) == "table" and XSize[1] or 200
+    local textHeight = type(XSize) == "table" and XSize[2] or 20
+
+    local notifyFrame = Instance.new("Frame")
+    notifyFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    notifyFrame.BackgroundTransparency = 0.1
+    notifyFrame.BorderSizePixel = 0
+    notifyFrame.Size = UDim2.new(0, 0, 0, textHeight + 8)
+    notifyFrame.AnchorPoint = Vector2.new(0.5, 0)
+    notifyFrame.Position = UDim2.new(0.5, 0, 0, 0)
+    notifyFrame.ClipsDescendants = true
+    notifyFrame.Parent = HitLogContainer
+
+    local innerFrame = Instance.new("Frame")
+    innerFrame.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+    innerFrame.BorderSizePixel = 0
+    innerFrame.Size = UDim2.new(1, 0, 1, 0)
+    innerFrame.Parent = notifyFrame
+
+    local accentBar = Instance.new("Frame")
+    accentBar.BackgroundColor3 = Color3.fromRGB(76, 175, 80)
+    accentBar.BorderSizePixel = 0
+    accentBar.Size = UDim2.new(0, 2, 1, 0)
+    accentBar.Parent = notifyFrame
+
+    local label = Instance.new("TextLabel")
+    label.BackgroundTransparency = 1
+    label.Position = UDim2.new(0, 6, 0, 0)
+    label.Size = UDim2.new(1, -8, 1, 0)
+    label.Font = Library.Font or Enum.Font.SourceSans
+    label.TextSize = 14
+    label.TextColor3 = Color3.fromRGB(255, 255, 255)
+    label.TextXAlignment = Enum.TextXAlignment.Center
+    label.Text = text
+    label.Parent = notifyFrame
+
+    pcall(function()
+        notifyFrame:TweenSize(UDim2.new(0, textWidth + 16, 0, textHeight + 8), "Out", "Quad", 0.3, true)
+    end)
+
+    task.spawn(function()
+        task.wait(3)
+        pcall(function()
+            notifyFrame:TweenSize(UDim2.new(0, 0, 0, textHeight + 8), "Out", "Quad", 0.4, true)
+        end)
+        task.wait(0.4)
+        notifyFrame:Destroy()
+        HitLogCount = HitLogCount - 1
+    end)
+end
+
+
+-- viewmodel visuals (weapon chams, arm chams, remove sleeves)
+VMState = { armsConn = nil }
+
+updateViewModelVisuals = function()
+    local cam = getCamera()
+    if not cam then return end
+
+    local arms = cam:FindFirstChild("Arms")
+    if not arms then return end
+
+    local weaponChams = Toggles.VMWeaponChams and Toggles.VMWeaponChams.Value
+    local armChams = Toggles.VMArmChams and Toggles.VMArmChams.Value
+    local removeSleeves = Toggles.VMRemoveSleeves and Toggles.VMRemoveSleeves.Value
+
+    if not weaponChams and not armChams and not removeSleeves then return end
+
+    local weaponColor = getOptionColor("VMWeaponColor", Color3.fromRGB(255, 255, 255))
+    local weaponTransparencyOpt = Options.VMWeaponColor
+    local weaponTransparency = (weaponTransparencyOpt and weaponTransparencyOpt.Transparency) or 0
+    local weaponMaterial = Options.VMWeaponMaterial and Options.VMWeaponMaterial.Value or "SmoothPlastic"
+    local weaponReflectance = (Options.VMWeaponReflectance and Options.VMWeaponReflectance.Value or 0) / 50
+
+    local armColor = getOptionColor("VMArmColor", Color3.fromRGB(255, 255, 255))
+    local armTransparencyOpt = Options.VMArmColor
+    local armTransparency = (armTransparencyOpt and armTransparencyOpt.Transparency) or 0
+    local armMaterial = Options.VMArmMaterial and Options.VMArmMaterial.Value or "SmoothPlastic"
+
+    local isKnife = false
+    for _, child in ipairs(arms:GetChildren()) do
+        if string.find(child.Name, "Knife") or child.Name == "Handle2" or child.Name == "Blade" then
+            isKnife = true
+            break
+        end
+    end
+
+    for _, obj in ipairs(arms:GetDescendants()) do
+            -- Weapon chams
+            if weaponChams and (obj:IsA("MeshPart") or (obj:IsA("BasePart") and obj.Name == "Part")) then
+                if obj.Name == "StatClock" then
+                    obj:ClearAllChildren()
+                end
+                if obj:IsA("BasePart") then obj.CastShadow = false end
+                obj.Color = weaponColor
+                obj.Transparency = 1 - weaponTransparency
+                obj.Material = Enum.Material[weaponMaterial] or Enum.Material.SmoothPlastic
+                if obj:IsA("MeshPart") then
+                    obj.TextureID = ""
+                end
+                obj.Reflectance = weaponReflectance
+                local sa = obj:FindFirstChild("SurfaceAppearance")
+                if sa then sa:Destroy() end
+            end
+
+            -- Knife handle hide
+            if weaponChams and isKnife and obj.Name == "Handle" and obj:IsA("BasePart") then
+                obj.Transparency = 1
+            end
+
+            -- Silencer2 fix (hide in buy zone like clarity.tk)
+            if weaponChams and obj.Name == "Silencer2" then
+                pcall(function()
+                    local welded = obj:FindFirstChild("Welded")
+                    if welded and Workspace:FindFirstChild("Map") and Workspace.Map:FindFirstChild("SpawnPoints") then
+                        local buyArea = Workspace.Map.SpawnPoints:FindFirstChild("BuyArea")
+                        if buyArea then
+                            welded.Part0 = buyArea
+                        end
+                    end
+                end)
+            end
+
+            -- Remove sleeves
+            if removeSleeves and obj.Name == "Sleeve" and obj:GetAttribute("CW_Applied") == nil then
+                obj:Destroy()
+            end
+
+            -- Arm chams
+            if armChams then
+                if obj:IsA("BasePart") then
+                    if obj.Name == "Sleeve" or obj.Name == "Glove" or string.find(obj.Name, "Arm") or string.find(obj.Name, "Hand") then
+                        if obj.Transparency == 1 then continue end
+                        obj.CastShadow = false
+                        obj.Material = Enum.Material[armMaterial] or Enum.Material.SmoothPlastic
+                        obj.Color = armColor
+                        obj.Transparency = 1 - armTransparency
+                    end
+                end
+                if obj:IsA("SpecialMesh") then
+                    obj.TextureId = (armMaterial == "ForceField") and "rbxassetid://4573037993" or ""
+                    obj.VertexColor = Vector3.new(armColor.R, armColor.G, armColor.B)
+                end
+            end
+        end
+end
+
+-- skybox changer
+SKYBOX_PRESETS = {
+    ["Purple Nebula"] = {
+        SkyboxBk = "rbxassetid://159454299", SkyboxDn = "rbxassetid://159454296",
+        SkyboxFt = "rbxassetid://159454293", SkyboxLf = "rbxassetid://159454286",
+        SkyboxRt = "rbxassetid://159454300", SkyboxUp = "rbxassetid://159454288",
+    },
+    ["Night Sky"] = {
+        SkyboxBk = "rbxassetid://12064107", SkyboxDn = "rbxassetid://12064152",
+        SkyboxFt = "rbxassetid://12064121", SkyboxLf = "rbxassetid://12063984",
+        SkyboxRt = "rbxassetid://12064115", SkyboxUp = "rbxassetid://12064131",
+    },
+    ["Pink Daylight"] = {
+        SkyboxBk = "rbxassetid://271042516", SkyboxDn = "rbxassetid://271077243",
+        SkyboxFt = "rbxassetid://271042556", SkyboxLf = "rbxassetid://271042310",
+        SkyboxRt = "rbxassetid://271042467", SkyboxUp = "rbxassetid://271077958",
+    },
+    ["Morning Glow"] = {
+        SkyboxBk = "rbxassetid://1417494030", SkyboxDn = "rbxassetid://1417494146",
+        SkyboxFt = "rbxassetid://1417494253", SkyboxLf = "rbxassetid://1417494402",
+        SkyboxRt = "rbxassetid://1417494499", SkyboxUp = "rbxassetid://1417494643",
+    },
+    ["Setting Sun"] = {
+        SkyboxBk = "rbxassetid://626460377", SkyboxDn = "rbxassetid://626460216",
+        SkyboxFt = "rbxassetid://626460513", SkyboxLf = "rbxassetid://626473032",
+        SkyboxRt = "rbxassetid://626458639", SkyboxUp = "rbxassetid://626460625",
+    },
+    ["Fade Blue"] = {
+        SkyboxBk = "rbxassetid://153695414", SkyboxDn = "rbxassetid://153695352",
+        SkyboxFt = "rbxassetid://153695452", SkyboxLf = "rbxassetid://153695320",
+        SkyboxRt = "rbxassetid://153695383", SkyboxUp = "rbxassetid://153695471",
+    },
+    ["Elegant Morning"] = {
+        SkyboxBk = "rbxassetid://153767241", SkyboxDn = "rbxassetid://153767216",
+        SkyboxFt = "rbxassetid://153767266", SkyboxLf = "rbxassetid://153767200",
+        SkyboxRt = "rbxassetid://153767231", SkyboxUp = "rbxassetid://153767288",
+    },
+    ["Neptune"] = {
+        SkyboxBk = "rbxassetid://218955819", SkyboxDn = "rbxassetid://218953419",
+        SkyboxFt = "rbxassetid://218954524", SkyboxLf = "rbxassetid://218958493",
+        SkyboxRt = "rbxassetid://218957134", SkyboxUp = "rbxassetid://218950090",
+    },
+    ["Redshift"] = {
+        SkyboxBk = "rbxassetid://401664839", SkyboxDn = "rbxassetid://401664862",
+        SkyboxFt = "rbxassetid://401664960", SkyboxLf = "rbxassetid://401664881",
+        SkyboxRt = "rbxassetid://401664901", SkyboxUp = "rbxassetid://401664936",
+    },
+    ["Aesthetic Night"] = {
+        SkyboxBk = "rbxassetid://1045964490", SkyboxDn = "rbxassetid://1045964368",
+        SkyboxFt = "rbxassetid://1045964655", SkyboxLf = "rbxassetid://1045964655",
+        SkyboxRt = "rbxassetid://1045964655", SkyboxUp = "rbxassetid://1045962969",
+    },
+    ["Gloomy Gray"] = {
+        SkyboxBk = "rbxassetid://4495864450", SkyboxDn = "rbxassetid://4495864887",
+        SkyboxFt = "rbxassetid://4495865458", SkyboxLf = "rbxassetid://4495866035",
+        SkyboxRt = "rbxassetid://4495866584", SkyboxUp = "rbxassetid://4495867486",
+    },
+    ["Light Within Dark"] = {
+        SkyboxBk = "rbxassetid://15502511288", SkyboxDn = "rbxassetid://15502508460",
+        SkyboxFt = "rbxassetid://15502510289", SkyboxLf = "rbxassetid://15502507918",
+        SkyboxRt = "rbxassetid://15502509398", SkyboxUp = "rbxassetid://15502511911",
+    },
+    ["Green Space"] = {
+        SkyboxBk = "rbxassetid://16823270864", SkyboxDn = "rbxassetid://16823272150",
+        SkyboxFt = "rbxassetid://16823273508", SkyboxLf = "rbxassetid://16823274898",
+        SkyboxRt = "rbxassetid://16823276281", SkyboxUp = "rbxassetid://16823277547",
+    },
+    ["The Winter"] = {
+        SkyboxBk = "rbxassetid://7307273436", SkyboxDn = "rbxassetid://7307275898",
+        SkyboxFt = "rbxassetid://7307282434", SkyboxLf = "rbxassetid://7307284944",
+        SkyboxRt = "rbxassetid://7307287254", SkyboxUp = "rbxassetid://7307290025",
+    },
+    ["Oblivion"] = {
+        SkyboxBk = "rbxassetid://16642312709", SkyboxDn = "rbxassetid://16642313526",
+        SkyboxFt = "rbxassetid://16642314757", SkyboxLf = "rbxassetid://16642315809",
+        SkyboxRt = "rbxassetid://16642317038", SkyboxUp = "rbxassetid://16642318139",
+    },
+    ["Final Bloodmoon"] = {
+        SkyboxBk = "rbxassetid://15493709538", SkyboxDn = "rbxassetid://15493710499",
+        SkyboxFt = "rbxassetid://15493711616", SkyboxLf = "rbxassetid://15493712720",
+        SkyboxRt = "rbxassetid://15493713902", SkyboxUp = "rbxassetid://15493714708",
+    },
+    ["Clouds"] = {
+        SkyboxBk = "rbxassetid://570557514", SkyboxDn = "rbxassetid://570557775",
+        SkyboxFt = "rbxassetid://570557559", SkyboxLf = "rbxassetid://570557620",
+        SkyboxRt = "rbxassetid://570557672", SkyboxUp = "rbxassetid://570557727",
+    },
+    ["Twilight"] = {
+        SkyboxBk = "rbxassetid://264908339", SkyboxDn = "rbxassetid://264907909",
+        SkyboxFt = "rbxassetid://264909420", SkyboxLf = "rbxassetid://264909758",
+        SkyboxRt = "rbxassetid://264908886", SkyboxUp = "rbxassetid://264907379",
+    },
+    ["Red Mountain"] = {
+        SkyboxBk = "rbxassetid://6636457509", SkyboxDn = "rbxassetid://6636457509",
+        SkyboxFt = "rbxassetid://6636457509", SkyboxLf = "rbxassetid://6636457509",
+        SkyboxRt = "rbxassetid://6636457509", SkyboxUp = "rbxassetid://6636457509",
+    },
+    ["Cloudy Skies"] = {
+        SkyboxBk = "rbxassetid://252760981", SkyboxDn = "rbxassetid://252763035",
+        SkyboxFt = "rbxassetid://252761439", SkyboxLf = "rbxassetid://252760980",
+        SkyboxRt = "rbxassetid://252762652", SkyboxUp = "rbxassetid://252762652",
+    },
+    ["Dark Blue"] = {
+        SkyboxBk = "rbxassetid://30306692", SkyboxDn = "rbxassetid://25901058",
+        SkyboxFt = "rbxassetid://30306730", SkyboxLf = "rbxassetid://30306626",
+        SkyboxRt = "rbxassetid://30306665", SkyboxUp = "rbxassetid://30306603",
+    },
+}
+
+SkyboxState = { customSky = nil, originalSky = nil, savedOriginal = false }
+
+applySkyboxChanger = function()
+    local lighting = game:GetService('Lighting')
+    local enabled = Toggles.AmbienceSkyboxChanger and Toggles.AmbienceSkyboxChanger.Value
+
+    -- Remove previous custom sky
+    if SkyboxState.customSky then
+        SkyboxState.customSky:Destroy()
+        SkyboxState.customSky = nil
+    end
+
+    if not enabled then
+        -- Restore original sky
+        if SkyboxState.originalSky and not SkyboxState.originalSky.Parent then
+            SkyboxState.originalSky.Parent = lighting
+        end
+        return
+    end
+
+    -- Save original sky on first enable
+    if not SkyboxState.savedOriginal then
+        local origSky = lighting:FindFirstChildOfClass('Sky')
+        SkyboxState.originalSky = origSky
+        SkyboxState.savedOriginal = true
+    end
+
+    -- Hide original sky
+    local origSky = lighting:FindFirstChildOfClass('Sky')
+    if origSky and origSky ~= SkyboxState.customSky then
+        origSky.Parent = nil
+    end
+
+    local presetName = Options.AmbienceSkyboxPreset and Options.AmbienceSkyboxPreset.Value or "Game's Sky"
+    local customId = Options.AmbienceSkyboxAssetId and Options.AmbienceSkyboxAssetId.Value or ""
+
+    -- If custom asset ID is provided, try to load skybox from that asset
+    if customId and customId ~= "" then
+        local idNum = tonumber(customId)
+        if idNum then
+            task.spawn(function()
+                pcall(function()
+                    local objects = game:GetObjects("rbxassetid://" .. tostring(idNum))
+                    if objects and #objects > 0 then
+                        local obj = objects[1]
+                        if obj:IsA("Sky") then
+                            if SkyboxState.customSky then SkyboxState.customSky:Destroy() end
+                            SkyboxState.customSky = obj
+                            obj.Name = "ValenokCustomSky"
+                            obj.Parent = lighting
+                            return
+                        end
+                        -- If it's a model/folder, search for Sky inside
+                        local sky = obj:FindFirstChildOfClass("Sky")
+                        if sky then
+                            if SkyboxState.customSky then SkyboxState.customSky:Destroy() end
+                            SkyboxState.customSky = sky:Clone()
+                            SkyboxState.customSky.Name = "ValenokCustomSky"
+                            SkyboxState.customSky.Parent = lighting
+                        end
+                        obj:Destroy()
+                    end
+                end)
+            end)
+            return
+        end
+    end
+
+    -- Use preset
+    if presetName == "Game's Sky" then
+        if SkyboxState.originalSky and not SkyboxState.originalSky.Parent then
+            SkyboxState.originalSky.Parent = lighting
+        end
+        return
+    end
+
+    local preset = SKYBOX_PRESETS[presetName]
+    if not preset then return end
+
+    local newSky = Instance.new("Sky")
+    newSky.Name = "ValenokCustomSky"
+    newSky.SunTextureId = ""
+    newSky.MoonTextureId = ""
+    newSky.StarCount = 0
+    newSky.SkyboxBk = preset.SkyboxBk
+    newSky.SkyboxDn = preset.SkyboxDn
+    newSky.SkyboxFt = preset.SkyboxFt
+    newSky.SkyboxLf = preset.SkyboxLf
+    newSky.SkyboxRt = preset.SkyboxRt
+    newSky.SkyboxUp = preset.SkyboxUp
+    newSky.Parent = lighting
+    SkyboxState.customSky = newSky
+end
+
 -- ambience
-local function updateAmbience()
+updateAmbience = function()
     local lighting = game:GetService('Lighting')
 
     local customTime = Toggles.AmbienceCustomTime and Toggles.AmbienceCustomTime.Value
@@ -3653,44 +4287,36 @@ local function updateAmbience()
         if sky then
             local c = Options.AmbienceSkyColorValue and Options.AmbienceSkyColorValue.Value or Color3.fromRGB(0, 0, 0)
             local colorTexture = "rbxasset://textures/white.png"
-            pcall(function()
-                sky.SkyboxBk = colorTexture
-                sky.SkyboxDn = colorTexture
-                sky.SkyboxFt = colorTexture
-                sky.SkyboxLf = colorTexture
-                sky.SkyboxRt = colorTexture
-                sky.SkyboxUp = colorTexture
-                sky.StarCount = 0
-                sky.SunTextureId = ""
-                sky.MoonTextureId = ""
-            end)
-            pcall(function()
-                lighting.FogColor = c
-                lighting.FogEnd = 9e9
-            end)
+            sky.SkyboxBk = colorTexture
+            sky.SkyboxDn = colorTexture
+            sky.SkyboxFt = colorTexture
+            sky.SkyboxLf = colorTexture
+            sky.SkyboxRt = colorTexture
+            sky.SkyboxUp = colorTexture
+            sky.StarCount = 0
+            sky.SunTextureId = ""
+            sky.MoonTextureId = ""
+            lighting.FogColor = c
+            lighting.FogEnd = 9e9
         end
     else
         if AmbienceSavedLighting.SkyTextures and AmbienceSavedLighting.Skybox then
             local sky = AmbienceSavedLighting.Skybox
             local t = AmbienceSavedLighting.SkyTextures
-            pcall(function()
-                sky.SkyboxBk = t.SkyboxBk
-                sky.SkyboxDn = t.SkyboxDn
-                sky.SkyboxFt = t.SkyboxFt
-                sky.SkyboxLf = t.SkyboxLf
-                sky.SkyboxRt = t.SkyboxRt
-                sky.SkyboxUp = t.SkyboxUp
-                sky.StarCount = t.StarCount
-                sky.SunTextureId = t.SunTextureId
-                sky.MoonTextureId = t.MoonTextureId
-                sky.CelestialBodiesSize = t.CelestialBodiesSize
-            end)
+            sky.SkyboxBk = t.SkyboxBk
+            sky.SkyboxDn = t.SkyboxDn
+            sky.SkyboxFt = t.SkyboxFt
+            sky.SkyboxLf = t.SkyboxLf
+            sky.SkyboxRt = t.SkyboxRt
+            sky.SkyboxUp = t.SkyboxUp
+            sky.StarCount = t.StarCount
+            sky.SunTextureId = t.SunTextureId
+            sky.MoonTextureId = t.MoonTextureId
+            sky.CelestialBodiesSize = t.CelestialBodiesSize
         end
         if AmbienceSavedLighting.FogColor then
-            pcall(function()
-                lighting.FogColor = AmbienceSavedLighting.FogColor
-                lighting.FogEnd = AmbienceSavedLighting.FogEnd
-            end)
+            lighting.FogColor = AmbienceSavedLighting.FogColor
+            lighting.FogEnd = AmbienceSavedLighting.FogEnd
         end
     end
 
@@ -3710,32 +4336,30 @@ end
 
 -- no scope
 applyNoScope = function(enabled)
-    local gui = LocalPlayer.PlayerGui:FindFirstChild("GUI")
+    local gui = getGuiFrame()
     if not gui then return end
     local crosshairs = gui:FindFirstChild("Crosshairs")
     if not crosshairs then return end
 
     local scope = crosshairs:FindFirstChild("Scope")
     if scope then
-        pcall(function() scope.ImageTransparency = enabled and 1 or 0 end)
+        scope.ImageTransparency = enabled and 1 or 0
         local innerScope = scope:FindFirstChild("Scope")
         if innerScope then
-            pcall(function()
-                innerScope.ImageTransparency = enabled and 1 or 0
-                if enabled then
-                    innerScope.Size = UDim2.new(2, 0, 2, 0)
-                    innerScope.Position = UDim2.new(-0.5, 0, -0.5, 0)
-                else
-                    innerScope.Size = UDim2.new(1, 0, 1, 0)
-                    innerScope.Position = UDim2.new(0, 0, 0, 0)
-                end
-            end)
+            innerScope.ImageTransparency = enabled and 1 or 0
+            if enabled then
+                innerScope.Size = UDim2.new(2, 0, 2, 0)
+                innerScope.Position = UDim2.new(-0.5, 0, -0.5, 0)
+            else
+                innerScope.Size = UDim2.new(1, 0, 1, 0)
+                innerScope.Position = UDim2.new(0, 0, 0, 0)
+            end
             local blur = innerScope:FindFirstChild("Blur")
             if blur then
-                pcall(function() blur.ImageTransparency = enabled and 1 or 0 end)
+                blur.ImageTransparency = enabled and 1 or 0
                 local blur2 = blur:FindFirstChild("Blur")
                 if blur2 then
-                    pcall(function() blur2.ImageTransparency = enabled and 1 or 0 end)
+                    blur2.ImageTransparency = enabled and 1 or 0
                 end
             end
         end
@@ -3744,7 +4368,7 @@ applyNoScope = function(enabled)
     for _, frameName in ipairs({"Frame1", "Frame2", "Frame3", "Frame4"}) do
         local frame = crosshairs:FindFirstChild(frameName)
         if frame then
-            pcall(function() frame.Transparency = enabled and 1 or 0 end)
+            frame.Transparency = enabled and 1 or 0
         end
     end
 end
@@ -3760,7 +4384,9 @@ end
 
 -- no flash
 updateNoFlash = function()
-    local blnd = LocalPlayer.PlayerGui and LocalPlayer.PlayerGui:FindFirstChild("Blnd")
+    local pg = getPlayerGui()
+    if not pg then return end
+    local blnd = pg:FindFirstChild("Blnd")
     if blnd then
         blnd.Enabled = not (Toggles.RemovalsNoFlash and Toggles.RemovalsNoFlash.Value)
     end
@@ -3809,11 +4435,12 @@ setupNoSmoke = function()
     end)
     EspRuntime.Connections.NoSmokeChildAdded = _noSmokeConn
 end
+end)()
 
 
 -- skin changer
 local SC = {}
-do
+;(function()
 SC.Viewmodels = ReplicatedStorage:WaitForChild("Viewmodels", 10)
 SC.Skins = ReplicatedStorage:WaitForChild("Skins", 10)
 SC.Gloves = ReplicatedStorage:FindFirstChild("Gloves") or ReplicatedStorage:WaitForChild("Gloves", 10)
@@ -3909,13 +4536,11 @@ local function SC_SwapKnifeModel(knifeName)
     if SC.State.swapping then return end
     if SC.State.currentKnife == knifeName then return end
     SC.State.swapping = true
-    pcall(function()
-        if SC.Viewmodels:FindFirstChild("v_CT Knife") then SC.Viewmodels:FindFirstChild("v_CT Knife"):Destroy() end
-        if SC.Viewmodels:FindFirstChild("v_T Knife") then SC.Viewmodels:FindFirstChild("v_T Knife"):Destroy() end
-    end)
+    if SC.Viewmodels:FindFirstChild("v_CT Knife") then SC.Viewmodels:FindFirstChild("v_CT Knife"):Destroy() end
+    if SC.Viewmodels:FindFirstChild("v_T Knife") then SC.Viewmodels:FindFirstChild("v_T Knife"):Destroy() end
     if knifeName == "CT Knife" or knifeName == "T Knife" then
-        if SC.OriginalCTKnife then pcall(function() SC.OriginalCTKnife:Clone().Parent = SC.Viewmodels end) end
-        if SC.OriginalTKnife then pcall(function() SC.OriginalTKnife:Clone().Parent = SC.Viewmodels end) end
+        if SC.OriginalCTKnife then SC.OriginalCTKnife:Clone().Parent = SC.Viewmodels end
+        if SC.OriginalTKnife then SC.OriginalTKnife:Clone().Parent = SC.Viewmodels end
     else
         local sourceVM = nil
         if SC.Viewmodels:FindFirstChild("v_" .. knifeName) then
@@ -3925,11 +4550,11 @@ local function SC_SwapKnifeModel(knifeName)
             if km then sourceVM = km end
         end
         if sourceVM then
-            local ct = sourceVM:Clone(); ct.Name = "v_CT Knife"; pcall(function() ct.Parent = SC.Viewmodels end)
-            local tt = sourceVM:Clone(); tt.Name = "v_T Knife"; pcall(function() tt.Parent = SC.Viewmodels end)
+            local ct = sourceVM:Clone(); ct.Name = "v_CT Knife"; ct.Parent = SC.Viewmodels
+            local tt = sourceVM:Clone(); tt.Name = "v_T Knife"; tt.Parent = SC.Viewmodels
         else
-            if SC.OriginalCTKnife then pcall(function() SC.OriginalCTKnife:Clone().Parent = SC.Viewmodels end) end
-            if SC.OriginalTKnife then pcall(function() SC.OriginalTKnife:Clone().Parent = SC.Viewmodels end) end
+            if SC.OriginalCTKnife then SC.OriginalCTKnife:Clone().Parent = SC.Viewmodels end
+            if SC.OriginalTKnife then SC.OriginalTKnife:Clone().Parent = SC.Viewmodels end
         end
     end
     SC.State.currentKnife = knifeName
@@ -3998,7 +4623,7 @@ local function SC_applySkinToPart(targetPart, SkinData)
             tex:Clone().Parent = targetPart
         elseif targetPart:IsA("MeshPart") then targetPart.TextureID = tex
         elseif targetPart:FindFirstChild("Mesh") then targetPart.Mesh.TextureId = tex
-        else pcall(function() targetPart.TextureID = tex end) end
+        else targetPart.TextureID = tex end
     end
 end
 
@@ -4018,7 +4643,7 @@ local function SC_applySkinToArms(armsObj, gunname, selectedSkin)
     end
     local skinConn
     skinConn = armsObj.DescendantAdded:Connect(function(part)
-        if part and part.Parent then pcall(SC_applySkinToPart, part, SkinData) end
+        if part and part.Parent then SC_applySkinToPart(part, SkinData) end
     end)
     armsObj.AncestryChanged:Connect(function(_, newParent)
         if not newParent and skinConn then skinConn:Disconnect(); skinConn = nil end
@@ -4032,20 +4657,18 @@ local function SC_setupArmsWatcher()
     SC.State.armsConn = Camera.ChildAdded:Connect(function(obj)
         if obj.Name ~= "Arms" then return end
         RunService.RenderStepped:Wait()
-        pcall(function()
-            local Client = nil
-            pcall(function() Client = getsenv(LocalPlayer.PlayerGui.Client) end)
-            if not Client or Client.gun == "none" or typeof(Client.gun) ~= "Instance" then return end
-            local isMelee = Client.gun:FindFirstChild("Melee")
-            local gunname = Client.gun.Name
-            if gunname:match("Grenade") or gunname:match("Flashbang") or gunname:match("Smoke") or gunname:match("Decoy") or gunname:match("Molotov") or gunname:match("Incendiary") or gunname:match("C4") then
-                return
-            end
-            if Toggles.SkinGloveChanger and Toggles.SkinGloveChanger.Value then
-                pcall(function()
-                    if not SC.lastGlove or SC.lastGlove == "None" then return end
-                    if not SC.GloveModels or not SC.GloveModels:FindFirstChild(SC.lastGlove) then return end
-                    local Model
+        local Client = nil
+        pcall(function() Client = getsenv(LocalPlayer.PlayerGui.Client) end)
+        if not Client or Client.gun == "none" or typeof(Client.gun) ~= "Instance" then return end
+        local isMelee = Client.gun:FindFirstChild("Melee")
+        local gunname = Client.gun.Name
+        if gunname:match("Grenade") or gunname:match("Flashbang") or gunname:match("Smoke") or gunname:match("Decoy") or gunname:match("Molotov") or gunname:match("Incendiary") or gunname:match("C4") then
+            return
+        end
+        if Toggles.SkinGloveChanger and Toggles.SkinGloveChanger.Value then
+            if not SC.lastGlove or SC.lastGlove == "None" then return end
+            if not SC.GloveModels or not SC.GloveModels:FindFirstChild(SC.lastGlove) then return end
+            local Model
                     for _, v in pairs(obj:GetChildren()) do
                         if v:IsA("Model") and (v:FindFirstChild("Right Arm") or v:FindFirstChild("Left Arm")) then
                             Model = v
@@ -4066,11 +4689,11 @@ local function SC_setupArmsWatcher()
                         if newRG:FindFirstChild("Mesh") then
                             newRG.Mesh.TextureId = gloveTex
                         else
-                            pcall(function() newRG.TextureID = gloveTex end)
+                            newRG.TextureID = gloveTex
                         end
                         newRG.Parent = RArm
                         newRG.Transparency = 0
-                        pcall(function() newRG.Welded.Part0 = RArm end)
+                        if newRG.Welded then newRG.Welded.Part0 = RArm end
                     end
                     if LArm and SC.GloveModels:FindFirstChild(SC.lastGlove) then
                         local LGlove = LArm:FindFirstChild("Glove") or LArm:FindFirstChild("LGlove")
@@ -4079,13 +4702,12 @@ local function SC_setupArmsWatcher()
                         if newLG:FindFirstChild("Mesh") then
                             newLG.Mesh.TextureId = gloveTex
                         else
-                            pcall(function() newLG.TextureID = gloveTex end)
+                            newLG.TextureID = gloveTex
                         end
                         newLG.Transparency = 0
                         newLG.Parent = LArm
-                        pcall(function() newLG.Welded.Part0 = LArm end)
+                        if newLG.Welded then newLG.Welded.Part0 = LArm end
                     end
-                end)
             end
             if Toggles.SkinKnifeChanger and Toggles.SkinKnifeChanger.Value and isMelee then
                 local wantedKnife = Options.SkinKnifeModel and Options.SkinKnifeModel.Value
@@ -4095,33 +4717,28 @@ local function SC_setupArmsWatcher()
                     return
                 end
                 task.spawn(function()
-                    pcall(function()
-                        if not obj or not obj.Parent then return end
-                        local kn = wantedKnife or "M9 Bayonet"
-                        if not SC.Skins:FindFirstChild(kn) then kn = "M9 Bayonet" end
-                        SC_applySkinToArms(obj, kn, SC.State.SavedKnifeSkins[wantedKnife] or "Inventory")
-                    end)
+                    if not obj or not obj.Parent then return end
+                    local kn = wantedKnife or "M9 Bayonet"
+                    if not SC.Skins:FindFirstChild(kn) then kn = "M9 Bayonet" end
+                    SC_applySkinToArms(obj, kn, SC.State.SavedKnifeSkins[wantedKnife] or "Inventory")
                 end)
             elseif Toggles.SkinWeaponChanger and Toggles.SkinWeaponChanger.Value and not isMelee then
                 task.spawn(function()
-                    pcall(function()
-                        if not obj or not obj.Parent then return end
-                        SC_applySkinToArms(obj, gunname, SC.State.SavedWeaponSkins[gunname] or "Inventory")
-                    end)
+                    if not obj or not obj.Parent then return end
+                    SC_applySkinToArms(obj, gunname, SC.State.SavedWeaponSkins[gunname] or "Inventory")
                 end)
             end
-        end)
     end)
 end
 SC.setupArmsWatcher = SC_setupArmsWatcher
-end
+end)()
 
 
 
 
 -- ui
 
-do
+;(function()
 local Window = Library:CreateWindow({
     Title = 'Valenok',
     Center = true,
@@ -4172,7 +4789,9 @@ LegitSections.Triggerbot:AddToggle('TriggerbotMultiPoint', {Text = 'Multipoint',
 LegitSections.Triggerbot:AddSlider('TriggerbotMultiPointScale', {Text = 'Multipoint scale', Default = 50, Min = 1, Max = 100, Rounding = 0, Suffix = '%'})
 LegitSections.Triggerbot:AddSlider('TriggerbotMultiPointPoints', {Text = 'Multipoint points', Default = 10, Min = 1, Max = 100, Rounding = 0})
 LegitSections.Triggerbot:AddToggle('TriggerbotMagnet', {Text = 'Magnet', Default = false})
-LegitSections.Triggerbot:AddSlider('TriggerbotDelay', {Text = 'Trigger bot delay', Default = 0, Min = 0, Max = 300, Rounding = 0})
+LegitSections.Triggerbot:AddSlider('TriggerbotDelay', {Text = 'Trigger bot delay', Default = 0, Min = 0, Max = 300, Rounding = 0, Suffix = 'ms'})
+LegitSections.Triggerbot:AddSlider('TriggerbotHoldTime', {Text = 'Hold time', Default = 50, Min = 10, Max = 500, Rounding = 0, Suffix = 'ms'})
+LegitSections.Triggerbot:AddSlider('TriggerbotInterval', {Text = 'Interval between shots', Default = 150, Min = 50, Max = 1000, Rounding = 0, Suffix = 'ms'})
 
 LegitSections.RCS:AddToggle('RCSEnable', {Text = 'Enable', Default = false, Callback = function() updateRCS() end})
 LegitSections.RCS:AddSlider('RCSValue', {Text = 'RCS', Default = 1, Min = 1, Max = 100, Rounding = 0, Callback = function() updateRCS() end})
@@ -4180,6 +4799,7 @@ LegitSections.RCS:AddSlider('RCSValue', {Text = 'RCS', Default = 1, Min = 1, Max
 local VisualTabbox = Tabs.Visual:AddLeftTabbox('ESP & Ambience')
 local espTab = VisualTabbox:AddTab('ESP')
 local ambienceTab = VisualTabbox:AddTab('Ambience')
+local viewmodelTab = VisualTabbox:AddTab('Viewmodel')
 
 local VisualSections = {
     ThirdPerson = Tabs.Visual:AddLeftGroupbox('Third person'),
@@ -4458,7 +5078,25 @@ VisualSections.DamageIndicators:AddToggle('MiscHitMarker', {Text = 'Hit marker',
 VisualSections.DamageIndicators:AddSlider('MiscHitMarkerLifetime', {Text = 'Hit marker time (s)', Default = 0.6, Min = 0.2, Max = 5, Rounding = 1})
 
 VisualSections.Misc:AddToggle('MiscCenterDot', {Text = 'Center dot', Default = true, ColorPicker = {Idx = 'MiscCenterDotColor', Default = Color3.fromRGB(255, 255, 255), Title = 'Center dot color'}})
+VisualSections.Misc:AddToggle('MiscStateIndicator', {Text = 'State indicator', Default = false, ColorPicker = {Idx = 'MiscStateIndicatorColor', Default = Color3.fromRGB(255, 255, 255), Title = 'State indicator color'}})
 VisualSections.Misc:AddToggle('MiscHideCrosshair', {Text = 'Hide game crosshair', Default = false})
+VisualSections.Misc:AddToggle('MiscHitLog', {Text = 'Hit log', Default = false})
+
+-- Viewmodel tab
+viewmodelTab:AddToggle('VMOffsetEnable', {Text = 'Viewmodel offset', Default = false})
+viewmodelTab:AddSlider('VMOffsetX', {Text = 'X', Default = 0, Min = -25, Max = 25, Rounding = 1, Suffix = ''})
+viewmodelTab:AddSlider('VMOffsetY', {Text = 'Y', Default = 0, Min = -25, Max = 25, Rounding = 1, Suffix = ''})
+viewmodelTab:AddSlider('VMOffsetZ', {Text = 'Z', Default = 0, Min = -25, Max = 25, Rounding = 1, Suffix = ''})
+viewmodelTab:AddSlider('VMRoll', {Text = 'Roll', Default = 0, Min = 0, Max = 360, Rounding = 1, Suffix = '°'})
+
+viewmodelTab:AddToggle('VMWeaponChams', {Text = 'Weapon chams', Default = false, ColorPicker = {Idx = 'VMWeaponColor', Default = Color3.fromRGB(255, 255, 255), Title = 'Weapon color', Transparency = 0}, Callback = function() updateViewModelVisuals() end})
+viewmodelTab:AddDropdown('VMWeaponMaterial', {Values = {'SmoothPlastic', 'Neon', 'ForceField', 'Glass'}, Default = 'SmoothPlastic', Text = 'Weapon material', Callback = function() updateViewModelVisuals() end})
+viewmodelTab:AddSlider('VMWeaponReflectance', {Text = 'Weapon reflectance', Default = 0, Min = 0, Max = 100, Rounding = 0, Suffix = '%', Callback = function() updateViewModelVisuals() end})
+
+viewmodelTab:AddToggle('VMArmChams', {Text = 'Arm chams', Default = false, ColorPicker = {Idx = 'VMArmColor', Default = Color3.fromRGB(255, 255, 255), Title = 'Arm color', Transparency = 0}, Callback = function() updateViewModelVisuals() end})
+viewmodelTab:AddDropdown('VMArmMaterial', {Values = {'SmoothPlastic', 'Neon', 'ForceField', 'Glass'}, Default = 'SmoothPlastic', Text = 'Arm material', Callback = function() updateViewModelVisuals() end})
+
+viewmodelTab:AddToggle('VMRemoveSleeves', {Text = 'Remove sleeves', Default = false, Callback = function() updateViewModelVisuals() end})
 
 RageSections.Exploit:AddToggle('ExploitKillAll', {Text = 'Kill all', Default = false, KeyPicker = {Idx = 'ExploitKillAllKeybind', Default = 'None', Mode = 'Hold', Text = 'Kill All'}})
 RageSections.Exploit:AddToggle('ExploitNoFallDamage', {Text = 'No fall damage', Default = false})
@@ -4480,7 +5118,7 @@ espTab:AddToggle('ESPItemESP', {Text = 'Item ESP', Default = false, ColorPicker 
 VisualSections.Menu:AddToggle('MenuBindList', {Text = 'Bind list', Default = true, Callback = function(Value) if Library.KeybindFrame then Library.KeybindFrame.Visible = Value end end})
 VisualSections.Menu:AddToggle('MenuWatermark', {Text = 'Watermark', Default = true, Callback = function(Value) Library:SetWatermarkVisibility(Value) end})
 
-VisualSections.Removals:AddToggle('RemovalsNoSmoke', {Text = 'No smoke', Default = false})
+VisualSections.Removals:AddToggle('RemovalsNoSmoke', {Text = 'No smoke', Default = false, Callback = function() setupNoSmoke() end})
 VisualSections.Removals:AddToggle('RemovalsNoFlash', {Text = 'No flash', Default = false, Callback = function() updateNoFlash() end})
 VisualSections.Removals:AddToggle('RemovalsNoScope', {Text = 'No scope', Default = false, Callback = function() updateNoScope() end})
 
@@ -4496,6 +5134,15 @@ ambienceTab:AddToggle('AmbienceSkyColor', {Text = 'Sky color', Default = false, 
 ambienceTab:AddToggle('AmbienceNightMode', {Text = 'Night mode (walls)', Default = false, ColorPicker = {Idx = 'AmbienceNightColor', Default = Color3.fromRGB(20, 20, 40), Title = 'Night mode color', Callback = function() MiscState.ambienceDirty = true end}}):OnChanged(function() MiscState.ambienceDirty = true end)
 ambienceTab:AddToggle('AmbienceNoShadow', {Text = 'No shadow', Default = false}):OnChanged(function() MiscState.ambienceDirty = true end)
 ambienceTab:AddSlider('AmbienceBrightness', {Text = 'Brightness', Default = 0, Min = -10, Max = 10, Rounding = 1}):OnChanged(function() MiscState.ambienceDirty = true end)
+
+ambienceTab:AddToggle('AmbienceSkyboxChanger', {Text = 'Skybox changer', Default = false, Callback = function() applySkyboxChanger() end})
+ambienceTab:AddDropdown('AmbienceSkyboxPreset', {
+    Text = 'Skybox preset',
+    Values = {"Game's Sky", "Purple Nebula", "Night Sky", "Pink Daylight", "Morning Glow", "Setting Sun", "Fade Blue", "Elegant Morning", "Neptune", "Redshift", "Aesthetic Night", "Gloomy Gray", "Light Within Dark", "Green Space", "The Winter", "Oblivion", "Final Bloodmoon", "Clouds", "Twilight", "Red Mountain", "Cloudy Skies", "Dark Blue"},
+    Default = "Game's Sky",
+    Callback = function() applySkyboxChanger() end,
+})
+ambienceTab:AddInput('AmbienceSkyboxAssetId', {Text = 'Custom asset ID', Default = '', Placeholder = 'e.g. 159454299', Callback = function() applySkyboxChanger() end})
 
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
@@ -4517,13 +5164,13 @@ Library.KeybindFrame.Visible = true
 
 SaveManager:BuildConfigSection(Tabs.Config)
 ThemeManager:ApplyToTab(Tabs.Config)
-end
+end)()
 
 
 -- hooks & ecosystem
 
 -- hide game crosshair when center dot or hide crosshair is enabled
-do
+;(function()
 local CrosshairHideState = { lastHideState = nil, conns = {} }
 
 local function applyCrosshairHide(child)
@@ -4545,32 +5192,30 @@ local function setupCrosshairHide()
     CrosshairHideState.lastHideState = hideEnabled
 
     for _, conn in ipairs(CrosshairHideState.conns) do
-        pcall(function() conn:Disconnect() end)
+        if conn then conn:Disconnect() end
     end
     CrosshairHideState.conns = {}
 
     if hideEnabled then
-        pcall(function()
-            local gui = LocalPlayer.PlayerGui:FindFirstChild("GUI")
-            if gui then
-                local ch = gui:FindFirstChild("Crosshairs")
-                if ch then
-                    for _, child in ipairs(ch:GetDescendants()) do
-                        applyCrosshairHide(child)
-                    end
-                    table.insert(CrosshairHideState.conns, ch.DescendantAdded:Connect(function(child)
-                        applyCrosshairHide(child)
-                    end))
+        local gui = getGuiFrame()
+        if gui then
+            local ch = gui:FindFirstChild("Crosshairs")
+            if ch then
+                for _, child in ipairs(ch:GetDescendants()) do
+                    applyCrosshairHide(child)
                 end
+                table.insert(CrosshairHideState.conns, ch.DescendantAdded:Connect(function(child)
+                    applyCrosshairHide(child)
+                end))
             end
-        end)
+        end
     end
 end
 
 Toggles.MiscHideCrosshair:OnChanged(setupCrosshairHide)
 Toggles.MiscCenterDot:OnChanged(setupCrosshairHide)
 task.spawn(setupCrosshairHide)
-end
+end)()
 
 
 -- Ambience
@@ -4585,16 +5230,16 @@ local AmbienceState = {
     SkyObj = nil,
     NightActive = false,
 }
-do
+;(function()
 local Lighting = game:GetService("Lighting")
 
 local function ambienceRestoreSky()
     if AmbienceState.SkyObj then
-        pcall(function() AmbienceState.SkyObj:Destroy() end)
+        AmbienceState.SkyObj:Destroy()
         AmbienceState.SkyObj = nil
     end
     if AmbienceState.OrigSky then
-        pcall(function() AmbienceState.OrigSky.Parent = Lighting end)
+        AmbienceState.OrigSky.Parent = Lighting
         AmbienceState.OrigSky = nil
     end
 end
@@ -4604,7 +5249,7 @@ local function ambienceRestoreNight()
         for _, part in ipairs(AmbienceState.NightParts) do
             local origColor = AmbienceState.NightOrigColors[part]
             if origColor and part and part.Parent then
-                pcall(function() part.Color = origColor end)
+                part.Color = origColor
             end
         end
         AmbienceState.NightParts = {}
@@ -4615,7 +5260,6 @@ end
 
 task.spawn(function()
     while task.wait(0.2) do
-        pcall(function()
             -- Custom time
             if Toggles.AmbienceCustomTime and Toggles.AmbienceCustomTime.Value then
                 if AmbienceState.OrigTime == nil then AmbienceState.OrigTime = Lighting.ClockTime end
@@ -4723,12 +5367,9 @@ task.spawn(function()
                     local nightColor = getOptionColor("AmbienceNightColor", Color3.fromRGB(20, 20, 40))
                     for _, obj in ipairs(workspace:GetDescendants()) do
                         if obj:IsA("BasePart") and not obj:IsA("MeshPart") then
-                            local ok2, _ = pcall(function()
-                                AmbienceState.NightOrigColors[obj] = obj.Color
-                                obj.Color = nightColor
-                                table.insert(AmbienceState.NightParts, obj)
-                            end)
-                            if not ok2 then end
+                            AmbienceState.NightOrigColors[obj] = obj.Color
+                            obj.Color = nightColor
+                            table.insert(AmbienceState.NightParts, obj)
                         end
                     end
                     AmbienceState.LastNightColor = nightColor
@@ -4738,19 +5379,21 @@ task.spawn(function()
                     if nightColor ~= AmbienceState.LastNightColor then
                         AmbienceState.LastNightColor = nightColor
                         for _, part in ipairs(AmbienceState.NightParts) do
-                            pcall(function() if part and part.Parent then part.Color = nightColor end end)
+                            if part and part.Parent then part.Color = nightColor end
                         end
                     end
                 end
             else
                 ambienceRestoreNight()
             end
-        end)
     end
 end)
-end
+end)()
+
+local restoreNamecallHook
 
 -- Silent aim helpers (ported from SilentAim.lua)
+;(function()
 local function buildSilentRay(targetPart)
     local targetPos = targetPart.Position
     local cam = getCamera()
@@ -4771,7 +5414,7 @@ end
 local function applySilentHitParl(args)
     local tgt = getgenv().PSilentTarget
     if not tgt or not tgt.Parent then return args end
-    local hitPos = tgt.CFrame and tgt.CFrame.p or tgt.Position
+    local hitPos = tgt.CFrame and tgt.CFrame.Position or tgt.Position
     args[1] = tgt
     args[2] = encodeHitPos(hitPos)
     if typeof(args[10]) == "Vector3" and typeof(args[12]) == "Vector3" then
@@ -4784,9 +5427,9 @@ local function applySilentHitParl(args)
 end
 
 -- namecall hook
-local _oldNamecall
+_oldNamecall = nil
 
-local function restoreNamecallHook()
+restoreNamecallHook = function()
     pcall(function()
         if _oldNamecall then
             hookmetamethod(game, "__namecall", _oldNamecall)
@@ -4803,19 +5446,43 @@ pcall(function()
         local silentActive = silentTarget and silentTarget.Parent ~= nil
 
         -- Redirect FindPartOnRay variants
-        if silentActive and string.find(method, "FindPartOnRay") then
+        if silentActive and not getgenv().IgnoreRaycastHook and string.find(method, "FindPartOnRay") then
             local fakeRay = buildSilentRay(silentTarget)
             return _oldNamecall(self, fakeRay, select(2, ...))
         end
 
         -- Redirect workspace:Raycast
-        if silentActive and method == "Raycast" and self == Workspace then
+        if silentActive and not getgenv().IgnoreRaycastHook and method == "Raycast" and self == Workspace then
             local origin, direction = unpack({...})
             if typeof(origin) == "Vector3" and typeof(direction) == "Vector3" then
                 local _, rayOrigin, predicted = buildSilentRay(silentTarget)
                 local mag = direction.Magnitude
                 if mag < 0.001 then mag = 500 end
                 return _oldNamecall(self, rayOrigin, (predicted - rayOrigin).Unit * mag, select(3, ...))
+            end
+        end
+
+        -- Viewmodel offset
+        if (method == "SetPrimaryPartCFrame" or method == "PivotTo" or method == "pivotTo") then
+            if Toggles.VMOffsetEnable and Toggles.VMOffsetEnable.Value and self.Name ~= "HumanoidRootPart" then
+                local isArms = false
+                local p = self
+                while p do
+                    if p.Name == "Arms" then isArms = true; break end
+                    p = p.Parent
+                end
+                if isArms then
+                    local args = {...}
+                    local cf = args[1]
+                    if typeof(cf) == "CFrame" then
+                        local offX = (Options.VMOffsetX and Options.VMOffsetX.Value or 0) / 10
+                        local offY = (Options.VMOffsetY and Options.VMOffsetY.Value or 0) / 10
+                        local offZ = (Options.VMOffsetZ and Options.VMOffsetZ.Value or 0) / 10
+                        local roll = math.rad(Options.VMRoll and Options.VMRoll.Value or 0)
+                        cf = cf * CFrame.new(offX, offY, -offZ) * CFrame.Angles(0, 0, roll)
+                        return _oldNamecall(self, cf, select(2, ...))
+                    end
+                end
             end
         end
 
@@ -4883,6 +5550,24 @@ pcall(function()
                             end
                         end
                     end)
+                    pcall(function()
+                        if Toggles.MiscHitLog and Toggles.MiscHitLog.Value then
+                            local partName = hitPart and hitPart.Name or "?"
+                            if string.find(partName, "Head") then partName = "Head" end
+                            local hitChar = hitPart and hitPart.Parent
+                            local hitPlayer = hitChar and Players:GetPlayerFromCharacter(hitChar)
+                            local name = hitPlayer and hitPlayer.Name or "?"
+                            local weaponName = "?"
+                            local char = LocalPlayer.Character
+                            if char then
+                                local eqTool = char:FindFirstChild("EquippedTool")
+                                if eqTool and type(eqTool.Value) == "string" then
+                                    weaponName = eqTool.Value
+                                end
+                            end
+                            pushHitLog("Hit " .. name .. " in the " .. tostring(partName) .. " with a " .. tostring(weaponName))
+                        end
+                    end)
                 end)
                 return _oldNamecall(self, unpack(args, 1, args.n))
             end
@@ -4910,27 +5595,13 @@ pcall(function()
             end
         end
 
-        if method == "Raycast" and self == Workspace and not getgenv().IgnoreRaycastHook then
-            local targetPart = getgenv().PSilentTarget
-            if targetPart and targetPart.Parent then
-                local _, rayOrigin, predicted = buildSilentRay(targetPart)
-                local rayArgs = {...}
-                local origin, direction = rayArgs[1], rayArgs[2]
-                if typeof(origin) == "Vector3" and typeof(direction) == "Vector3" then
-                    local mag = direction.Magnitude
-                    if mag < 0.001 then mag = 500 end
-                    rayArgs[2] = (predicted - rayOrigin).Unit * mag
-                    return _oldNamecall(self, unpack(rayArgs))
-                end
-            end
-        end
-
         return _oldNamecall(self, ...)
     end)
 end)
+end)()
 
 
-do
+;(function()
     local function fireHitFeedback()
         pcall(function()
             if Toggles.MiscHitSound and Toggles.MiscHitSound.Value then PlayHitSound() end
@@ -4965,7 +5636,7 @@ do
             end)
         end
     end)
-end
+end)()
 
 
 -- FOV circle init
@@ -4986,6 +5657,15 @@ unloadValenok = function()
     restoreNamecallHook()
     getgenv().PSilentTarget = nil
 
+    -- Restore original skybox
+    if SkyboxState.customSky then
+        pcall(function() SkyboxState.customSky:Destroy() end)
+        SkyboxState.customSky = nil
+    end
+    if SkyboxState.originalSky and not SkyboxState.originalSky.Parent then
+        pcall(function() SkyboxState.originalSky.Parent = game:GetService('Lighting') end)
+    end
+
     if HitMarkerState.HeartbeatConn then
         HitMarkerState.HeartbeatConn:Disconnect()
         HitMarkerState.HeartbeatConn = nil
@@ -5004,13 +5684,6 @@ unloadValenok = function()
     AimRuntime.AimFovCircle = nil
     AimRuntime.RageFovCircle = nil
 
-    if getgenv().ValenokCrosshair then
-        for _, d in ipairs(getgenv().ValenokCrosshair) do
-            pcall(function() d.Visible = false; d:Remove() end)
-        end
-        getgenv().ValenokCrosshair = nil
-    end
-
     if CrosshairState.Circle then
         pcall(function() CrosshairState.Circle.Visible = false; CrosshairState.Circle:Remove() end)
         CrosshairState.Circle = nil
@@ -5019,7 +5692,18 @@ unloadValenok = function()
         pcall(function() CrosshairState.Outline.Visible = false; CrosshairState.Outline:Remove() end)
         CrosshairState.Outline = nil
     end
+    if CrosshairState.StateText then
+        pcall(function() CrosshairState.StateText.Visible = false; CrosshairState.StateText:Remove() end)
+        CrosshairState.StateText = nil
+    end
     CrosshairState.Created = false
+
+    if HitLogGui then
+        pcall(function() HitLogGui:Destroy() end)
+        HitLogGui = nil
+        HitLogContainer = nil
+        HitLogCount = 0
+    end
 
     if getgenv().ValenokHitMarker then
         for _, d in ipairs(getgenv().ValenokHitMarker) do
@@ -5037,9 +5721,18 @@ unloadValenok = function()
         pcall(function() PeekDraw.FillLines[i]:Remove() end)
     end
 
+    for i = #TracerPool, 1, -1 do
+        local set = TracerPool[i]
+        pcall(function() set.beam:Destroy() end)
+        pcall(function() set.att0:Destroy() end)
+        pcall(function() set.att1:Destroy() end)
+        TracerPool[i] = nil
+    end
+
     applyNoScope(false)
 
-    local blnd = LocalPlayer.PlayerGui and LocalPlayer.PlayerGui:FindFirstChild("Blnd")
+    local pg = getPlayerGui()
+    local blnd = pg and pg:FindFirstChild("Blnd")
     if blnd then blnd.Enabled = true end
 
     for Player, DrawingSet in pairs(EspRuntime.Drawings) do
@@ -5067,6 +5760,13 @@ unloadValenok = function()
         EspRuntime.Highlights[Player] = nil
     end
 
+    table.clear(EspPlayerCache)
+    table.clear(EspFrameCache.toggles)
+    table.clear(EspFrameCache.options)
+    table.clear(EspFrameCache.colors)
+    EspFrameCache.tick = 0
+    EspFrameCache.anyEnabled = false
+
     if _hitSoundObj then pcall(function() _hitSoundObj:Destroy() end) end
 
     pcall(function()
@@ -5077,7 +5777,7 @@ unloadValenok = function()
         LocalPlayer.CameraMaxZoomDistance = 0.5
         LocalPlayer.CameraMinZoomDistance = 0.5
         local character = LocalPlayer.Character
-        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+        local _, humanoid = getCachedCharacterParts(LocalPlayer)
         if humanoid then humanoid.AutoRotate = true end
         -- restore viewmodel
         local cam = getCamera()
@@ -5094,13 +5794,12 @@ unloadValenok = function()
     end)
 
     TriggerbotState = {
-        AwaitingRelease = false,
         NextFireTime = 0,
         StopTime = 0,
         WasMoving = false,
-        Holding = false,
         DelayUntil = 0,
         DelayActive = false,
+        IsFiring = false,
     }
 
     local Client = getCachedClient()
@@ -5184,14 +5883,16 @@ unloadValenok = function()
     pcall(function()
         if CrosshairState.Circle then CrosshairState.Circle.Visible = false; CrosshairState.Circle:Remove() end
         if CrosshairState.Outline then CrosshairState.Outline.Visible = false; CrosshairState.Outline:Remove() end
+        if CrosshairState.StateText then CrosshairState.StateText.Visible = false; CrosshairState.StateText:Remove() end
         CrosshairState.Circle = nil
         CrosshairState.Outline = nil
+        CrosshairState.StateText = nil
         CrosshairState.Created = false
     end)
 
     -- restore game crosshair
     pcall(function()
-        local gui = LocalPlayer.PlayerGui:FindFirstChild("GUI")
+        local gui = getGuiFrame()
         if gui then
             local ch = gui:FindFirstChild("Crosshairs")
             if ch then
@@ -5310,7 +6011,7 @@ local function setupWeaponChangeListener(character)
     local eqTool = character:WaitForChild("EquippedTool", 5)
     if not eqTool then return end
     if EspRuntime.Connections.EquippedToolChanged then
-        pcall(function() EspRuntime.Connections.EquippedToolChanged:Disconnect() end)
+        EspRuntime.Connections.EquippedToolChanged:Disconnect()
     end
     EspRuntime.Connections.EquippedToolChanged = eqTool.Changed:Connect(function()
         if Toggles.GunModsRapidFire and Toggles.GunModsRapidFire.Value then
@@ -5354,18 +6055,24 @@ EspRuntime.Connections.PlayerRemoving = Players.PlayerRemoving:Connect(function(
             end)
             EspRuntime.Highlights[player] = nil
         end
+
+        invalidateEspPlayerCache(player)
     end)
 end)
 
 
 -- main loop
-local LoopState = { espUpdate = 0, wFps = 0, wFrames = 0, wLastUpdate = 0, removalsCheck = 0, ambienceUpdate = 0 }
+local LoopState = { espUpdate = 0, wFps = 0, wFrames = 0, wLastUpdate = 0, removalsCheck = 0, silentTargetUpdate = 0, vmUpdate = 0 }
 
 EspRuntime.Connections.RenderStepped = RunService.RenderStepped:Connect(function(dt)
     pcall(function()
         local now = tick()
         LoopState.wFrames = LoopState.wFrames + 1
         MultiPointState.frame = MultiPointState.frame + 1
+
+        local myChar = LocalPlayer.Character
+        local myHum = myChar and myChar:FindFirstChildOfClass("Humanoid")
+        local isAlive = myHum and myHum.Health > 0 and myChar.Parent
 
         if now - LoopState.removalsCheck >= 2 then
             LoopState.removalsCheck = now
@@ -5374,12 +6081,32 @@ EspRuntime.Connections.RenderStepped = RunService.RenderStepped:Connect(function
             if Toggles.RCSEnable and Toggles.RCSEnable.Value then updateRCS() end
         end
 
+        if now - MultiPointState.lastClean >= 5 then
+            MultiPointState.lastClean = now
+            for part in pairs(MultiPointState.cache) do
+                if not part or not part.Parent then
+                    MultiPointState.cache[part] = nil
+                end
+            end
+        end
+
         updateFovCircle()
-        updateAimBot(dt)
-        
+
+        if isAlive then
+            updateAimBot(dt)
+        end
+
         -- Silent aim keybind handling
-        local keybindActive = isKeybindActive(Options.RagebotKeybind)
-        if Toggles.RagebotEnable and Toggles.RagebotEnable.Value then
+        local rageKey = Options.RagebotKeybind
+        local keybindActive = false
+        if rageKey then
+            if rageKey.Value == "None" or rageKey.Mode == "Always" then
+                keybindActive = true
+            else
+                keybindActive = isKeybindActive(rageKey)
+            end
+        end
+        if Toggles.RagebotEnable and Toggles.RagebotEnable.Value and isAlive then
             silentActive = keybindActive
         else
             silentActive = false
@@ -5387,34 +6114,45 @@ EspRuntime.Connections.RenderStepped = RunService.RenderStepped:Connect(function
         
         -- Silent aim target update
         if silentActive then
-            local silentTarget = getNearestSilentTarget()
-            getgenv().PSilentTarget = silentTarget
-            
-            -- Auto fire functionality
-            if Toggles.RagebotAutoFire and Toggles.RagebotAutoFire.Value and silentTarget then
-                -- Check if player is alive before auto firing
-                local _, myHumanoid = MoveUtil.getAliveMovementRig()
-                if not myHumanoid then
-                    getgenv().PSilentTarget = nil
-                    silentActive = false
-                    return
+            local mousePressed = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
+            local menuOpen = Library and Library.IsMenuVisible and Library:IsMenuVisible()
+            local autoFire = Toggles.RagebotAutoFire and Toggles.RagebotAutoFire.Value and not menuOpen
+            if mousePressed or autoFire then
+                local silentTarget = getgenv().PSilentTarget
+                if now - LoopState.silentTargetUpdate >= 0.006 then
+                    LoopState.silentTargetUpdate = now
+                    silentTarget = getNearestSilentTarget()
                 end
+                getgenv().PSilentTarget = silentTarget
                 
-                -- Check if we should auto fire (only if not already holding mouse button)
-                if not UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
-                    local mouse = LocalPlayer:GetMouse()
-                    local mouseX = mouse.X
-                    local mouseY = mouse.Y
+                -- Auto fire functionality
+                if autoFire and silentTarget then
+                    -- Check if player is alive before auto firing
+                    local _, myHumanoid = MoveUtil.getAliveMovementRig()
+                    if not myHumanoid then
+                        getgenv().PSilentTarget = nil
+                        silentActive = false
+                        return
+                    end
                     
-                    -- Auto click to fire
-                    task.spawn(function()
-                        pcall(function()
-                            VirtualInputManager:SendMouseButtonEvent(mouseX, mouseY, 0, true, game, 1)
-                            task.wait(0.05)
-                            VirtualInputManager:SendMouseButtonEvent(mouseX, mouseY, 0, false, game, 1)
+                    -- Check if we should auto fire (only if not already holding mouse button)
+                    if not UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+                        local mouse = LocalPlayer:GetMouse()
+                        local mouseX = mouse.X
+                        local mouseY = mouse.Y
+                        
+                        -- Auto click to fire
+                        task.spawn(function()
+                            pcall(function()
+                                VirtualInputManager:SendMouseButtonEvent(mouseX, mouseY, 0, true, game, 1)
+                                task.wait(0.05)
+                                VirtualInputManager:SendMouseButtonEvent(mouseX, mouseY, 0, false, game, 1)
+                            end)
                         end)
-                    end)
+                    end
                 end
+            else
+                getgenv().PSilentTarget = nil
             end
         else
             getgenv().PSilentTarget = nil
@@ -5425,6 +6163,7 @@ EspRuntime.Connections.RenderStepped = RunService.RenderStepped:Connect(function
         -- ESP must be updated AFTER aimbot so it uses the final camera position
         if now - LoopState.espUpdate >= 1 / 180 then
             LoopState.espUpdate = now
+            updateEspFrameCache()
             local plist = Players:GetPlayers()
             for i = 1, #plist do
                 updatePlayerEsp(plist[i])
@@ -5448,10 +6187,22 @@ EspRuntime.Connections.RenderStepped = RunService.RenderStepped:Connect(function
             MiscState.ambienceDirty = false
             updateAmbience()
         end
-        updateTriggerbot()
-        updateAntiAim()
-        updateGrenadePrediction(dt)
-        updatePeekAssist()
+        if isAlive then
+            updateTriggerbot()
+            updateAntiAim()
+            updateGrenadePrediction(dt)
+            updatePeekAssist()
+        end
+
+        if now - LoopState.vmUpdate >= 0.5 then
+            LoopState.vmUpdate = now
+            local vmAnyEnabled = (Toggles.VMWeaponChams and Toggles.VMWeaponChams.Value)
+                or (Toggles.VMArmChams and Toggles.VMArmChams.Value)
+                or (Toggles.VMRemoveSleeves and Toggles.VMRemoveSleeves.Value)
+            if vmAnyEnabled then
+                updateViewModelVisuals()
+            end
+        end
     end)
 end)
 
@@ -5482,7 +6233,7 @@ end)
 
 
 -- inject watermark & keybind position saving into SaveManager
-do
+;(function()
     local origSave = SaveManager.Save
     local origLoad = SaveManager.Load
 
@@ -5537,11 +6288,11 @@ do
 
         return true
     end
-end
+end)()
 
 
 -- Keybind list: only show currently active binds (Toggle on / Hold pressed)
-do
+;(function()
     local function refreshKeybindList()
         if not (Library and Library.KeybindContainer and Library.KeybindFrame) then return end
 
@@ -5601,7 +6352,7 @@ do
     end)
 
     refreshKeybindList()
-end
+end)()
 
 
 -- Persist watermark & keybind list positions (fallback: separate file for when config is not saved)
