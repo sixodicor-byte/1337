@@ -1,5 +1,5 @@
 -- services
-setfpscap(400)
+setfpscap(600)
 if getgenv().ValenokUnload then pcall(getgenv().ValenokUnload) end
 
 local Players = game:GetService("Players")
@@ -2415,50 +2415,46 @@ local AntiAimState = {
 
 
 local function updateAntiAim()
-    local enabled = Toggles.AntiAimPitchEnable and Toggles.AntiAimPitchEnable.Value
+    local pitchEnabled = Toggles.AntiAimPitchEnable and Toggles.AntiAimPitchEnable.Value
+    local yawEnabled = Toggles.AntiAimYawEnable and Toggles.AntiAimYawEnable.Value
     local character = LocalPlayer.Character
     if not character then return end
     local _, humanoid, rootPart = getCachedCharacterParts(LocalPlayer)
     if not humanoid or not rootPart or humanoid.Health <= 0 then return end
 
-    if not enabled then
+    if not pitchEnabled and not yawEnabled then
         humanoid.AutoRotate = true
         humanoid.HipHeight = 2
         return
     end
 
     humanoid.HipHeight = 2
-
-    local yawEnabled = Toggles.AntiAimYawEnable and Toggles.AntiAimYawEnable.Value
     humanoid.AutoRotate = not yawEnabled
 
-    local pitchMode = Options.AntiAimPitchMode and Options.AntiAimPitchMode.Value or "None"
-    if pitchMode ~= "None" then
-        local remote = getControlTurnRemote()
-        if remote then
-            local pitch = 0
-            if pitchMode == "Down" then
-                pitch = -1
-            elseif pitchMode == "Up" then
-                pitch = 1
-            elseif pitchMode == "Custom" then
-                pitch = Options.AntiAimPitchCustom and Options.AntiAimPitchCustom.Value or 0
-            elseif pitchMode == "Random" then
-                local pitchSpeedMs = Options.AntiAimPitchRandomSpeed and Options.AntiAimPitchRandomSpeed.Value or 1
-                if (tick() - AntiAimState.PitchRandomLastSwitch) * 1000 >= pitchSpeedMs then
-                    local newPitch = math.random(-10, 10) / 10
-                    while math.abs(newPitch - AntiAimState.PitchRandomAngle) < 0.2 do
-                        newPitch = math.random(-10, 10) / 10
+    if pitchEnabled then
+        local pitchMode = Options.AntiAimPitchMode and Options.AntiAimPitchMode.Value or "None"
+        if pitchMode ~= "None" then
+            local remote = getControlTurnRemote()
+            if remote then
+                local pitch = 0
+                if pitchMode == "Down" then
+                    pitch = -1
+                elseif pitchMode == "Up" then
+                    pitch = 1
+                elseif pitchMode == "Custom" then
+                    pitch = Options.AntiAimPitchCustom and Options.AntiAimPitchCustom.Value or 0
+                elseif pitchMode == "Random" then
+                    local pitchSpeedMs = Options.AntiAimPitchRandomSpeed and Options.AntiAimPitchRandomSpeed.Value or 1
+                    if (tick() - AntiAimState.PitchRandomLastSwitch) * 1000 >= pitchSpeedMs then
+                        local newPitch = math.random(-10, 10) / 10
+                        while math.abs(newPitch - AntiAimState.PitchRandomAngle) < 0.2 do
+                            newPitch = math.random(-10, 10) / 10
+                        end
+                        AntiAimState.PitchRandomAngle = newPitch
+                        AntiAimState.PitchRandomLastSwitch = tick()
                     end
-                    AntiAimState.PitchRandomAngle = newPitch
-                    AntiAimState.PitchRandomLastSwitch = tick()
+                    pitch = AntiAimState.PitchRandomAngle
                 end
-                pitch = AntiAimState.PitchRandomAngle
-            end
-            local nowPitch = tick()
-            if nowPitch - AntiAimState.PitchLastSend >= (1 / 70) then
-                AntiAimState.PitchLastSend = nowPitch
-                AntiAimState.PitchLastValue = pitch
                 pcall(function() remote:FireServer(pitch) end)
             end
         end
@@ -3275,7 +3271,12 @@ updateThirdPerson = function()
     local character = LocalPlayer.Character
     local _, humanoid = getCachedCharacterParts(LocalPlayer)
     if humanoid then
-        humanoid.AutoRotate = not isThirdPersonActive
+        local yawOn = Toggles.AntiAimYawEnable and Toggles.AntiAimYawEnable.Value
+        if yawOn then
+            humanoid.AutoRotate = false
+        else
+            humanoid.AutoRotate = not isThirdPersonActive
+        end
     end
 
     -- hide / show viewmodel (Arms)
@@ -5485,7 +5486,7 @@ RageSections.Ragebot:AddSlider('RagebotMultiPointScale', {Text = 'Multipoint sca
 RageSections.Ragebot:AddSlider('RagebotMultiPointPoints', {Text = 'Multipoint points', Default = 10, Min = 1, Max = 100, Rounding = 0})
 RageSections.Ragebot:AddToggle('RagebotBaim', {Text = 'Baim', Default = false, KeyPicker = {Idx = 'RagebotBaimKeybind', Default = 'None', Mode = 'Toggle', Text = 'Baim'}})
 RageSections.Ragebot:AddToggle('RagebotWallPenetration', {Text = 'Wall penetration', Default = true})
-RageSections.Ragebot:AddSlider('SilentAimMaxWalls', {Text = 'Max walls', Default = 3, Min = 1, Max = 100, Rounding = 0})
+RageSections.Ragebot:AddSlider('SilentAimMaxWalls', {Text = 'Max walls', Default = 3, Min = 1, Max = 15, Rounding = 0})
 
 
 antiAimPitchTab:AddToggle('AntiAimPitchEnable', {Text = 'Enable', Default = false})
@@ -6382,6 +6383,10 @@ unloadValenok = function()
 
     pcall(function()
         RunService:UnbindFromRenderStep("ValenokTPNoClip")
+    end)
+
+    pcall(function()
+        RunService:UnbindFromRenderStep("ValenokAntiAim")
     end)
 
     pcall(function()
