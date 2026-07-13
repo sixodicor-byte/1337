@@ -3,7 +3,7 @@ if getgenv().ValenokKeySystemUnload then
 end
 
 local CONSTANTS = {
-    GITHUB_LIB_URL = "https://raw.githubusercontent.com/sixodicor-byte/1337/refs/heads/main/Ui.lua",
+    GITHUB_LIB_URL = "https://raw.githubusercontent.com/sixodicor-byte/1337/refs/heads/main/NewLib.lua",
     DISCORD_URL = "https://discord.gg/9fwC4wJVyE",
     MAIN_SCRIPT = "https://raw.githubusercontent.com/sixodicor-byte/1337/refs/heads/main/ValWtfVelocity.lua",
     VALID_KEY = "7K9-F2W-M8B",
