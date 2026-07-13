@@ -22,7 +22,7 @@ local CONSTANTS = {
     ESP_WIDTH_STUDS = 3.5,
 
 
-    ESP_BOX_THICKNESS = 1.5,
+    ESP_BOX_THICKNESS = 0.5,
     ESP_BOX_OUTLINE_THICKNESS = 1,
     ESP_HEALTH_BAR_WIDTH = 3.5,
     ESP_HEALTH_BAR_OUTLINE_THICKNESS = 1,
@@ -320,19 +320,68 @@ local function getCachedRayIgnore()
     end)
 end
 
+local RayIgnoreListCache = { list = nil, t = 0 }
+
 local function buildRayIgnoreList()
+    local now = tick()
+    local cached = RayIgnoreListCache.list
+    if cached and (now - RayIgnoreListCache.t) < 0.005 then
+        return cached
+    end
     local cam = getCamera()
     local char = LocalPlayer.Character
-    local rayIgnore = getCachedRayIgnore()
-    local list = { cam, char, rayIgnore }
+    local rayIgnore = Workspace:FindFirstChild("Ray_Ignore") or getCachedRayIgnore()
+    local debris = Workspace:FindFirstChild("Debris")
+    local list = { cam, char, rayIgnore, debris }
     local clips = getMapClips()
     if clips then table.insert(list, clips) end
     local spawns = getMapSpawns()
     if spawns then table.insert(list, spawns) end
     if GrenadeRuntime and GrenadeRuntime.Folder then table.insert(list, GrenadeRuntime.Folder) end
     if HitChamsState and HitChamsState.Folder then table.insert(list, HitChamsState.Folder) end
+    RayIgnoreListCache.list = list
+    RayIgnoreListCache.t = now
     return list
 end
+
+local function isUnderRayIgnore(inst)
+    if not inst then return false end
+    local rayIgnore = Workspace:FindFirstChild("Ray_Ignore") or getCachedRayIgnore()
+    if rayIgnore and inst:IsDescendantOf(rayIgnore) then return true end
+    local debris = Workspace:FindFirstChild("Debris")
+    if debris and inst:IsDescendantOf(debris) then return true end
+    return false
+end
+
+local function isSmokeLikePart(inst)
+    if not inst then return false end
+    local name = inst.Name
+    if name == "Smoke" or name:find("Smoke") or name:find("Fire") or name:find("Flame") or name:find("Molotov") or name:find("Burn") then
+        return true
+    end
+    if inst.Material == Enum.Material.Glass and inst.Transparency > 0.5 then return true end
+    if inst.Transparency >= 0.9 and not inst.CanCollide then return true end
+    return false
+end
+
+local function copyRayIgnoreList()
+    local base = buildRayIgnoreList()
+    local out = table.create(#base + 8)
+    for i = 1, #base do
+        out[i] = base[i]
+    end
+    return out
+end
+
+local function shouldPierceRayHit(inst)
+    if not inst then return false end
+    if isUnderRayIgnore(inst) or isSmokeLikePart(inst) then return true end
+    if inst.CanQuery == false then return true end
+    if inst.Transparency >= 1 then return true end
+    return false
+end
+
+
 
 
 local _controlTurnRemote
@@ -454,16 +503,37 @@ local function createSquare(thickness, color)
     return square
 end
 
+local ESP_FONT_MAP = {
+    UI = 0,
+    System = 1,
+    Plex = 2,
+    Monospace = 3,
+}
+
+local function getEspDrawingFont()
+    local name = Options.ESPFont and Options.ESPFont.Value or "Plex"
+    local id = ESP_FONT_MAP[name]
+    if id == nil then id = 2 end
+    if Drawing and Drawing.Fonts then
+        if name == "UI" and Drawing.Fonts.UI then return Drawing.Fonts.UI end
+        if name == "System" and Drawing.Fonts.System then return Drawing.Fonts.System end
+        if name == "Plex" and Drawing.Fonts.Plex then return Drawing.Fonts.Plex end
+        if name == "Monospace" and Drawing.Fonts.Monospace then return Drawing.Fonts.Monospace end
+    end
+    return id
+end
+
 local function createText(size)
     local text = Drawing.new("Text")
     text.Visible = false
     text.Center = true
     text.Outline = true
     text.Transparency = 1
-    text.Size = 13
-    text.Font = Drawing.Fonts.Plex
+    text.Size = size or 13
+    text.Font = getEspDrawingFont()
     return text
 end
+
 
 local function createLine(thickness, color)
     local line = Drawing.new("Line")
@@ -532,38 +602,54 @@ local function isStrictRayVisible(targetPart)
     if not targetPart or not targetPart.Parent then return false end
 
     local cam = getCamera()
+    if not cam then return false end
+
+    local targetPos = targetPart.Position
     local origin = cam.CFrame.Position
-    local direction = targetPart.Position - origin
-    if direction.Magnitude <= 1e-4 then return false end
+    if (targetPos - origin).Magnitude <= 1e-4 then return false end
 
-    VisibilityParams.FilterDescendantsInstances = buildRayIgnoreList()
+    local ignore = copyRayIgnoreList()
+    VisibilityParams.FilterDescendantsInstances = ignore
 
-    getgenv().IgnoreRaycastHook = true
-    local success, result = pcall(function() return Workspace:Raycast(origin, direction, VisibilityParams) end)
-    getgenv().IgnoreRaycastHook = false
-    local raycastResult = success and result or nil
+    for _ = 1, 12 do
+        local dir = targetPos - origin
+        if dir.Magnitude <= 1e-4 then return false end
 
-    if not raycastResult or not raycastResult.Instance then return false end
+        getgenv().IgnoreRaycastHook = true
+        local success, result = pcall(function()
+            return Workspace:Raycast(origin, dir, VisibilityParams)
+        end)
+        getgenv().IgnoreRaycastHook = false
 
-    local hitInst = raycastResult.Instance
+        if not success or not result or not result.Instance then
+            return false
+        end
 
-    if hitInst == targetPart then
-        return true
-    end
+        local hitInst = result.Instance
+        if hitInst == targetPart then
+            return true
+        end
 
-    local hitParent = hitInst.Parent
-    if hitParent and hitParent:IsA("Accessory") and hitParent.Parent == targetPart.Parent then
-        return true
-    end
+        local hitParent = hitInst.Parent
+        if hitParent and hitParent:IsA("Accessory") and hitParent.Parent == targetPart.Parent then
+            return true
+        end
+        if hitParent == targetPart.Parent and hitInst:IsA("BasePart") then
+            return true
+        end
 
-    local hitName = hitInst.Name
-    local isSmoke = hitName == "Smoke" or hitName:find("Smoke") or (hitInst.Material == Enum.Material.Glass and hitInst.Transparency > 0.5)
-    if isSmoke then
-        return true
+        if shouldPierceRayHit(hitInst) then
+            table.insert(ignore, hitInst)
+            VisibilityParams.FilterDescendantsInstances = ignore
+            origin = result.Position + dir.Unit * 0.05
+        else
+            return false
+        end
     end
 
     return false
 end
+
 
 local function isVisibleTarget(character)
     if not character then return false end
@@ -597,25 +683,30 @@ local function getWallCount(originPos, targetPos, maxWalls)
     local maxIterations = maxWalls + 2
     local iterationCount = 0
 
-    while remainingDistance > 0.1 and wallCount <= maxWalls + 1 and iterationCount < maxIterations do
-        iterationCount = iterationCount + 1
-        local checkRay = Ray.new(lastHitPos, direction * remainingDistance)
-        local hitPart, hitPos = Workspace:FindPartOnRayWithIgnoreList(checkRay, ignoreList)
-        
-        if hitPart then
-            local parent = hitPart.Parent
-            if parent and not parent:FindFirstChildOfClass("Humanoid") and not (LocalPlayer.Character and parent:IsDescendantOf(LocalPlayer.Character)) then
-                wallCount = wallCount + 1
-                lastHitPos = hitPos + direction * 0.1
-                remainingDistance = (targetPos - lastHitPos).Magnitude
+    getgenv().IgnoreRaycastHook = true
+    local ok, err = pcall(function()
+        while remainingDistance > 0.1 and wallCount <= maxWalls + 1 and iterationCount < maxIterations do
+            iterationCount = iterationCount + 1
+            local checkRay = Ray.new(lastHitPos, direction * remainingDistance)
+            local hitPart, hitPos = Workspace:FindPartOnRayWithIgnoreList(checkRay, ignoreList)
+            
+            if hitPart then
+                local parent = hitPart.Parent
+                if parent and not parent:FindFirstChildOfClass("Humanoid") and not (LocalPlayer.Character and parent:IsDescendantOf(LocalPlayer.Character)) then
+                    wallCount = wallCount + 1
+                    lastHitPos = hitPos + direction * 0.1
+                    remainingDistance = (targetPos - lastHitPos).Magnitude
+                else
+                    lastHitPos = hitPos + direction * 0.1
+                    remainingDistance = (targetPos - lastHitPos).Magnitude
+                end
             else
-                lastHitPos = hitPos + direction * 0.1
-                remainingDistance = (targetPos - lastHitPos).Magnitude
+                break
             end
-        else
-            break
         end
-    end
+    end)
+    getgenv().IgnoreRaycastHook = false
+    if not ok then return 0 end
     
     return wallCount
 end
@@ -923,6 +1014,110 @@ local function getNearestSilentTarget()
     return nearestPart
 end
 
+local AutoScopeState = { lastWant = false }
+
+local function isScopedGun(gun)
+    return typeof(gun) == "Instance" and gun:FindFirstChild("Scoped") ~= nil
+end
+
+local function setADS(client, on)
+    if not client or type(client.updateads) ~= "function" then return end
+    pcall(debug.setupvalue, client.updateads, 1, on == true)
+    if on == false then
+        rawset(client, "doublezoom", false)
+    end
+    pcall(client.updateads)
+end
+
+local function isADS()
+    local char = LocalPlayer.Character
+    return char and char:FindFirstChild("AIMING") ~= nil
+end
+
+local ScopeLookParams = RaycastParams.new()
+ScopeLookParams.FilterType = Enum.RaycastFilterType.Exclude
+ScopeLookParams.IgnoreWater = true
+
+local function lookingAtEnemyForScope()
+    local cam = getCamera()
+    if not cam then return false end
+
+    local origin = cam.CFrame.Position
+    local dir = cam.CFrame.LookVector * 2000
+    local base = buildRayIgnoreList()
+    local debris = Workspace:FindFirstChild("Debris")
+    if debris then
+        local ignore = table.create(#base + 1)
+        for i = 1, #base do
+            ignore[i] = base[i]
+        end
+        ignore[#base + 1] = debris
+        ScopeLookParams.FilterDescendantsInstances = ignore
+    else
+        ScopeLookParams.FilterDescendantsInstances = base
+    end
+
+    getgenv().IgnoreRaycastHook = true
+    local result = Workspace:Raycast(origin, dir, ScopeLookParams)
+    getgenv().IgnoreRaycastHook = false
+    if not result or not result.Instance then return false end
+
+    local model = result.Instance:FindFirstAncestorOfClass("Model")
+    if not model then return false end
+    local plr = Players:GetPlayerFromCharacter(model)
+    if not plr or not isEnemy(plr) then return false end
+
+    local _, humanoid = getCachedCharacterParts(plr)
+    if not humanoid or humanoid.Health <= 0 then return false end
+    if hasShield(model) then return false end
+    return true
+end
+
+local function updateAutoScope()
+    local legitOn = Toggles.AimbotAutoScope and Toggles.AimbotAutoScope.Value
+    local rageOn = Toggles.RagebotAutoScope and Toggles.RagebotAutoScope.Value
+    if not legitOn and not rageOn then
+        if AutoScopeState.lastWant then
+            setADS(getCachedClient(), false)
+            AutoScopeState.lastWant = false
+        end
+        return
+    end
+
+    local client = getCachedClient()
+    if not client then return end
+
+    local gun = rawget(client, "gun")
+    if not isScopedGun(gun) then
+        if AutoScopeState.lastWant then
+            setADS(client, false)
+            AutoScopeState.lastWant = false
+        end
+        return
+    end
+
+    local want = false
+    if legitOn and lookingAtEnemyForScope() then
+        want = true
+    elseif rageOn then
+        local tgt = getgenv().PSilentTarget
+        if tgt and tgt.Parent then
+            want = true
+        elseif not RuntimePack.silentActive then
+            want = getNearestSilentTarget() ~= nil
+        end
+    end
+
+    if want == AutoScopeState.lastWant then
+        if want and not isADS() then
+            setADS(client, true)
+        end
+        return
+    end
+
+    AutoScopeState.lastWant = want
+    setADS(client, want)
+end
 
 local _hitSoundObj, PlayHitMarker
 
@@ -1194,17 +1389,20 @@ local function updateGrenadePrediction(dt)
         local numPoints = #GrenadeRuntime.TrajectoryCache.cachedPoints
         for j = 1, numPoints do
             local pt = GrenadeRuntime.TrajectoryCache.cachedPoints[j]
-            GrenadeRuntime.Attachments[j].WorldPosition = pt.pos
-            if j > 1 and GrenadeRuntime.Beams[j-1] then
-                GrenadeRuntime.Beams[j-1].Transparency = NumberSequence.new(pt.transparency)
-                GrenadeRuntime.Beams[j-1].Enabled = true
+            local att = GrenadeRuntime.Attachments[j]
+            if att then att.WorldPosition = pt.pos end
+            if j > 1 and GrenadeRuntime.Beams[j - 1] then
+                GrenadeRuntime.Beams[j - 1].Transparency = NumberSequence.new(pt.transparency)
+                GrenadeRuntime.Beams[j - 1].Enabled = true
             end
         end
         for j = numPoints, 39 do
             if GrenadeRuntime.Beams[j] then GrenadeRuntime.Beams[j].Enabled = false end
         end
-        GrenadeRuntime.Sphere.CFrame = CFrame.new(GrenadeRuntime.TrajectoryCache.cachedSpherePos)
-        GrenadeRuntime.Sphere.Transparency = 0.3
+        if GrenadeRuntime.Sphere then
+            GrenadeRuntime.Sphere.CFrame = CFrame.new(GrenadeRuntime.TrajectoryCache.cachedSpherePos)
+            GrenadeRuntime.Sphere.Transparency = 0.3
+        end
         return
     end
 
@@ -1219,7 +1417,7 @@ local function updateGrenadePrediction(dt)
     local velocity = cam.CFrame.LookVector * CONSTANTS.GRENADE_PARAMS.LOOK_SPEED + plrVel * CONSTANTS.GRENADE_PARAMS.PLR_FACTOR + Vector3.new(0, CONSTANTS.GRENADE_PARAMS.UP_BIAS, 0)
     local grav = Vector3.new(0, -workspace.Gravity, 0)
 
-    local tStep = 1/60
+    local tStep = 1 / 60
     local maxSteps = 240
     local currentPos = startPos
 
@@ -1227,13 +1425,14 @@ local function updateGrenadePrediction(dt)
         local rp = RaycastParams.new()
         rp.FilterType = Enum.RaycastFilterType.Exclude
         GrenadeRuntime.RP = rp
-        GrenadeRuntime.FilterList = {lp.Character, getCachedRayIgnore(), GrenadeRuntime.Folder}
+        GrenadeRuntime.FilterList = { lp.Character, getCachedRayIgnore(), GrenadeRuntime.Folder }
         local clips = getMapClips()
         if clips then table.insert(GrenadeRuntime.FilterList, clips) end
         local spawns = getMapSpawns()
         if spawns then table.insert(GrenadeRuntime.FilterList, spawns) end
     end
     GrenadeRuntime.FilterList[1] = lp.Character
+    GrenadeRuntime.FilterList[3] = GrenadeRuntime.Folder
     if HitChamsState and HitChamsState.Folder then
         if not table.find(GrenadeRuntime.FilterList, HitChamsState.Folder) then
             table.insert(GrenadeRuntime.FilterList, HitChamsState.Folder)
@@ -1244,11 +1443,13 @@ local function updateGrenadePrediction(dt)
 
     local bounces = 0
     local pointCount = 1
-    GrenadeRuntime.Attachments[1].WorldPosition = startPos
+    local firstAtt = GrenadeRuntime.Attachments[1]
+    if not firstAtt then return end
+    firstAtt.WorldPosition = startPos
 
     local samplePeriod = 2
     local stepIdx = 0
-    for s = 1, maxSteps do
+    for _ = 1, maxSteps do
         local nextVel = velocity + (grav * tStep)
         local moveDelta = (velocity + nextVel) * 0.5 * tStep
         local nextPos = currentPos + moveDelta
@@ -1262,10 +1463,12 @@ local function updateGrenadePrediction(dt)
             velocity = reflected * bounceDamping
             local isFloor = normal.Y > 0.6
             if (nadeType == "molotov" and isFloor) or bounces >= maxBounces or velocity.Magnitude < 5 then
-                pointCount = pointCount + 1
-                if pointCount <= 40 then
-                    GrenadeRuntime.Attachments[pointCount].WorldPosition = nextPos
-                    GrenadeRuntime.Beams[pointCount-1].Transparency = NumberSequence.new(0.15 + (pointCount/40)*0.85)
+                if pointCount < 40 then
+                    pointCount = pointCount + 1
+                    local att = GrenadeRuntime.Attachments[pointCount]
+                    local beam = GrenadeRuntime.Beams[pointCount - 1]
+                    if att then att.WorldPosition = nextPos end
+                    if beam then beam.Transparency = NumberSequence.new(0.15 + (pointCount / 40) * 0.85) end
                 end
                 currentPos = nextPos
                 break
@@ -1277,10 +1480,16 @@ local function updateGrenadePrediction(dt)
         currentPos = nextPos
         stepIdx = stepIdx + 1
         if stepIdx % samplePeriod == 0 or ray then
+            if pointCount >= 40 then break end
             pointCount = pointCount + 1
-            if pointCount > 40 then break end
-            GrenadeRuntime.Attachments[pointCount].WorldPosition = nextPos
-            GrenadeRuntime.Beams[pointCount-1].Transparency = NumberSequence.new(0.15 + (pointCount/40)*0.85)
+            local att = GrenadeRuntime.Attachments[pointCount]
+            local beam = GrenadeRuntime.Beams[pointCount - 1]
+            if not att then
+                pointCount = pointCount - 1
+                break
+            end
+            att.WorldPosition = nextPos
+            if beam then beam.Transparency = NumberSequence.new(0.15 + (pointCount / 40) * 0.85) end
         end
     end
 
@@ -1295,17 +1504,23 @@ local function updateGrenadePrediction(dt)
 
     local cachedPoints = {}
     for j = 1, pointCount do
-        cachedPoints[j] = {
-            pos = GrenadeRuntime.Attachments[j].WorldPosition,
-            transparency = 0.15 + (j/40)*0.85,
-        }
+        local att = GrenadeRuntime.Attachments[j]
+        if att then
+            cachedPoints[#cachedPoints + 1] = {
+                pos = att.WorldPosition,
+                transparency = 0.15 + (j / 40) * 0.85,
+            }
+        end
     end
     GrenadeRuntime.TrajectoryCache.cachedPoints = cachedPoints
     GrenadeRuntime.TrajectoryCache.cachedSpherePos = currentPos
 
-    GrenadeRuntime.Sphere.CFrame = CFrame.new(currentPos)
-    GrenadeRuntime.Sphere.Transparency = 0.3
+    if GrenadeRuntime.Sphere then
+        GrenadeRuntime.Sphere.CFrame = CFrame.new(currentPos)
+        GrenadeRuntime.Sphere.Transparency = 0.3
+    end
 end
+
 
 EspRuntime.Connections.GrenadeInputBegan = UserInputService.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 then GrenadeRuntime.LmbDown = true end
@@ -1470,6 +1685,7 @@ local function updateEspFrameCache()
 
     EspFrameCache.options = {
         boxType = Options.ESPBoxType and Options.ESPBoxType.Value or "Full",
+        font = getEspDrawingFont(),
     }
 
     EspFrameCache.colors = {
@@ -1509,11 +1725,11 @@ local applySkyboxChanger
 local AimRuntime = {}
 
 local TriggerbotState = {
-    StopTime = 0,
     DelayUntil = 0,
     DelayActive = false,
     IsFiring = false,
     LastFire = 0,
+    LastUpdate = 0,
 }
 
 local PeekAssist = {
@@ -1987,99 +2203,6 @@ end
 
 
 
--- multipoint scan: weak-key cache so destroyed parts don't pin memory
-local MultiPointState = { cache = setmetatable({}, { __mode = "k" }), frame = 0, lastClean = 0 }
-
-local function isPartVisibleMultiPoint(part, useMulti, scale)
-    if not useMulti then
-        return isStrictRayVisible(part)
-    end
-
-    local mpScale = scale or ((Options.RagebotMultiPointScale and Options.RagebotMultiPointScale.Value or 50) / 100)
-    local mpPoints = Options.RagebotMultiPointPoints and Options.RagebotMultiPointPoints.Value or 10
-
-    local cached = MultiPointState.cache[part]
-    if cached then
-        if MultiPointState.frame - cached.frame <= 3 then
-            if (part.CFrame.Position - cached.pos).Magnitude < 0.1 then
-                return cached.result
-            end
-        end
-    end
-
-    local pos = part.CFrame.Position
-
-    -- center first
-    if isStrictRayVisible(part) then
-        MultiPointState.cache[part] = { result = true, frame = MultiPointState.frame, pos = pos }
-        return true
-    end
-
-    -- multipoint: check points on the part's bounding box
-    local origin = Camera.CFrame.Position
-    VisibilityParams.FilterDescendantsInstances = buildRayIgnoreList()
-
-    for _, target in ipairs(getMultipointPositions(part, mpScale, mpPoints)) do
-        local dir = target - origin
-        if dir.Magnitude > 0.1 then
-            getgenv().IgnoreRaycastHook = true
-            local result = Workspace:Raycast(origin, dir, VisibilityParams)
-            getgenv().IgnoreRaycastHook = false
-            if result and result.Instance then
-                local hit = result.Instance
-                if hit == part then
-                    MultiPointState.cache[part] = { result = true, frame = MultiPointState.frame, pos = pos }
-                    return true
-                end
-                local hitParent = hit.Parent
-                if hitParent and hitParent:IsA("Accessory") and hitParent.Parent == part.Parent then
-                    MultiPointState.cache[part] = { result = true, frame = MultiPointState.frame, pos = pos }
-                    return true
-                end
-            end
-        end
-    end
-
-    MultiPointState.cache[part] = { result = false, frame = MultiPointState.frame, pos = pos }
-    return false
-end
-
-local MULTIPOINT_DIRS = {
-    { 0, 0, 0 },
-    { 1, 1, 1 }, { -1, 1, 1 }, { 1, -1, 1 }, { -1, -1, 1 },
-    { 1, 1, -1 }, { -1, 1, -1 }, { 1, -1, -1 }, { -1, -1, -1 },
-    { 0, 1, 0 }, { 0, -1, 0 }, { 1, 0, 0 }, { -1, 0, 0 }, { 0, 0, 1 }, { 0, 0, -1 },
-    { 1, 1, 0 }, { -1, 1, 0 }, { 1, -1, 0 }, { -1, -1, 0 },
-    { 1, 0, 1 }, { -1, 0, 1 }, { 1, 0, -1 }, { -1, 0, -1 },
-    { 0, 1, 1 }, { 0, -1, 1 }, { 0, 1, -1 }, { 0, -1, -1 },
-}
-
-local function getMultipointPositions(part, scale, maxPoints)
-    local size = part.Size
-    local cf = part.CFrame
-    local s = scale or 0.5
-    local fullX = size.X * 0.5
-    local fullY = size.Y * 0.5
-    local fullZ = size.Z * 0.5
-    local numDirs = #MULTIPOINT_DIRS
-    local count = math.min(maxPoints or numDirs, 100)
-
-    local allPoints = {}
-    for i = 1, count do
-        local dirIdx = ((i - 1) % numDirs) + 1
-        local fracIdx = math.floor((i - 1) / numDirs)
-        local baseFrac = (fracIdx + 1) / (math.floor(count / numDirs) + 1)
-        local f = baseFrac * s
-        local d = MULTIPOINT_DIRS[dirIdx]
-        allPoints[i] = cf:PointToWorldSpace(Vector3.new(
-            fullX * f * d[1],
-            fullY * f * d[2],
-            fullZ * f * d[3]
-        ))
-    end
-    return allPoints
-end
-
 local function checkTriggerbotConditions(character, humanoid)
     if not Toggles.TriggerbotEnable or not Toggles.TriggerbotEnable.Value then return false end
     if not isKeybindActive(Options.TriggerbotKeybind) then return false end
@@ -2096,33 +2219,37 @@ end
 
 local function findTriggerbotTarget(cam)
     local targetPart = nil
-    local mouse = LocalPlayer:GetMouse()
-    local hitInstance = mouse.Target
 
-    -- raycast fallback if no mouse target
-    if (not hitInstance or not hitInstance.Parent) and not (Toggles.TriggerbotSmokeCheck and Toggles.TriggerbotSmokeCheck.Value) then
-        local mousePos = UserInputService:GetMouseLocation()
-        local ray = cam:ViewportPointToRay(mousePos.X, mousePos.Y)
-        VisibilityParams.FilterDescendantsInstances = buildRayIgnoreList()
-        getgenv().IgnoreRaycastHook = true
-        local rayResult = Workspace:Raycast(ray.Origin, ray.Direction * 5000, VisibilityParams)
-        getgenv().IgnoreRaycastHook = false
-        if rayResult and rayResult.Instance then
-            local resultName = rayResult.Instance.Name
-            if resultName == "Smoke" or resultName:find("Smoke") or (rayResult.Instance.Material == Enum.Material.Glass and rayResult.Instance.Transparency > 0.5) then
-                local smokeIgnore = buildRayIgnoreList()
-                table.insert(smokeIgnore, rayResult.Instance)
-                local smokeParams = RaycastParams.new()
-                smokeParams.FilterType = Enum.RaycastFilterType.Exclude
-                smokeParams.FilterDescendantsInstances = smokeIgnore
-                smokeParams.IgnoreWater = true
-                local ray2 = Workspace:Raycast(ray.Origin, ray.Direction * 5000, smokeParams)
-                if ray2 and ray2.Instance then
-                    hitInstance = ray2.Instance
-                end
-            end
+    local mousePos = UserInputService:GetMouseLocation()
+    local ray = cam:ViewportPointToRay(mousePos.X, mousePos.Y)
+    local ignore = copyRayIgnoreList()
+    VisibilityParams.FilterDescendantsInstances = ignore
+    local origin = ray.Origin
+    local remain = ray.Direction.Unit * 5000
+    local rayResult = nil
+
+    getgenv().IgnoreRaycastHook = true
+    for _ = 1, 12 do
+        local ok, result = pcall(function()
+            return Workspace:Raycast(origin, remain, VisibilityParams)
+        end)
+        if not ok or not result or not result.Instance then
+            rayResult = nil
+            break
+        end
+        rayResult = result
+        local inst = result.Instance
+        if shouldPierceRayHit(inst) then
+            table.insert(ignore, inst)
+            VisibilityParams.FilterDescendantsInstances = ignore
+            origin = result.Position + remain.Unit * 0.05
+        else
+            break
         end
     end
+    getgenv().IgnoreRaycastHook = false
+
+    local hitInstance = rayResult and rayResult.Instance
 
     if hitInstance and hitInstance.Parent then
         local hitChar = hitInstance:FindFirstAncestorOfClass("Model")
@@ -2133,23 +2260,26 @@ local function findTriggerbotTarget(cam)
                 local _, humanoid = getCachedCharacterParts(hitPlayer)
                 if humanoid and humanoid.Health > 0 then
                     if isStrictRayVisible(hitInstance) then
-                        -- smoke check
                         if Toggles.TriggerbotSmokeCheck and Toggles.TriggerbotSmokeCheck.Value then
-                            local origin = cam.CFrame.Position
-                            local direction = hitInstance.Position - origin
-                            VisibilityParams.FilterDescendantsInstances = buildRayIgnoreList()
-                            getgenv().IgnoreRaycastHook = true
-                            local rayResult = Workspace:Raycast(origin, direction, VisibilityParams)
-                            getgenv().IgnoreRaycastHook = false
-                            if rayResult and rayResult.Instance then
-                                local resultName = rayResult.Instance.Name
-                                if resultName == "Smoke" or resultName:find("Smoke") or (rayResult.Instance.Material == Enum.Material.Glass and rayResult.Instance.Transparency > 0.5) then
+                            local rayIgnore = Workspace:FindFirstChild("Ray_Ignore")
+                            local smokesFolder = rayIgnore and rayIgnore:FindFirstChild("Smokes")
+                            if smokesFolder then
+                                local smokeOrigin = cam.CFrame.Position
+                                local direction = hitInstance.Position - smokeOrigin
+                                local smokeParams = RaycastParams.new()
+                                smokeParams.FilterType = Enum.RaycastFilterType.Include
+                                smokeParams.FilterDescendantsInstances = { smokesFolder }
+                                getgenv().IgnoreRaycastHook = true
+                                local smokeRay = Workspace:Raycast(smokeOrigin, direction, smokeParams)
+                                getgenv().IgnoreRaycastHook = false
+                                if smokeRay and smokeRay.Instance then
                                     return nil
                                 end
                             end
                         end
                         targetPart = hitInstance
                     end
+
                 end
             end
         end
@@ -2158,7 +2288,9 @@ local function findTriggerbotTarget(cam)
     return targetPart
 end
 
-local function applyTriggerbotMagnet(cam, now)
+
+
+local function applyTriggerbotMagnet(cam)
     if not Toggles.TriggerbotMagnet or not Toggles.TriggerbotMagnet.Value then return end
 
     local magnetFov = 25
@@ -2167,49 +2299,30 @@ local function applyTriggerbotMagnet(cam, now)
     local magnetTarget = nil
     local bestDistance = math.huge
 
-    local cached = Cache:get("MagnetTarget")
-    if cached ~= nil then
-        -- validate cached target is still alive
-        local cachedChar = cached and cached.Parent
-        local cachedHum = cachedChar and cachedChar:FindFirstChildOfClass("Humanoid")
-        if cachedChar and cachedHum and cachedHum.Health > 0 and cached.Parent then
-            magnetTarget = cached
-        else
-            Cache:invalidate("MagnetTarget")
-        end
-    end
-    if not magnetTarget then
-        TriggerbotState.LastMagnetScan = now
-        for _, player in ipairs(Players:GetPlayers()) do
-            if player == LocalPlayer then continue end
-            if not isTriggerEnemy(player) then continue end
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == LocalPlayer then continue end
+        if not isTriggerEnemy(player) then continue end
 
-            local character = player.Character
-            if not character then continue end
-            local _, humanoid = getCachedCharacterParts(player)
-            if not humanoid or humanoid.Health <= 0 then continue end
+        local character = player.Character
+        if not character then continue end
+        local _, humanoid = getCachedCharacterParts(player)
+        if not humanoid or humanoid.Health <= 0 then continue end
 
-            local magnetHitboxes = {"Head", "HeadHB", "HumanoidRootPart", "UpperTorso", "Torso"}
-            for _, partName in ipairs(magnetHitboxes) do
-                local part = character:FindFirstChild(partName)
-                if part and part:IsA("BasePart") then
-                    local screenPoint = cam:WorldToViewportPoint(part.Position)
-                    if screenPoint.Z > 0 then
-                        local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - mousePos).Magnitude
-                        if dist <= magnetFov and dist < bestDistance then
-                            if isStrictRayVisible(part) then
-                                bestDistance = dist
-                                magnetTarget = part
-                            end
+        local magnetHitboxes = {"Head", "HeadHB", "HumanoidRootPart", "UpperTorso", "Torso"}
+        for _, partName in ipairs(magnetHitboxes) do
+            local part = character:FindFirstChild(partName)
+            if part and part:IsA("BasePart") then
+                local screenPoint = cam:WorldToViewportPoint(part.Position)
+                if screenPoint.Z > 0 then
+                    local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - mousePos).Magnitude
+                    if dist <= magnetFov and dist < bestDistance then
+                        if isStrictRayVisible(part) then
+                            bestDistance = dist
+                            magnetTarget = part
                         end
                     end
                 end
             end
-        end
-        if magnetTarget then
-            Cache:set("MagnetTarget", magnetTarget, 0.15)
-        else
-            Cache:invalidate("MagnetTarget")
         end
     end
 
@@ -2256,6 +2369,10 @@ end
 
 
 local function updateTriggerbot()
+    local now = tick()
+    if now - TriggerbotState.LastUpdate < 0.005 then return end
+    TriggerbotState.LastUpdate = now
+
     if Library and Library.IsMenuVisible and Library:IsMenuVisible() then return end
     if TriggerbotState.IsFiring then return end
     local cam = getCamera()
@@ -2263,25 +2380,6 @@ local function updateTriggerbot()
 
     local character, humanoid, rootPart = getCachedCharacterParts(LocalPlayer)
     if not checkTriggerbotConditions(character, humanoid) then return end
-
-    local now = tick()
-
-    if Toggles.TriggerbotOnStopOnly and Toggles.TriggerbotOnStopOnly.Value then
-        if rootPart then
-            local velocity = rootPart.AssemblyLinearVelocity
-            if velocity and velocity.Magnitude >= 10 then
-                TriggerbotState.StopTime = 0
-                return
-            else
-                if TriggerbotState.StopTime == 0 then
-                    TriggerbotState.StopTime = now
-                    return
-                elseif now - TriggerbotState.StopTime < 0.002 then
-                    return
-                end
-            end
-        end
-    end
 
     local targetPart = findTriggerbotTarget(cam)
 
@@ -2293,7 +2391,7 @@ local function updateTriggerbot()
         end
     end
 
-    applyTriggerbotMagnet(cam, now)
+    applyTriggerbotMagnet(cam)
 
     if targetPart then
         local delayMs = (Options.TriggerbotDelay and Options.TriggerbotDelay.Value) or 0
@@ -2323,7 +2421,9 @@ local AntiAimState = {
     YawRandomAngle = 0,
     YawRandomLastSwitch = 0,
     YawSpinAngle = 0,
-    YawSpinLastUpdate = 0
+    YawSpinLastUpdate = 0,
+    AtTargetLastScan = 0,
+    AtTargetPart = nil,
 }
 
 
@@ -2383,27 +2483,35 @@ local function updateAntiAim()
                 baseYaw = math.deg(math.atan2(lookVector.X, lookVector.Z))
             end
         else
-            local useTeamCheck = Toggles.RagebotTeamCheck and Toggles.RagebotTeamCheck.Value
-            local bestPart, bestDist = nil, math.huge
-            for _, plr in ipairs(Players:GetPlayers()) do
-                if plr == LocalPlayer then continue end
-                if useTeamCheck then
-                    local myTeam, theirTeam = LocalPlayer.Team, plr.Team
-                    if myTeam and theirTeam and theirTeam == myTeam then continue end
+            local nowAt = tick()
+            if nowAt - AntiAimState.AtTargetLastScan >= (1 / 60) then
+                AntiAimState.AtTargetLastScan = nowAt
+                local useTeamCheck = Toggles.RagebotTeamCheck and Toggles.RagebotTeamCheck.Value
+                local bestPart, bestDist = nil, math.huge
+                for _, plr in ipairs(Players:GetPlayers()) do
+                    if plr == LocalPlayer then continue end
+                    if useTeamCheck then
+                        local myTeam, theirTeam = LocalPlayer.Team, plr.Team
+                        if myTeam and theirTeam and theirTeam == myTeam then continue end
+                    end
+                    local ch = plr.Character
+                    local hrpTarget = ch and ch:FindFirstChild("HumanoidRootPart")
+                    local humTarget = ch and ch:FindFirstChildOfClass("Humanoid")
+                    if hrpTarget and humTarget and humTarget.Health > 0 then
+                        local d = (hrpTarget.Position - rootPart.Position).Magnitude
+                        if d < bestDist then bestDist = d; bestPart = hrpTarget end
+                    end
                 end
-                local ch = plr.Character
-                local hrpTarget = ch and ch:FindFirstChild("HumanoidRootPart")
-                local humTarget = ch and ch:FindFirstChildOfClass("Humanoid")
-                if hrpTarget and humTarget and humTarget.Health > 0 then
-                    local d = (hrpTarget.Position - rootPart.Position).Magnitude
-                    if d < bestDist then bestDist = d; bestPart = hrpTarget end
-                end
+                AntiAimState.AtTargetPart = bestPart
             end
-            if bestPart then
+            local bestPart = AntiAimState.AtTargetPart
+            if bestPart and bestPart.Parent then
                 local dir = (bestPart.Position - rootPart.Position) * Vector3.new(1, 0, 1)
                 if dir.Magnitude > 0.1 then
                     baseYaw = math.deg(math.atan2(dir.X, dir.Z))
                 end
+            else
+                AntiAimState.AtTargetPart = nil
             end
         end
         AntiAimState.YawBaseAngle = baseYaw
@@ -2729,76 +2837,6 @@ updateRCS = function()
 end
 
 
--- KillAll remote
-local KillAllHitRemote
-for _, obj in pairs(ReplicatedStorage:GetDescendants()) do
-    if obj:IsA("RemoteEvent") and obj.Name:lower():find("hit") then
-        KillAllHitRemote = obj
-        break
-    end
-end
-
-local function updateKillAll()
-    local autoEnabled = Toggles.ExploitKillAll and Toggles.ExploitKillAll.Value
-    local keyActive = isKeybindActive(Options.ExploitKillAllKeybind)
-
-    if not autoEnabled or not keyActive then return end
-
-    local character = LocalPlayer.Character
-    if not character then return end
-    local _, humanoid = getCachedCharacterParts(LocalPlayer)
-    if not humanoid or humanoid.Health <= 0 then return end
-
-    local gun = character:FindFirstChild("Gun")
-    local equippedToolValue = getLocalEquippedTool()
-    if not gun or not equippedToolValue then return end
-
-    local gunName = "AWP"
-    local gunRef = gun
-    local replicatedStorageWeapons = getWeaponsFolder()
-    local awpFolder = replicatedStorageWeapons and replicatedStorageWeapons:FindFirstChild("AWP")
-    if awpFolder then gunRef = awpFolder end
-
-    local cam = getCamera()
-    if not cam then return end
-    local camPos = cam.CFrame.Position
-    local serverTime = Workspace:GetServerTimeNow()
-    local burstCount = 2
-    local nanBypass = true
-
-    for _, plr in pairs(Players:GetPlayers()) do
-        if plr == LocalPlayer then continue end
-
-        local myTeam = LocalPlayer.Team
-        local theirTeam = plr.Team
-        if myTeam ~= nil and theirTeam ~= nil and theirTeam == myTeam then continue end
-
-        local playerCharacter = plr.Character
-        if not playerCharacter then continue end
-
-        local head = getCachedHead(plr, playerCharacter)
-        local _, playerHumanoid = getCachedCharacterParts(plr)
-        if not head or not playerHumanoid or playerHumanoid.Health <= 0 then continue end
-
-        if not KillAllHitRemote then continue end
-
-        for burst = 1, burstCount do
-            pcall(function()
-                local posArg = nanBypass and {X = 0/0, Y = 0/0, Z = 0/0} or {X = head.Position.X, Y = head.Position.Y, Z = head.Position.Z}
-                KillAllHitRemote:FireServer(
-                    head, posArg, gunName, 4096, gunRef, nil, 1, false, true,
-                    camPos, serverTime, Vector3.new(0, 1, 0),
-                    true, true, true, true, true,
-                    nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
-                )
-            end)
-        end
-    end
-end
-
-
-
-
 -- movement
 
 local MoveUtil = {}
@@ -2973,48 +3011,55 @@ updateAutoCrouch = function()
     end)
 end
 
-Shared.BhopState = { Conn = nil }
-Shared.LegitBhopState = { Conn = nil, JumpCount = 0, WasInAir = false, DefaultSpeed = 16 }
+Shared.BhopState = { Conn = nil, LastWalkSpeed = nil }
+Shared.LegitBhopState = { Conn = nil, JumpCount = 0, WasInAir = false, DefaultSpeed = 16, LastWalkSpeed = nil }
 Shared.AutoJumpState = { Conn = nil }
 Shared.NoclipState = { Conn = nil, DescendantConn = nil, Saved = {}, Parts = {}, Character = nil }
 Shared.FlyState = { Conn = nil }
+
+local function setWalkSpeedIfChanged(state, hum, speed)
+    if state.LastWalkSpeed == speed and hum.WalkSpeed == speed then return end
+    hum.WalkSpeed = speed
+    state.LastWalkSpeed = speed
+end
 
 updateBhop = function()
     if Shared.BhopState.Conn then
         Shared.BhopState.Conn:Disconnect()
         Shared.BhopState.Conn = nil
     end
+    Shared.BhopState.LastWalkSpeed = nil
     local humanoid = MoveUtil.getLocalHumanoid()
     if humanoid then
         humanoid.WalkSpeed = CONSTANTS.DEFAULT_WALK_SPEED
     end
     if not (Toggles.BhopEnable and Toggles.BhopEnable.Value) then return end
 
-    Shared.BhopState.Conn = RunService.RenderStepped:Connect(function(dt)
-        local _, hum, rootPart = MoveUtil.getAliveMovementRig()
-        if not rootPart then return end
-
+    -- Heartbeat: physics rate, not render FPS. Jump only when grounded.
+    Shared.BhopState.Conn = RunService.Heartbeat:Connect(function(dt)
         local spaceHeld = UserInputService:IsKeyDown(MoveUtil.MOVE_KEY_SPACE)
+        local _, hum, rootPart = MoveUtil.getAliveMovementRig()
+        if not hum or not rootPart then return end
 
         if not spaceHeld then
-            hum.WalkSpeed = CONSTANTS.DEFAULT_WALK_SPEED
+            setWalkSpeedIfChanged(Shared.BhopState, hum, CONSTANTS.DEFAULT_WALK_SPEED)
             return
         end
 
-        if hum.FloorMaterial ~= MoveUtil.AIR_MATERIAL then
+        local grounded = hum.FloorMaterial ~= MoveUtil.AIR_MATERIAL
+        if grounded then
             hum.Jump = true
         end
 
         local multiplier = Options.BhopMultiplier and Options.BhopMultiplier.Value or 1
         if not multiplier or multiplier <= 0 then multiplier = 1 end
         local targetSpeed = CONSTANTS.DEFAULT_WALK_SPEED * multiplier
-        hum.WalkSpeed = targetSpeed
+        setWalkSpeedIfChanged(Shared.BhopState, hum, targetSpeed)
 
         if multiplier > 1 then
             local cam = getCamera()
             if cam then
-                local boostSpeed = targetSpeed - CONSTANTS.DEFAULT_WALK_SPEED
-                MoveUtil.applyCameraCFrameMove(rootPart, cam, boostSpeed, dt)
+                MoveUtil.applyCameraCFrameMove(rootPart, cam, targetSpeed - CONSTANTS.DEFAULT_WALK_SPEED, dt)
             end
         end
     end)
@@ -3028,24 +3073,29 @@ updateLegitBhop = function()
     end
     Shared.LegitBhopState.JumpCount = 0
     Shared.LegitBhopState.WasInAir = false
+    Shared.LegitBhopState.LastWalkSpeed = nil
     local humanoid = MoveUtil.getLocalHumanoid()
     if humanoid then
         humanoid.WalkSpeed = CONSTANTS.DEFAULT_WALK_SPEED
     end
     if not (Toggles.LegitBhopEnable and Toggles.LegitBhopEnable.Value) then return end
 
-    Shared.LegitBhopState.Conn = RunService.RenderStepped:Connect(function()
+    -- Heartbeat + jump only on ground/landing (never spam Jump while airborne).
+    Shared.LegitBhopState.Conn = RunService.Heartbeat:Connect(function()
+        local spaceHeld = UserInputService:IsKeyDown(MoveUtil.MOVE_KEY_SPACE)
         local _, hum, rootPart = MoveUtil.getAliveMovementRig()
         if not hum or not rootPart then return end
 
-        if not UserInputService:IsKeyDown(MoveUtil.MOVE_KEY_SPACE) then
-            Shared.LegitBhopState.JumpCount = 0
-            Shared.LegitBhopState.WasInAir = hum.FloorMaterial == MoveUtil.AIR_MATERIAL
-            hum.WalkSpeed = CONSTANTS.DEFAULT_WALK_SPEED
+        local inAir = hum.FloorMaterial == MoveUtil.AIR_MATERIAL
+
+        if not spaceHeld then
+            if Shared.LegitBhopState.JumpCount ~= 0 then
+                Shared.LegitBhopState.JumpCount = 0
+            end
+            Shared.LegitBhopState.WasInAir = inAir
+            setWalkSpeedIfChanged(Shared.LegitBhopState, hum, CONSTANTS.DEFAULT_WALK_SPEED)
             return
         end
-
-        local inAir = hum.FloorMaterial == MoveUtil.AIR_MATERIAL
 
         if inAir then
             Shared.LegitBhopState.WasInAir = true
@@ -3054,14 +3104,14 @@ updateLegitBhop = function()
             Shared.LegitBhopState.JumpCount = math.min(Shared.LegitBhopState.JumpCount + 1, 15)
             Shared.LegitBhopState.WasInAir = false
         else
+            -- grounded, holding space: one jump request per physics tick only while on floor
             hum.Jump = true
         end
 
         local maxMult = Options.LegitBhopMultiplier and Options.LegitBhopMultiplier.Value or 2
         if not maxMult or maxMult < 1 then maxMult = 1 end
         local multiplier = 1 + (Shared.LegitBhopState.JumpCount / 15) * (maxMult - 1)
-        local targetSpeed = CONSTANTS.DEFAULT_WALK_SPEED * multiplier
-        hum.WalkSpeed = targetSpeed
+        setWalkSpeedIfChanged(Shared.LegitBhopState, hum, CONSTANTS.DEFAULT_WALK_SPEED * multiplier)
     end)
 end
 
@@ -3260,11 +3310,14 @@ updateAutoJump = function()
     end
     if not (Toggles.AutoJumpEnable and Toggles.AutoJumpEnable.Value) then return end
 
-    Shared.AutoJumpState.Conn = RunService.RenderStepped:Connect(function()
+    -- Heartbeat + only jump when grounded: setting Jump every RenderStepped while airborne
+    -- at high FPS spams humanoid state and tanks performance.
+    Shared.AutoJumpState.Conn = RunService.Heartbeat:Connect(function()
         if not UserInputService:IsKeyDown(MoveUtil.MOVE_KEY_SPACE) then return end
 
         local _, humanoid = MoveUtil.getAliveMovementRig()
         if not humanoid then return end
+        if humanoid.FloorMaterial == MoveUtil.AIR_MATERIAL then return end
 
         humanoid.Jump = true
     end)
@@ -3280,24 +3333,6 @@ Shared.MiscState = { ambienceDirty = false }
 
 -- Misc tab functions (ported from clarity.tk.lua General section)
 
--- Old gun sounds audio map
-local OLD_GUN_SOUNDS = {
-    ["AK47"] = "rbxassetid://6061266272",
-    ["AWP"] = "rbxassetid://6067278314",
-    ["G3SG1"] = "rbxassetid://6067426225",
-    ["DesertEagle"] = "rbxassetid://6067333190",
-    ["Glock"] = "rbxassetid://6067337612",
-    ["USP"] = "rbxassetid://6067338308",
-    ["Scout"] = "rbxassetid://6067338138",
-    ["P250"] = "rbxassetid://6067337798",
-    ["M4A4"] = "rbxassetid://6067358591",
-    ["M4A1"] = "rbxassetid://6067358774",
-}
-local OLD_GUN_SOUNDS_SILENCED = {
-    ["USP"] = "SShoot",
-    ["M4A1"] = "SShoot",
-}
-
 Shared.applyRemoveRadio = function()
     if not Toggles.MiscRemoveRadio then return end
     local pg = getPlayerGui()
@@ -3307,27 +3342,17 @@ Shared.applyRemoveRadio = function()
     end
 end
 
-Shared.applyOldGunSounds = function(weaponName)
-    if not Toggles.MiscOldGunSounds or not Toggles.MiscOldGunSounds.Value then return end
-    if not OLD_GUN_SOUNDS[weaponName] then return end
-    local char = LocalPlayer.Character
-    if not char then return end
-    local gun = char:FindFirstChild("Gun")
-    if not gun then return end
-    local soundName = OLD_GUN_SOUNDS_SILENCED[weaponName] or "Shoot"
-    pcall(function()
-        local soundVal = gun:FindFirstChild(soundName)
-        if soundVal then soundVal.Value = OLD_GUN_SOUNDS[weaponName] end
-    end)
-end
-
+Shared.FovChangerBound = false
 Shared.applyFovChanger = function()
     local cam = getCamera()
     if not cam then return end
     if Toggles.VisualFovChanger and Toggles.VisualFovChanger.Value then
-        RunService:BindToRenderStep("ValenokFovChanger", Enum.RenderPriority.Camera.Value + 1, function()
-            local c = getCamera()
-            if c then
+        if not Shared.FovChangerBound then
+            pcall(function() RunService:UnbindFromRenderStep("ValenokFovChanger") end)
+            RunService:BindToRenderStep("ValenokFovChanger", Enum.RenderPriority.Camera.Value + 1, function()
+                local c = getCamera()
+                if not c then return end
+                if not (Toggles.VisualFovChanger and Toggles.VisualFovChanger.Value) then return end
                 local pg = getPlayerGui()
                 local scope = pg and pg:FindFirstChild("GUI") and pg.GUI:FindFirstChild("Crosshairs") and pg.GUI.Crosshairs:FindFirstChild("Scope")
                 if not (scope and scope.Visible) then
@@ -3336,13 +3361,24 @@ Shared.applyFovChanger = function()
                         c.FieldOfView = fovVal
                     end
                 end
-            end
-        end)
+            end)
+            Shared.FovChangerBound = true
+        end
     else
-        RunService:UnbindFromRenderStep("ValenokFovChanger")
+        if Shared.FovChangerBound then
+            pcall(function() RunService:UnbindFromRenderStep("ValenokFovChanger") end)
+            Shared.FovChangerBound = false
+        end
         cam.FieldOfView = 80
     end
 end
+Shared.unbindFovChanger = function()
+    if Shared.FovChangerBound then
+        pcall(function() RunService:UnbindFromRenderStep("ValenokFovChanger") end)
+        Shared.FovChangerBound = false
+    end
+end
+
 
 Shared.applyRemoveUIElements = function()
     local TARGET_GUIS = {
@@ -3720,9 +3756,11 @@ Shared.updatePlayerEsp = function(player)
         drawingSet.BoxFill.Visible = false
     end
 
+    local espFont = EspFrameCache.options.font
     drawingSet.Name.Text = player.Name
     drawingSet.Name.Position = Vector2.new(centerX, top - 15)
     drawingSet.Name.Color = nameColor
+    drawingSet.Name.Font = espFont
     drawingSet.Name.Visible = showName
 
     local showWeapon = EspFrameCache.toggles.weapon
@@ -3731,7 +3769,9 @@ Shared.updatePlayerEsp = function(player)
     drawingSet.Weapon.Text = weaponName
     drawingSet.Weapon.Position = Vector2.new(centerX, bottom + 5)
     drawingSet.Weapon.Color = weaponColor
+    drawingSet.Weapon.Font = espFont
     drawingSet.Weapon.Visible = showWeapon and weaponName ~= ""
+
 
     local showHealthBar = EspFrameCache.toggles.healthBar
     if showHealthBar and humanoid then
@@ -3806,9 +3846,10 @@ Shared.updateItemEsp = function()
                 text.Center = true
                 text.Outline = true
                 text.Size = 13
-                text.Font = Drawing.Fonts.Plex
                 EspRuntime.ItemDrawings[item] = text
             end
+            text.Font = getEspDrawingFont()
+
 
             local screenPos = camera:WorldToViewportPoint(item.Position)
             if screenPos.Z > 0 then
@@ -4129,10 +4170,7 @@ end
 
 
 -- viewmodel visuals: no cache, full rescan every RenderStepped
-Shared.VMState = {
-    buyArea = nil,
-    buyAreaTick = 0,
-}
+Shared.VMState = {}
 
 local FORCEFIELD_TEXTURES = {
     SmoothPlastic = "",
@@ -4143,6 +4181,39 @@ local function hasProperty(obj, prop)
     return pcall(function()
         local _ = obj[prop]
     end)
+end
+
+local function isWeaponViewPart(inst)
+    if not inst then return false end
+    local n = inst.Name
+    if n == "Flash" or n == "FlashS" or n == "2Flash" or n == "Muzzle" then return false end
+
+    if inst:IsA("MeshPart") then return true end
+    if inst:IsA("BasePart") then
+        return n == "Part"
+            or n == "Silencer2"
+            or n == "Silencer"
+            or n == "Suppressed"
+            or n == "Handle"
+            or n == "Handle2"
+            or n == "Blade"
+            or n == "StatClock"
+    end
+    return false
+end
+
+local function applyWeaponPartChams(part, color, matEnum, transparency, reflectance, forceTransparency)
+    if not part or not part:IsA("BasePart") then return end
+    if part.Name == "StatClock" then part:ClearAllChildren() end
+    part.Color = color
+    part.Material = matEnum
+    if forceTransparency or part.Transparency < 1 then
+        part.Transparency = transparency
+    end
+    if hasProperty(part, "TextureID") then part.TextureID = "" end
+    if hasProperty(part, "Reflectance") then part.Reflectance = reflectance end
+    local surfaceAppearance = part:FindFirstChildOfClass("SurfaceAppearance")
+    if surfaceAppearance then surfaceAppearance:Destroy() end
 end
 
 updateViewModelVisuals = function()
@@ -4171,27 +4242,20 @@ updateViewModelVisuals = function()
 
     local knife = false
     local handle = nil
-    local silencer = nil
 
     for _, child in ipairs(arms:GetChildren()) do
         local name = child.Name
 
-        if weaponChams and (child:IsA("MeshPart") or name == "Part") then
-            if name == "StatClock" then child:ClearAllChildren() end
-            child.Color = weaponColor
-            child.Transparency = weaponTransparency
-            child.Material = weaponMatEnum
-            if hasProperty(child, "TextureID") then child.TextureID = "" end
-            if hasProperty(child, "Reflectance") then child.Reflectance = weaponReflectance end
-            local surfaceAppearance = child:FindFirstChild("SurfaceAppearance")
-            if surfaceAppearance then surfaceAppearance:Destroy() end
+        if weaponChams and isWeaponViewPart(child) then
+            -- keep game silencer equip state: Transparency == 1 means unequipped
+            local isSilencer = name == "Silencer2" or name == "Silencer" or name == "Suppressed"
+            applyWeaponPartChams(child, weaponColor, weaponMatEnum, weaponTransparency, weaponReflectance, not isSilencer)
         end
 
         if string.find(name, "Knife", 1, true) or name == "Handle2" or name == "Blade" then
             knife = true
         end
         if name == "Handle" then handle = child end
-        if name == "Silencer2" then silencer = child end
 
         if (armChams or removeSleeves) and child:IsA("Model") then
             for _, desc in ipairs(child:GetDescendants()) do
@@ -4214,32 +4278,15 @@ updateViewModelVisuals = function()
         end
     end
 
-    if weaponChams then
-        if knife and handle and handle.Parent then
-            handle.Transparency = 1
-        end
-        if silencer and silencer.Parent then
-            local st = Shared.VMState
-            local now = tick()
-            if now - st.buyAreaTick > 2 or not st.buyArea or not st.buyArea.Parent then
-                st.buyAreaTick = now
-                local map = getMapFolder()
-                local spawns = map and map:FindFirstChild("SpawnPoints")
-                st.buyArea = spawns and spawns:FindFirstChild("BuyArea") or nil
-            end
-            if st.buyArea then
-                pcall(function()
-                    silencer.Welded.Part0 = st.buyArea
-                end)
-            end
-        end
+    if weaponChams and knife and handle and handle.Parent then
+        handle.Transparency = 1
     end
 end
 
 Shared.cleanupViewModelVisuals = function()
-    Shared.VMState.buyArea = nil
-    Shared.VMState.buyAreaTick = 0
+    Shared.VMState = {}
 end
+
 
 
 
@@ -4500,7 +4547,6 @@ Shared.updateAmbience = function()
                     sky.StarCount = t.StarCount
                     sky.SunTextureId = t.SunTextureId
                     sky.MoonTextureId = t.MoonTextureId
-                    sky.CelestialBodiesSize = t.CelestialBodiesSize
                 end
                 if Shared.AmbienceSavedLighting.FogColor then
                     lighting.FogColor = Shared.AmbienceSavedLighting.FogColor
@@ -4535,10 +4581,10 @@ Shared.updateAmbience = function()
                 StarCount = sky.StarCount,
                 SunTextureId = sky.SunTextureId,
                 MoonTextureId = sky.MoonTextureId,
-                CelestialBodiesSize = sky.CelestialBodiesSize,
             } or nil,
         }
     end
+
 
     if customTime then
         lighting.ClockTime = Options.AmbienceTime and Options.AmbienceTime.Value or 12
@@ -4596,7 +4642,6 @@ Shared.updateAmbience = function()
             sky.StarCount = t.StarCount
             sky.SunTextureId = t.SunTextureId
             sky.MoonTextureId = t.MoonTextureId
-            sky.CelestialBodiesSize = t.CelestialBodiesSize
         end
         if Shared.AmbienceSavedLighting.FogColor then
             lighting.FogColor = Shared.AmbienceSavedLighting.FogColor
@@ -4611,6 +4656,7 @@ Shared.updateAmbience = function()
     end
 
 end
+
 
 
 -- no scope
@@ -5064,6 +5110,7 @@ LegitSections.Aimbot:AddDropdown('AimbotHitbox', {Values = { 'Head', 'Body', 'Ne
 LegitSections.Aimbot:AddToggle('AimbotBaim', {Text = 'Baim', Default = false, KeyPicker = {Idx = 'AimbotBaimKeybind', Default = 'None', Mode = 'Toggle', Text = 'Baim'}})
 LegitSections.Aimbot:AddSlider('AimbotFOV', {Text = 'FOV', Default = 45, Min = 1, Max = 180, Rounding = 0})
 LegitSections.Aimbot:AddSlider('AimbotSmooth', {Text = 'Smooth', Default = 4, Min = 1, Max = 10, Rounding = 0})
+LegitSections.Aimbot:AddToggle('AimbotAutoScope', {Text = 'Auto scope', Default = false})
 
 LegitSections.Triggerbot:AddToggle('TriggerbotEnable', {Text = 'Enable', Default = false, KeyPicker = {Idx = 'TriggerbotKeybind', Default = 'None', Mode = 'Toggle', Text = 'Trigger bot'}})
 LegitSections.Triggerbot:AddToggle('TriggerbotTeamCheck', {Text = 'Team check', Default = false})
@@ -5078,7 +5125,9 @@ LegitSections.RCS:AddSlider('RCSValue', {Text = 'RCS', Default = 1, Min = 1, Max
 
 local VisualTabbox = Tabs.Visual:AddLeftTabbox('ESP & Viewmodel')
 local espTab = VisualTabbox:AddTab('ESP')
+local fontsTab = VisualTabbox:AddTab('Fonts')
 local viewmodelTab = VisualTabbox:AddTab('Viewmodel')
+
 
 local WorldSections = {
     Ambience = Tabs.World:AddLeftGroupbox('Ambience'),
@@ -5256,12 +5305,10 @@ RageSections.Ragebot:AddToggle('RagebotVisCheck', {Text = 'Vis check', Default =
 RageSections.Ragebot:AddToggle('RagebotShowFOV', {Text = 'Show FOV', Default = false, ColorPicker = {Idx = 'RagebotFOVColor', Default = Color3.fromRGB(255, 255, 255), Title = 'FOV color'}})
 RageSections.Ragebot:AddSlider('RagebotFOV', {Text = 'FOV', Default = 1, Min = 1, Max = 180, Rounding = 0})
 RageSections.Ragebot:AddDropdown('RagebotHitbox', {Values = { 'Head', 'Body', 'Nearest', 'All' }, Default = 'Head', Text = 'Hit box'})
-RageSections.Ragebot:AddToggle('RagebotMultiPoint', {Text = 'Multipoint', Default = false})
-RageSections.Ragebot:AddSlider('RagebotMultiPointScale', {Text = 'Multipoint scale', Default = 50, Min = 1, Max = 100, Rounding = 0, Suffix = '%'})
-RageSections.Ragebot:AddSlider('RagebotMultiPointPoints', {Text = 'Multipoint points', Default = 10, Min = 1, Max = 100, Rounding = 0})
 RageSections.Ragebot:AddToggle('RagebotBaim', {Text = 'Baim', Default = false, KeyPicker = {Idx = 'RagebotBaimKeybind', Default = 'None', Mode = 'Toggle', Text = 'Baim'}})
 RageSections.Ragebot:AddToggle('RagebotWallPenetration', {Text = 'Wall penetration', Default = true})
 RageSections.Ragebot:AddSlider('SilentAimMaxWalls', {Text = 'Max walls', Default = 3, Min = 1, Max = 15, Rounding = 0})
+RageSections.Ragebot:AddToggle('RagebotAutoScope', {Text = 'Auto scope', Default = false})
 
 
 antiAimPitchTab:AddToggle('AntiAimPitchEnable', {Text = 'Enable', Default = false})
@@ -5330,7 +5377,6 @@ viewmodelTab:AddSlider('VMArmTransparency', {Text = 'Arm transparency', Default 
 
 viewmodelTab:AddToggle('VMRemoveSleeves', {Text = 'Remove sleeves', Default = false, Callback = function() updateViewModelVisuals() end})
 
-RageSections.Exploit:AddToggle('ExploitKillAll', {Text = 'Kill all', Default = false, KeyPicker = {Idx = 'ExploitKillAllKeybind', Default = 'None', Mode = 'Hold', Text = 'Kill All'}})
 RageSections.Exploit:AddToggle('ExploitNoFallDamage', {Text = 'No fall damage', Default = false})
 RageSections.Exploit:AddToggle('ExploitNoFireDamage', {Text = 'No fire damage', Default = false})
 espTab:AddToggle('ESPEnable', {Text = 'Enable', Default = false})
@@ -5347,7 +5393,14 @@ espTab:AddToggle('ESPChamsOutline', {Text = 'Chams outline', Default = false, Co
 espTab:AddSlider('ESPChamsTransparency', {Text = 'Chams transparency', Default = 35, Min = 0, Max = 100, Rounding = 0})
 espTab:AddToggle('ESPItemESP', {Text = 'Item ESP', Default = false, ColorPicker = {Idx = 'ESPItemColor', Default = Color3.fromRGB(255, 255, 255), Title = 'Item color'}})
 
+fontsTab:AddDropdown('ESPFont', {
+    Text = 'Font',
+    Values = { 'UI', 'System', 'Plex', 'Monospace' },
+    Default = 'Plex',
+})
+
 VisualSections.Menu:AddToggle('MenuBindList', {Text = 'Bind list', Default = true, Callback = function(Value) if Library.KeybindFrame then Library.KeybindFrame.Visible = Value end end})
+
 VisualSections.Menu:AddToggle('MenuWatermark', {Text = 'Watermark', Default = true, Callback = function(Value) Library:SetWatermarkVisibility(Value) end})
 
 VisualSections.Removals:AddToggle('RemovalsNoSmoke', {Text = 'No smoke', Default = false, Callback = function() setupNoSmoke() end})
@@ -5390,7 +5443,6 @@ MiscSections.NameSpoofer:AddInput('MiscSpoofedName', {Text = 'Spoofed name', Def
 -- General (ported from clarity.tk.lua General section)
 MiscSections.General:AddToggle('MiscRemoveRadio', {Text = 'Remove radio commands', Default = false})
 MiscSections.General:AddToggle('MiscRemoveUI', {Text = 'Remove UI elements', Default = false, Callback = function() Shared.applyRemoveUIElements() end})
-MiscSections.General:AddToggle('MiscOldGunSounds', {Text = 'Old gun sounds', Default = false})
 MiscSections.General:AddToggle('MiscSlideWalk', {Text = 'Slide walk', Default = false})
 
 VisualSections.FOVChanger:AddToggle('VisualFovChanger', {Text = 'FOV changer', Default = false, Callback = function() Shared.applyFovChanger() end})
@@ -6121,9 +6173,6 @@ unloadValenok = function()
     end
 
     clearHitChamsFolder()
-    if MultiPointState and MultiPointState.cache then
-        table.clear(MultiPointState.cache)
-    end
     table.clear(EspPlayerCache)
     if Shared.NoclipState then
         Shared.NoclipState.Saved = {}
@@ -6148,7 +6197,7 @@ unloadValenok = function()
     end)
 
     pcall(function()
-        RunService:UnbindFromRenderStep("ValenokFovChanger")
+        if Shared.unbindFovChanger then Shared.unbindFovChanger() end
         local cam = getCamera()
         if cam then cam.FieldOfView = 80 end
     end)
@@ -6203,12 +6252,13 @@ unloadValenok = function()
     end)
 
     TriggerbotState = {
-        StopTime = 0,
         DelayUntil = 0,
         DelayActive = false,
         IsFiring = false,
         LastFire = 0,
+        LastUpdate = 0,
     }
+
 
     local Client = getCachedClient()
     if Client then
@@ -6276,7 +6326,6 @@ unloadValenok = function()
                 sky.StarCount = t.StarCount
                 sky.SunTextureId = t.SunTextureId
                 sky.MoonTextureId = t.MoonTextureId
-                sky.CelestialBodiesSize = t.CelestialBodiesSize
             end
             -- restore fog
             if Shared.AmbienceSavedLighting.FogColor then
@@ -6286,6 +6335,7 @@ unloadValenok = function()
         end)
         Shared.AmbienceSavedLighting = nil
     end
+
 
     -- restore game crosshair visibility
     pcall(function()
@@ -6440,13 +6490,6 @@ EspRuntime.Connections.PlayerRemoving = Players.PlayerRemoving:Connect(function(
         EspRuntime.Drawings[player] = nil
         EspRuntime.Highlights[player] = nil
         invalidateEspPlayerCache(player)
-
-        local char = player.Character
-        if char and MultiPointState and MultiPointState.cache then
-            for _, part in ipairs(char:GetDescendants()) do
-                MultiPointState.cache[part] = nil
-            end
-        end
     end)
 end)
 
@@ -6474,15 +6517,86 @@ for _, player in ipairs(Players:GetPlayers()) do
 end
 
 
--- main loop
-local LoopState = { espUpdate = 0, wFps = 0, wFrames = 0, wLastUpdate = 0, removalsCheck = 0, vmUpdate = 0, miscUpdate = 0 }
+-- main loop: heavy work throttled to 6ms (~167 Hz) so high FPS doesn't multiply cost
+local MAIN_UPDATE_INTERVAL = 0.0005
+local LoopState = {
+    espUpdate = 0,
+    wFps = 0,
+    wFrames = 0,
+    wLastUpdate = 0,
+    removalsCheck = 0,
+    vmUpdate = 0,
+    miscUpdate = 0,
+    mainUpdate = 0,
+    mainDt = 0,
+}
+
+local function updateRagebot()
+    local myChar = LocalPlayer.Character
+    local myHum = myChar and myChar:FindFirstChildOfClass("Humanoid")
+    local isAlive = myHum and myHum.Health > 0 and myChar.Parent
+
+    local rageKey = Options.RagebotKeybind
+    local keybindActive = false
+    if rageKey then
+        if rageKey.Value == "None" or rageKey.Mode == "Always" then
+            keybindActive = true
+        else
+            keybindActive = isKeybindActive(rageKey)
+        end
+    end
+    if Toggles.RagebotEnable and Toggles.RagebotEnable.Value and isAlive then
+        RuntimePack.silentActive = keybindActive
+    else
+        RuntimePack.silentActive = false
+    end
+
+    if RuntimePack.silentActive then
+        local menuOpen = Library and Library.IsMenuVisible and Library:IsMenuVisible()
+        local autoFire = Toggles.RagebotAutoFire and Toggles.RagebotAutoFire.Value and not menuOpen
+        local silentTarget = getNearestSilentTarget()
+        getgenv().PSilentTarget = silentTarget
+
+        if autoFire and silentTarget and silentTarget.Parent then
+            local fireNow = tick()
+            local rate = HitpartSilent.getFireRate and HitpartSilent.getFireRate() or 0.1
+            if fireNow - HitpartSilent.lastFire >= rate then
+                HitpartSilent.lastFire = fireNow
+                fireWeapShot()
+                if HitpartSilent.isHitpartMethod and HitpartSilent.isHitpartMethod() then
+                    HitpartSilent.fire(silentTarget)
+                end
+            end
+        end
+    else
+        getgenv().PSilentTarget = nil
+    end
+
+    if isAlive then
+        updateAutoScope()
+    elseif AutoScopeState.lastWant then
+        setADS(getCachedClient(), false)
+        AutoScopeState.lastWant = false
+    end
+end
 
 EspRuntime.Connections.RenderStepped = RunService.RenderStepped:Connect(function(dt)
-    pcall(function()
-        local now = tick()
-        LoopState.wFrames = LoopState.wFrames + 1
-        MultiPointState.frame = MultiPointState.frame + 1
+    LoopState.wFrames = LoopState.wFrames + 1
+    LoopState.mainDt = LoopState.mainDt + (dt or 0)
 
+    local rageOk, rageErr = pcall(updateRagebot)
+    if not rageOk then warn("[Valenok] Ragebot:", rageErr) end
+
+    local now = tick()
+    if now - LoopState.mainUpdate < MAIN_UPDATE_INTERVAL then
+        return
+    end
+
+    local stepDt = LoopState.mainDt
+    LoopState.mainDt = 0
+    LoopState.mainUpdate = now
+
+    local ok, err = pcall(function()
         local myChar = LocalPlayer.Character
         local myHum = myChar and myChar:FindFirstChildOfClass("Humanoid")
         local isAlive = myHum and myHum.Health > 0 and myChar.Parent
@@ -6494,72 +6608,20 @@ EspRuntime.Connections.RenderStepped = RunService.RenderStepped:Connect(function
             if Toggles.RCSEnable and Toggles.RCSEnable.Value then updateRCS() end
         end
 
-        if now - MultiPointState.lastClean >= 5 then
-            MultiPointState.lastClean = now
-            for part in pairs(MultiPointState.cache) do
-                if not part or not part.Parent then
-                    MultiPointState.cache[part] = nil
-                end
-            end
-        end
-
         Shared.updateFovCircle()
 
         if isAlive then
-            updateAimBot(dt)
+            updateAimBot(stepDt)
         end
 
-        -- Silent aim keybind handling
-        local rageKey = Options.RagebotKeybind
-        local keybindActive = false
-        if rageKey then
-            if rageKey.Value == "None" or rageKey.Mode == "Always" then
-                keybindActive = true
-            else
-                keybindActive = isKeybindActive(rageKey)
-            end
-        end
-        if Toggles.RagebotEnable and Toggles.RagebotEnable.Value and isAlive then
-            RuntimePack.silentActive = keybindActive
-        else
-            RuntimePack.silentActive = false
-        end
-        
-        -- Silent aim target update
-        if RuntimePack.silentActive then
-            local menuOpen = Library and Library.IsMenuVisible and Library:IsMenuVisible()
-            local autoFire = Toggles.RagebotAutoFire and Toggles.RagebotAutoFire.Value and not menuOpen
-            local silentTarget = getNearestSilentTarget()
-            getgenv().PSilentTarget = silentTarget
-
-            if autoFire and silentTarget and silentTarget.Parent then
-                local fireNow = tick()
-                local rate = HitpartSilent.getFireRate and HitpartSilent.getFireRate() or 0.1
-                if fireNow - HitpartSilent.lastFire >= rate then
-                    HitpartSilent.lastFire = fireNow
-                    fireWeapShot()
-                    if HitpartSilent.isHitpartMethod and HitpartSilent.isHitpartMethod() then
-                        HitpartSilent.fire(silentTarget)
-                    end
-                end
-            end
-        else
-            getgenv().PSilentTarget = nil
-        end
-
-        
         updateCrosshair()
 
-        -- ESP must be updated AFTER aimbot so it uses the final camera position
-        if now - LoopState.espUpdate >= 1 / 180 then
-            LoopState.espUpdate = now
-            updateEspFrameCache()
-            local plist = Players:GetPlayers()
-            for i = 1, #plist do
-                Shared.updatePlayerEsp(plist[i])
-            end
-            Shared.updateItemEsp()
+        updateEspFrameCache()
+        local plist = Players:GetPlayers()
+        for i = 1, #plist do
+            Shared.updatePlayerEsp(plist[i])
         end
+        Shared.updateItemEsp()
 
         if Toggles.MenuWatermark and Toggles.MenuWatermark.Value then
             if now - LoopState.wLastUpdate >= 0.3 then
@@ -6580,7 +6642,7 @@ EspRuntime.Connections.RenderStepped = RunService.RenderStepped:Connect(function
         if isAlive then
             updateTriggerbot()
             updateAntiAim()
-            updateGrenadePrediction(dt)
+            updateGrenadePrediction(stepDt)
             updatePeekAssist()
         end
 
@@ -6591,19 +6653,12 @@ EspRuntime.Connections.RenderStepped = RunService.RenderStepped:Connect(function
             updateViewModelVisuals()
         end
 
-        -- Misc tab: remove radio, old gun sounds
         if now - LoopState.miscUpdate >= 2 then
             LoopState.miscUpdate = now
             if Toggles.MiscRemoveRadio and Toggles.MiscRemoveRadio.Value then Shared.applyRemoveRadio() end
-            if isAlive and Toggles.MiscOldGunSounds and Toggles.MiscOldGunSounds.Value then
-                local equippedTool = getLocalEquippedTool()
-                if equippedTool then
-                    local weaponName = tostring(equippedTool.Value)
-                    if weaponName then Shared.applyOldGunSounds(weaponName) end
-                end
-            end
         end
     end)
+    if not ok then warn("[Valenok] RenderStepped:", err) end
 end)
 
 
@@ -6756,17 +6811,6 @@ end)
     end)
 end)()
 
-
--- kill all heartbeat
-local _killAllLastRun = 0
-EspRuntime.Connections.KillAllHeartbeat = RunService.Heartbeat:Connect(function()
-    pcall(function()
-        local now = tick()
-        if now - _killAllLastRun < 0.1 then return end
-        _killAllLastRun = now
-        updateKillAll()
-    end)
-end)
 
 print("Valenok")
 print("version: 3.2")
@@ -6963,3 +7007,4 @@ end)()
         Library:GiveSignal(Library.KeybindFrame:GetPropertyChangedSignal('Position'):Connect(saveUiPositions))
     end
 end)()
+
