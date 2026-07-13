@@ -3771,14 +3771,6 @@ function SaveManager:BuildConfigSection(tab)
         if not ok then return self.Library:Notify('Failed to load config: ' .. err, 2) end
         self.Library:Notify('Loaded config', 2)
     end)
-    section:AddButton('Delete config', function()
-        local name = Options.SaveManager_ConfigList.Value
-        local ok, err = self:Delete(name)
-        if not ok then return self.Library:Notify('Failed to delete config: ' .. err, 2) end
-        Options.SaveManager_ConfigList:SetValues(self:RefreshConfigList())
-        Options.SaveManager_ConfigList:SetValue(nil)
-        self.Library:Notify(string.format('Deleted config %q', name), 2)
-    end)
     section:AddButton('Overwrite config', function()
         local ok, err = self:Save(Options.SaveManager_ConfigList.Value)
         if not ok then return self.Library:Notify('Failed to overwrite config: ' .. err, 2) end
@@ -3800,6 +3792,14 @@ function SaveManager:BuildConfigSection(tab)
     self.AutoloadLabel = section:AddLabel('Current autoload config: none', true)
     local autoload = self.Folder .. '/settings/autoload.txt'
     if isfile(autoload) then self.AutoloadLabel:SetText('Current autoload config: ' .. readfile(autoload)) end
+    section:AddButton('Delete config', function()
+        local name = Options.SaveManager_ConfigList.Value
+        local ok, err = self:Delete(name)
+        if not ok then return self.Library:Notify('Failed to delete config: ' .. err, 2) end
+        Options.SaveManager_ConfigList:SetValues(self:RefreshConfigList())
+        Options.SaveManager_ConfigList:SetValue(nil)
+        self.Library:Notify(string.format('Deleted config %q', name), 2)
+    end)
     self:SetIgnoreIndexes({'SaveManager_ConfigList','SaveManager_ConfigName'})
 end
 SaveManager:BuildFolderTree()
