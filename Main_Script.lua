@@ -236,6 +236,7 @@ local RuntimePack = {
         lastCtxRefresh = 0,
         lastFireRateRefresh = 0,
         injecting = false,
+        skipWeapHook = false,
         fireRate = 0.1,
         fireRateObj = nil,
         isHitpart = false,
@@ -810,57 +811,90 @@ end
 
 -- Check how many walls are between player and target
 
-local function getWallCount(originPos, targetPos, maxWalls)
-    local direction = (targetPos - originPos).Unit
-    local distance = (targetPos - originPos).Magnitude
-    local rayLength = math.min(distance, 500)
+local function getWallCount(originPos, targetPos, maxWalls, targetCharacter)
+    local toTarget = targetPos - originPos
+    local distance = toTarget.Magnitude
+    if distance < 0.001 then return 0 end
 
-    local ignoreList = buildRayIgnoreList()
+    local direction = toTarget.Unit
+    local ignore = copyRayIgnoreList()
+    VisibilityParams.FilterDescendantsInstances = ignore
 
     local wallCount = 0
-    local lastHitPos = originPos
-    local remainingDistance = rayLength
-    local maxIterations = maxWalls + 2
-    local iterationCount = 0
+    local origin = originPos
+    local maxIter = (maxWalls or 0) + 8
 
     getgenv().IgnoreRaycastHook = true
-    local ok, err = pcall(function()
-        while remainingDistance > 0.1 and wallCount <= maxWalls + 1 and iterationCount < maxIterations do
-            iterationCount = iterationCount + 1
-            local checkRay = Ray.new(lastHitPos, direction * remainingDistance)
-            local hitPart, hitPos = Workspace:FindPartOnRayWithIgnoreList(checkRay, ignoreList)
-            
-            if hitPart then
-                local parent = hitPart.Parent
-                if parent and not parent:FindFirstChildOfClass("Humanoid") and not (LocalPlayer.Character and parent:IsDescendantOf(LocalPlayer.Character)) then
-                    wallCount = wallCount + 1
-                    lastHitPos = hitPos + direction * 0.1
-                    remainingDistance = (targetPos - lastHitPos).Magnitude
-                else
-                    lastHitPos = hitPos + direction * 0.1
-                    remainingDistance = (targetPos - lastHitPos).Magnitude
-                end
-            else
+    local ok = pcall(function()
+        for _ = 1, maxIter do
+            local remaining = targetPos - origin
+            local remMag = remaining.Magnitude
+            if remMag < 0.05 then break end
+
+            local result = Workspace:Raycast(origin, remaining, VisibilityParams)
+            if not result or not result.Instance then
                 break
+            end
+
+            local hitInst = result.Instance
+            local hitParent = hitInst.Parent
+
+            if hitInst == targetCharacter or (targetCharacter and hitInst:IsDescendantOf(targetCharacter)) then
+                break
+            end
+            if hitParent and hitParent:FindFirstChildOfClass("Humanoid") then
+                if targetCharacter and hitParent == targetCharacter then
+                    break
+                end
+                table.insert(ignore, hitInst)
+                VisibilityParams.FilterDescendantsInstances = ignore
+                origin = result.Position + direction * 0.05
+                continue
+            end
+
+            if shouldPierceRayHit(hitInst) then
+                table.insert(ignore, hitInst)
+                VisibilityParams.FilterDescendantsInstances = ignore
+                origin = result.Position + direction * 0.05
+            else
+                wallCount = wallCount + 1
+                if wallCount > (maxWalls or 0) + 1 then break end
+                table.insert(ignore, hitInst)
+                VisibilityParams.FilterDescendantsInstances = ignore
+                origin = result.Position + direction * 0.05
             end
         end
     end)
     getgenv().IgnoreRaycastHook = false
-    if not ok then return 0 end
-    
+    if not ok then return math.huge end
     return wallCount
 end
 
--- Enhanced visibility check with wall penetration
 local function isVisibleWithWalls(targetPart, maxWalls)
     local cam = getCamera()
-    if not cam then return false end
+    if not cam or not targetPart then return false end
     local originPos = cam.CFrame.Position
     local targetPos = targetPart.Position
-    
-    local walls = getWallCount(originPos, targetPos, maxWalls)
+    local targetCharacter = targetPart.Parent
+    local walls = getWallCount(originPos, targetPos, maxWalls, targetCharacter)
     return walls <= maxWalls
 end
+
+local function getRageMaxWalls()
+    if not (Toggles.RagebotAutoPenetration and Toggles.RagebotAutoPenetration.Value) then
+        return 0
+    end
+    return Options.SilentAimMaxWalls and Options.SilentAimMaxWalls.Value or CONSTANTS.RagebotDefaultMaxWalls
+end
+
+local function getRageWallInfo(targetPart)
+    local cam = getCamera()
+    if not cam or not targetPart then return math.huge, false end
+    local maxWalls = getRageMaxWalls()
+    local walls = getWallCount(cam.CFrame.Position, targetPart.Position, maxWalls, targetPart.Parent)
+    return walls, walls <= maxWalls
+end
+
 
 do
     local function encodeHitPosSilent(pos)
@@ -1012,11 +1046,16 @@ do
 
 
     HitpartSilent.fire = function(target)
-
         if HitpartSilent.injecting then return end
         if not target or not target.Parent then return end
+        if not RuntimePack.silentActive then return end
+        if not (HitpartSilent.isHitpartMethod and HitpartSilent.isHitpartMethod()) then return end
 
         local now = tick()
+        local rate = HitpartSilent.getFireRate and HitpartSilent.getFireRate() or 0.1
+        if now - HitpartSilent.lastFire < rate * 0.85 then return end
+        HitpartSilent.lastFire = now
+
         refreshHitpartContext(now)
 
         local gunName = HitpartSilent.gunName
@@ -1039,11 +1078,9 @@ do
         if mag < 0.001 then return end
         local normal = dir / mag
 
-        -- Force wallbang when Auto Penetration is on (like working backup2 hitpart pen).
-        local wallbang = false
-        if Toggles.RagebotAutoPenetration and Toggles.RagebotAutoPenetration.Value then
-            wallbang = true
-        end
+        local walls, canHit = getRageWallInfo(target)
+        if not canHit then return end
+        local wallbang = walls > 0
 
         local smoke = isHitpartThroughSmoke(camPos, hitPos)
         local srvTime = Workspace:GetServerTimeNow()
@@ -1142,13 +1179,8 @@ local function getNearestSilentTarget()
     local camera = getCamera()
     if not camera then return nil end
 
-    local aimPos = UserInputService:GetMouseLocation()
-    local fovValue = Options.RagebotFOV and Options.RagebotFOV.Value or 180
-    local fovPixels = fovValue * (camera.ViewportSize.Y / camera.FieldOfView)
     local myTeam = LocalPlayer.Team
-
-    local wallPenEnabled = Toggles.RagebotAutoPenetration and Toggles.RagebotAutoPenetration.Value
-    local maxWalls = wallPenEnabled and (Options.SilentAimMaxWalls and Options.SilentAimMaxWalls.Value or CONSTANTS.RagebotDefaultMaxWalls) or 0
+    local maxWalls = getRageMaxWalls()
     local useTeamCheck = Toggles.RagebotTeamCheck and Toggles.RagebotTeamCheck.Value
 
     local nearestPart = nil
@@ -1176,15 +1208,11 @@ local function getNearestSilentTarget()
         local targetPart = getRageTargetPart(character, head, rootPart)
         if not targetPart then continue end
 
+        if not isVisibleWithWalls(targetPart, maxWalls) then continue end
+
         local screenPos, onScreen = camera:WorldToViewportPoint(targetPart.Position)
-        if not onScreen then continue end
-
-        if wallPenEnabled then
-            if not isVisibleWithWalls(targetPart, maxWalls) then continue end
-        end
-
-        local dist = (Vector2.new(screenPos.X, screenPos.Y) - aimPos).Magnitude
-        if dist < nearestDist and dist <= fovPixels then
+        local dist = onScreen and (Vector2.new(screenPos.X, screenPos.Y) - UserInputService:GetMouseLocation()).Magnitude or math.huge
+        if dist < nearestDist then
             nearestDist = dist
             nearestPart = targetPart
         end
@@ -3111,6 +3139,7 @@ local function updateKillAll()
         local head = getCachedHead(plr, playerCharacter)
         local _, playerHumanoid = getCachedCharacterParts(plr)
         if not head or not playerHumanoid or playerHumanoid.Health <= 0 then continue end
+        if hasShield(playerCharacter) then continue end
 
         if not KillAllHitRemote then continue end
 
@@ -4409,17 +4438,7 @@ Shared.updateFovCircle = function()
 
     local rageCircle = AimRuntime.RageFovCircle
     if rageCircle then
-        local show = Toggles.RagebotEnable and Toggles.RagebotEnable.Value
-        if show then
-            local fovValue = Options.RagebotFOV and Options.RagebotFOV.Value or 1
-            local radius = fovValue * (viewport.Y / cam.FieldOfView)
-            rageCircle.Position = center
-            rageCircle.Radius = math.min(radius, 100000)
-            rageCircle.Color = CONSTANTS.RagebotFOVColor
-            rageCircle.Visible = true
-        else
-            rageCircle.Visible = false
-        end
+        rageCircle.Visible = false
     end
 
 end
@@ -5574,6 +5593,7 @@ local RageSections = {
     PeekAssist = Tabs.Rage:AddRightGroupbox('Peek assist'),
     GunMods = Tabs.Rage:AddRightGroupbox('Gun mods'),
     Exploit = Tabs.Rage:AddRightGroupbox('Exploit'),
+    Misc = Tabs.Rage:AddRightGroupbox('Misc'),
 }
 
 local AntiAimTabbox = Tabs.Rage:AddLeftTabbox('AntiAim')
@@ -5751,10 +5771,257 @@ SkinSections.Glove:AddButton('Random Skin', function()
         SC.lastGloveSkin = SC.State.SavedGloveSkins[curGlove]
     end
 end)
+
+local UnlockAllState = {
+    Active = false,
+    HooksReady = false,
+    SkinsTable = {},
+    Client = nil,
+    DataHooked = false,
+    ConnHooked = false,
+    NamecallHooked = false,
+}
+
+local function UnlockAll_GetClient()
+    if UnlockAllState.Client then return UnlockAllState.Client end
+    local pg = LocalPlayer:FindFirstChild("PlayerGui")
+    local clientGui = pg and pg:FindFirstChild("Client")
+    if not clientGui then return nil end
+    local ok, client = pcall(getsenv, clientGui)
+    if ok and client then
+        UnlockAllState.Client = client
+        return client
+    end
+    return nil
+end
+
+local function UnlockAll_IsWeaponInTeam(team, gun)
+    local TWeapons = {
+        Glock = true, DualBerettas = true, P250 = true, Tec9 = true, CZ = true, DesertEagle = true, R8 = true,
+        Nova = true, XM = true, SawedOff = true, M249 = true, Negev = true,
+        MAC10 = true, MP7 = true, ["MP7-SD"] = true, UMP = true, P90 = true, Bizon = true,
+        Galil = true, AK47 = true, Scout = true, SG = true, AWP = true, G3SG1 = true,
+        ["Kevlar Vest"] = true, ["Kevlar + Helmet"] = true,
+        Molotov = true, ["Decoy Grenade"] = true, Flashbang = true, ["HE Grenade"] = true, ["Smoke Grenade"] = true,
+    }
+    local CTWeapons = {
+        P2000 = true, USP = true, DualBerettas = true, P250 = true, FiveSeven = true, CZ = true, DesertEagle = true, R8 = true,
+        Nova = true, XM = true, MAG7 = true, M249 = true, Negev = true,
+        MP9 = true, MP7 = true, ["MP7-SD"] = true, UMP = true, P90 = true, Bizon = true,
+        Famas = true, M4A4 = true, M4A1 = true, Scout = true, AUG = true, AWP = true, G3SG1 = true,
+        ["Kevlar Vest"] = true, ["Kevlar + Helmet"] = true, ["Defuse Kit"] = true,
+        ["Incendiary Grenade"] = true, ["Decoy Grenade"] = true, Flashbang = true, ["HE Grenade"] = true, ["Smoke Grenade"] = true,
+    }
+    if team == "T" then return TWeapons[gun] == true end
+    if team == "CT" then return CTWeapons[gun] == true end
+    return false
+end
+
+local function UnlockAll_BuildSkinsTable(client)
+    local skinsFolder = ReplicatedStorage:FindFirstChild("Skins")
+    local glovesFolder = ReplicatedStorage:FindFirstChild("Gloves")
+    if not skinsFolder then return nil end
+
+    local Skins = {}
+    for _, value in ipairs(skinsFolder:GetChildren()) do
+        if value:IsA("Folder") then
+            local gunName = value.Name
+            for _, skin in ipairs(value:GetChildren()) do
+                if skin.Name ~= "Stock" then
+                    Skins[HttpService:GenerateGUID(false)] = { gunName .. "_" .. skin.Name }
+                end
+            end
+        end
+    end
+
+    if glovesFolder then
+        for _, value in ipairs(glovesFolder:GetChildren()) do
+            if value:IsA("Folder") and value.Name ~= "Model" then
+                local gloveName = value.Name
+                for _, skin in ipairs(value:GetChildren()) do
+                    Skins[HttpService:GenerateGUID(false)] = { gloveName .. "_" .. skin.Name }
+                end
+            end
+        end
+    end
+
+    if client then
+        if type(client.CTLoadout) ~= "table" then client.CTLoadout = {} end
+        if type(client.TLoadout) ~= "table" then client.TLoadout = {} end
+        for index, value in pairs(Skins) do
+            local weapon = string.split(value[1], "_")[1]
+            if UnlockAll_IsWeaponInTeam("CT", weapon) then
+                client.CTLoadout[index] = value
+            end
+            if UnlockAll_IsWeaponInTeam("T", weapon) then
+                client.TLoadout[index] = value
+            end
+        end
+    end
+
+    return Skins
+end
+
+local function UnlockAll_ApplyEquip(team, slot, fullName)
+    local client = UnlockAll_GetClient()
+    if not client then return end
+    local skinFolderRoot = LocalPlayer:FindFirstChild("SkinFolder")
+    if not skinFolderRoot then return end
+    if type(fullName) ~= "string" then return end
+
+    local parts = string.split(fullName, "_")
+    local weapon = parts[1]
+    local skin = table.concat(parts, "_", 2)
+    if not weapon or skin == "" then return end
+
+    local function applyTeam(teamName)
+        local folder = skinFolderRoot:FindFirstChild(teamName .. "Folder")
+        if not folder then return end
+        if slot == "Knife" or slot == "Glove" then
+            local val = folder:FindFirstChild(slot)
+            if val then val.Value = skin end
+            local loadout = client[teamName .. "Loadout"]
+            if type(loadout) == "table" then
+                loadout[slot .. "Over"] = true
+                loadout[slot] = { tostring(weapon .. "_" .. skin) }
+            end
+        else
+            local val = folder:FindFirstChild(weapon)
+            if val then val.Value = skin end
+        end
+    end
+
+    if team == "Both" then
+        applyTeam("CT")
+        applyTeam("T")
+    elseif team == "CT" or team == "T" then
+        applyTeam(team)
+    end
+end
+
+local function UnlockAll_HandleEquip(args)
+    if not UnlockAllState.Active then return end
+    local payload = args[1]
+    if type(payload) ~= "table" or payload[1] ~= "EquipItem" then return end
+    local team, slot, item = payload[2], payload[3], payload[4]
+    if type(item) ~= "table" or type(item[1]) ~= "string" then return end
+    UnlockAll_ApplyEquip(team, slot, item[1])
+end
+
+local function UnlockAll_RefreshInventory()
+    local client = UnlockAll_GetClient()
+    local events = ReplicatedStorage:FindFirstChild("Events")
+    local invEvent = events and events:FindFirstChild("InventoryAndLoadout")
+    if not invEvent or not firesignal then return end
+    pcall(function()
+        firesignal(invEvent.OnClientEvent, "Inventory", UnlockAllState.SkinsTable)
+    end)
+    if client then
+        pcall(function()
+            firesignal(invEvent.OnClientEvent, "CTLoadout", client.CTLoadout)
+        end)
+        pcall(function()
+            firesignal(invEvent.OnClientEvent, "TLoadout", client.TLoadout)
+        end)
+    end
+end
+
+local function UnlockAll_EnsureHooks()
+    local client = UnlockAll_GetClient()
+    if not client then error("Client not found") end
+    UnlockAllState.Client = client
+
+    local Data = require(game:GetService("ReplicatedFirst"):WaitForChild("Data"))
+    UnlockAllState.HooksReady = true
+
+    if not UnlockAllState.DataHooked and type(Data.GetData) == "function" then
+        UnlockAllState.DataHooked = true
+        local oldGetData
+        oldGetData = hookfunction(Data.GetData, function(Type, ...)
+            if Type ~= nil then
+                local toReturn = oldGetData(Type, ...)
+                if type(toReturn) == "table" and UnlockAllState.Active then
+                    for index, value in pairs(UnlockAllState.SkinsTable) do
+                        toReturn[tostring(index)] = value
+                    end
+                end
+                return toReturn
+            end
+            return oldGetData(Type, ...)
+        end)
+    end
+
+    local events = ReplicatedStorage:FindFirstChild("Events")
+    local invEvent = events and events:FindFirstChild("InventoryAndLoadout")
+    if invEvent and getconnections and not UnlockAllState.ConnHooked then
+        UnlockAllState.ConnHooked = true
+        for _, conn in ipairs(getconnections(invEvent.OnClientEvent)) do
+            local fn = conn.Function
+            if fn then
+                local oldFn
+                oldFn = hookfunction(fn, function(Type, skins, ...)
+                    if UnlockAllState.Active then
+                        local c = UnlockAll_GetClient()
+                        if Type == "CTLoadout" then
+                            skins = (c and c.CTLoadout) or skins
+                        elseif Type == "TLoadout" then
+                            skins = (c and c.TLoadout) or skins
+                        elseif Type == "Inventory" then
+                            skins = UnlockAllState.SkinsTable or skins
+                        end
+                    end
+                    return oldFn(Type, skins, ...)
+                end)
+            end
+        end
+    end
+
+    return true
+end
+
+local function UnlockAll_Skins()
+    if UnlockAllState.Active then
+        if Library and Library.Notify then Library:Notify("Unlock All already active", 2) end
+        return
+    end
+
+    local ok, err = pcall(function()
+        local client = UnlockAll_GetClient()
+        if not client then error("Client not found") end
+
+        local skinsTable = UnlockAll_BuildSkinsTable(client)
+        if not skinsTable then error("Skins folder missing") end
+
+        UnlockAllState.SkinsTable = skinsTable
+        UnlockAllState.Active = true
+        UnlockAll_EnsureHooks()
+        UnlockAll_RefreshInventory()
+    end)
+
+    if ok then
+        if Library and Library.Notify then Library:Notify("Unlock All skins applied", 3) end
+    else
+        UnlockAllState.Active = false
+        if Library and Library.Notify then Library:Notify("Unlock All failed: " .. tostring(err), 4)
+        else warn("[UnlockAll]", err) end
+    end
+end
+
+local InvSections = {
+    All = Tabs.Skin:AddLeftGroupbox('Inv Unlock'),
+}
+
+InvSections.All:AddButton('Unlock All Skins', function()
+    UnlockAll_Skins()
+end)
+
 SC.setupArmsWatcher()
 
+
 local MovementSections = {
+
     Bhop = Tabs.Movement:AddLeftGroupbox('Bhop'),
+
     SpeedHack = Tabs.Movement:AddLeftGroupbox('Speed Hack'),
     LegitBhop = Tabs.Movement:AddRightGroupbox('Legit Bhop'),
     Misc = Tabs.Movement:AddRightGroupbox('Misc'),
@@ -5791,7 +6058,6 @@ RageSections.Ragebot:AddDropdown('RagebotHitbox', {
     Multi = true,
     Text = 'Hitbox',
 })
-RageSections.Ragebot:AddSlider('RagebotFOV', {Text = 'FOV', Default = 1, Min = 1, Max = 180, Rounding = 0})
 RageSections.Ragebot:AddSlider('SilentAimMaxWalls', {Text = 'Max Walls', Default = 3, Min = 1, Max = 15, Rounding = 0})
 
 if HitpartSilent.refreshMethod then HitpartSilent.refreshMethod() end
@@ -5805,11 +6071,9 @@ antiAimPitchTab:AddSlider('AntiAimPitchRandomSpeed', {Text = 'Pitch random speed
 antiAimYawTab:AddToggle('AntiAimYawEnable', {Text = 'Enable', Default = false})
 antiAimYawTab:AddDropdown('AntiAimYawMode', {Values = { 'Local', 'At target' }, Default = 'Local', Text = 'Yaw mode'})
 antiAimYawTab:AddDropdown('AntiAimYawDirection', {Values = { 'Backwards', 'Forwards' }, Default = 'Backwards', Text = 'Direction'})
-antiAimYawTab:AddDropdown('AntiAimYawType', {Values = { 'None', 'Custom', 'Jitter', 'Jitter 3 way', 'Jitter 5 way', 'Random', 'Spin' }, Default = 'None', Text = 'Yaw type'})
-antiAimYawTab:AddSlider('AntiAimYawCustom', {Text = 'Custom angle', Default = 0, Min = -180, Max = 180, Rounding = 0, Suffix = '°'})
+antiAimYawTab:AddDropdown('AntiAimYawType', {Values = { 'None', 'Spin', 'Jitter' }, Default = 'None', Text = 'Yaw type'})
 antiAimYawTab:AddSlider('AntiAimYawJitterAngle', {Text = 'Jitter angle', Default = 90, Min = 0, Max = 180, Rounding = 0, Suffix = '°'})
 antiAimYawTab:AddSlider('AntiAimYawJitterDelay', {Text = 'Jitter delay (ms)', Default = 100, Min = 1, Max = 1000, Rounding = 0})
-antiAimYawTab:AddSlider('AntiAimYawRandomDelay', {Text = 'Random delay (ms)', Default = 200, Min = 1, Max = 1000, Rounding = 0})
 antiAimYawTab:AddSlider('AntiAimYawSpinDelay', {Text = 'Spin delay (ms)', Default = 5, Min = 1, Max = 1000, Rounding = 0})
 
 RageSections.PeekAssist:AddToggle('PeekAssistEnable', {Text = 'Enable', Default = false, KeyPicker = {Idx = 'PeekAssistKeybind', Default = 'None', Mode = 'Hold', Text = 'Peek Assist'}})
@@ -5865,6 +6129,8 @@ viewmodelTab:AddSlider('VMArmTransparency', {Text = 'Arm transparency', Default 
 
 viewmodelTab:AddToggle('VMRemoveSleeves', {Text = 'Remove sleeves', Default = false, Callback = function() updateViewModelVisuals() end})
 viewmodelTab:AddToggle('VMRemoveGloves', {Text = 'Remove gloves', Default = false, Callback = function() updateViewModelVisuals() end})
+
+RageSections.Misc:AddToggle('RageMiscVisualizeSilent', {Text = 'Visualize Silent Angles', Default = false})
 
 RageSections.Exploit:AddToggle('ExploitKillAll', {Text = 'Kill all', Default = false, KeyPicker = {Idx = 'ExploitKillAllKeybind', Default = 'None', Mode = 'Hold', Text = 'Kill All'}})
 RageSections.Exploit:AddToggle('ExploitNoFallDamage', {Text = 'No fall damage', Default = false})
@@ -6512,17 +6778,24 @@ end
 local function applySilentHitParl(args)
     local tgt = getgenv().PSilentTarget
     if not tgt or not tgt.Parent then return args end
+    if not RuntimePack.silentActive then return args end
+    local walls, canHit = getRageWallInfo(tgt)
+    if not canHit then return args end
     local hitPos = tgt.CFrame and tgt.CFrame.Position or tgt.Position
     args[1] = tgt
     args[2] = encodeHitPos(hitPos)
     if type(args[4]) ~= "number" or args[4] <= 0 then
         args[4] = 4096
     end
-    if Toggles.RagebotAutoPenetration and Toggles.RagebotAutoPenetration.Value then
-        args[9] = true -- wallbang
+    args[9] = walls > 0
+    local camPos = typeof(args[10]) == "Vector3" and args[10] or nil
+    if not camPos then
+        local cam = getCamera()
+        camPos = cam and cam.CFrame.Position
+        if camPos then args[10] = camPos end
     end
-    if typeof(args[10]) == "Vector3" and typeof(args[12]) == "Vector3" then
-        local dir = hitPos - args[10]
+    if camPos then
+        local dir = hitPos - camPos
         if dir.Magnitude > 0.001 then
             args[12] = dir.Unit
         end
@@ -6609,6 +6882,13 @@ pcall(function()
                         local offZ = (Options.VMOffsetZ and Options.VMOffsetZ.Value or 0) / 10
                         local roll = math.rad(Options.VMRoll and Options.VMRoll.Value or 0)
                         cf = cf * CFrame.new(offX, offY, -offZ) * CFrame.Angles(0, 0, roll)
+                        if Toggles.RageMiscVisualizeSilent and Toggles.RageMiscVisualizeSilent.Value then
+                            local sTarget = getgenv().PSilentTarget
+                            if sTarget and sTarget.Parent then
+                                local tp = sTarget.CFrame and sTarget.CFrame.Position or sTarget.Position
+                                cf = CFrame.new(cf.p, tp)
+                            end
+                        end
                         return _oldNamecall(self, cf, select(2, ...))
                     end
                 end
@@ -6634,7 +6914,12 @@ pcall(function()
                     return
                 end
             end
+            if name == "DataEvent" and UnlockAllState and UnlockAllState.Active then
+                pcall(UnlockAll_HandleEquip, {...})
+            end
+
             if name == "ControlTurn" then
+
 
                 if Toggles.AntiAimPitchEnable and Toggles.AntiAimPitchEnable.Value then
                     local pitchMode = Options.AntiAimPitchMode and Options.AntiAimPitchMode.Value or "None"
@@ -6743,6 +7028,13 @@ pcall(function()
                         peekAssistOnShot()
                     end
                 end)
+                local autoFireOn = Toggles.RagebotAutoFire and Toggles.RagebotAutoFire.Value
+                if not autoFireOn and not HitpartSilent.injecting and RuntimePack.silentActive then
+                    local silentTarget = getgenv().PSilentTarget
+                    if silentTarget and silentTarget.Parent then
+                        HitpartSilent.fire(silentTarget)
+                    end
+                end
                 return _oldNamecall(self, ...)
             end
 
@@ -7494,10 +7786,8 @@ local function updateRagebot()
             local fireNow = tick()
             local rate = HitpartSilent.getFireRate and HitpartSilent.getFireRate() or 0.1
             if fireNow - HitpartSilent.lastFire >= rate then
-                HitpartSilent.lastFire = fireNow
-                local hitpartMode = HitpartSilent.isHitpartMethod and HitpartSilent.isHitpartMethod()
                 fireWeapShot()
-                if hitpartMode then
+                if HitpartSilent.isHitpartMethod and HitpartSilent.isHitpartMethod() then
                     HitpartSilent.fire(silentTarget)
                 end
             end
@@ -7750,13 +8040,18 @@ end)()
 
 -- kill all heartbeat
 local _killAllLastRun = 0
+local _infAmmoLastRun = 0
 EspRuntime.Connections.KillAllHeartbeat = RunService.Heartbeat:Connect(function()
     pcall(function()
         local now = tick()
-        if now - _killAllLastRun < 0.1 then return end
-        _killAllLastRun = now
-        updateKillAll()
-        updateInfAmmo()
+        if now - _killAllLastRun >= 0.05 then
+            _killAllLastRun = now
+            updateKillAll()
+        end
+        if now - _infAmmoLastRun >= 0.1 then
+            _infAmmoLastRun = now
+            updateInfAmmo()
+        end
     end)
 end)
 
@@ -7943,7 +8238,6 @@ end)()
         end)
     end
 
-    -- load from fallback file on startup (config load will override if available)
     pcall(function()
         if not isfile(UI_POS_FILE) then return end
         local data = HttpService:JSONDecode(readfile(UI_POS_FILE))
@@ -7963,4 +8257,6 @@ end)()
     if Library.KeybindFrame then
         Library:GiveSignal(Library.KeybindFrame:GetPropertyChangedSignal('Position'):Connect(saveUiPositions))
     end
-end)() 
+end)()
+
+
