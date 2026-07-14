@@ -5818,7 +5818,9 @@ RageSections.PeekAssist:AddDropdown('PeekAssistRetreatMode', {Values = { 'On Key
 RageSections.GunMods:AddToggle('GunModsNoRecoil', {Text = 'No recoil', Default = false, Callback = applyNoRecoil})
 RageSections.GunMods:AddToggle('GunModsNoSpread', {Text = 'No spread', Default = false, Callback = applyNoSpread})
 RageSections.GunMods:AddToggle('GunModsRapidFire', {Text = 'Rapid fire', Default = false, Callback = function(Value) if not Value then restoreAllRapidFireRates() else updateRapidFire() end end})
+RageSections.GunMods:AddSlider('GunModsRapidFireRate', {Text = 'Rapid fire rate', Default = 1, Min = 1, Max = 100, Rounding = 0, Callback = function() if Toggles.GunModsRapidFire and Toggles.GunModsRapidFire.Value then updateRapidFire() end end})
 RageSections.GunMods:AddToggle('GunModsInstaEquip', {Text = 'Insta equip', Default = false, Callback = applyInstaEquip})
+
 RageSections.GunMods:AddToggle('GunModsInstaReload', {Text = 'Insta reload', Default = false, Callback = applyInstaReload})
 RageSections.GunMods:AddToggle('MiscFullAuto', {Text = 'Full auto', Default = false, Callback = function() updateFullAuto() end})
 
@@ -6858,7 +6860,175 @@ _hitSoundObj = Instance.new("Sound")
 _hitSoundObj.Parent = workspace
 
 -- unload
+local function restoreClientAmmoSafe()
+    local t = InfAmmoState and InfAmmoState.table
+    if not t or type(t) ~= "table" or type(rawget(t, "ammocount")) ~= "number" then
+        t = findClientAmmoTable and findClientAmmoTable() or nil
+    end
+    if not t then return end
+
+    local weapons = getWeaponsFolder and getWeaponsFolder() or nil
+    local client = getCachedClient and getCachedClient() or nil
+    local function ammoOf(name, fallback)
+        if weapons and type(name) == "string" and name ~= "" and name ~= "none" then
+            local folder = weapons:FindFirstChild(name)
+            local ammo = folder and folder:FindFirstChild("Ammo")
+            if ammo and type(ammo.Value) == "number" and ammo.Value > 0 and ammo.Value <= 150 then
+                return math.floor(ammo.Value)
+            end
+        end
+        return fallback
+    end
+
+    local primaryName = client and (client.realgun or client.primary)
+    local secondaryName = client and client.secondary
+    local a1 = ammoOf(primaryName, 30)
+    local a2 = ammoOf(secondaryName, 12)
+    local a3 = 1
+    local a4 = 1
+
+    if type(t.ammocount) == "number" and (t.ammocount > 150 or t.ammocount ~= t.ammocount or t.ammocount == math.huge) then
+        t.ammocount = a1
+    end
+    if type(t.ammocount2) == "number" and (t.ammocount2 > 150 or t.ammocount2 ~= t.ammocount2 or t.ammocount2 == math.huge) then
+        t.ammocount2 = a2
+    end
+    if type(t.ammocount3) == "number" and (t.ammocount3 > 150 or t.ammocount3 ~= t.ammocount3 or t.ammocount3 == math.huge) then
+        t.ammocount3 = a3
+    end
+    if type(t.ammocount4) == "number" and (t.ammocount4 > 150 or t.ammocount4 ~= t.ammocount4 or t.ammocount4 == math.huge) then
+        t.ammocount4 = a4
+    end
+
+    local function fixStored(key, fallback)
+        local v = rawget(t, key)
+        if type(v) == "number" and (v > 999 or v ~= v or v == math.huge) then
+            t[key] = fallback
+        end
+    end
+    fixStored("primarystored", a1 * 2)
+    fixStored("secondarystored", a2 * 2)
+    fixStored("equipmentstored", 1)
+    fixStored("equipment2stored", 1)
+end
+
+local function restoreWeaponModsSafe()
+    pcall(function()
+        if Toggles.ExploitInfAmmo then Toggles.ExploitInfAmmo.Value = false end
+    end)
+    pcall(function()
+        if Toggles.GunModsRapidFire then Toggles.GunModsRapidFire.Value = false end
+    end)
+    pcall(function()
+        if Toggles.GunModsNoRecoil then Toggles.GunModsNoRecoil.Value = false end
+    end)
+    pcall(function()
+        if Toggles.GunModsNoSpread then Toggles.GunModsNoSpread.Value = false end
+    end)
+    pcall(function()
+        if Toggles.GunModsInstaEquip then Toggles.GunModsInstaEquip.Value = false end
+    end)
+    pcall(function()
+        if Toggles.GunModsInstaReload then Toggles.GunModsInstaReload.Value = false end
+    end)
+    pcall(function()
+        if Toggles.MiscFullAuto then Toggles.MiscFullAuto.Value = false end
+    end)
+
+    pcall(restoreClientAmmoSafe)
+    pcall(restoreAllRapidFireRates)
+    pcall(restoreAllFullAutoValues)
+    pcall(function() applyNoRecoil(false) end)
+    pcall(function() applyNoSpread(false) end)
+    pcall(function() applyInstaEquip(false) end)
+    pcall(function() applyInstaReload(false) end)
+
+    pcall(function()
+        local Weapons = getWeaponsFolder()
+        if not Weapons then return end
+        for weaponName, original in pairs(RCSOriginalValues) do
+            local weaponFolder = Weapons:FindFirstChild(weaponName)
+            local spread = weaponFolder and weaponFolder:FindFirstChild("Spread")
+            local recoil = spread and spread:FindFirstChild("Recoil")
+            if recoil and recoil:IsA("NumberValue") and type(original) == "number" and original > 0 then
+                recoil.Value = original
+            end
+        end
+        table.clear(RCSOriginalValues)
+
+        for weaponName, original in pairs(SavedRecoilValues) do
+            local weaponFolder = Weapons:FindFirstChild(weaponName)
+            local spread = weaponFolder and weaponFolder:FindFirstChild("Spread")
+            local recoil = spread and spread:FindFirstChild("Recoil")
+            if recoil and recoil:IsA("NumberValue") and type(original) == "number" and original > 0 then
+                recoil.Value = original
+            end
+        end
+        table.clear(SavedRecoilValues)
+
+        for weaponName, original in pairs(InstaWeaponState.SavedEquipTimes) do
+            local weaponFolder = Weapons:FindFirstChild(weaponName)
+            local EquipTime = weaponFolder and weaponFolder:FindFirstChild("EquipTime")
+            if EquipTime and EquipTime:IsA("NumberValue") then EquipTime.Value = original end
+        end
+        for weaponName, original in pairs(InstaWeaponState.SavedReloadTimes) do
+            local weaponFolder = Weapons:FindFirstChild(weaponName)
+            local ReloadTime = weaponFolder and weaponFolder:FindFirstChild("ReloadTime")
+            if ReloadTime and ReloadTime:IsA("NumberValue") then ReloadTime.Value = original end
+        end
+    end)
+    table.clear(InstaWeaponState.SavedEquipTimes)
+    table.clear(InstaWeaponState.SavedReloadTimes)
+
+    pcall(function()
+        local Client = getCachedClient()
+        if Client and OriginalAccuracySd ~= nil then
+            Client.accuracy_sd = OriginalAccuracySd
+            OriginalAccuracySd = nil
+        end
+    end)
+
+    -- never leave Recoil at 0 (Boogers / server flag)
+    pcall(function()
+        local Weapons = getWeaponsFolder()
+        if not Weapons then return end
+        for _, weaponFolder in ipairs(Weapons:GetChildren()) do
+            local spread = weaponFolder:FindFirstChild("Spread")
+            local recoil = spread and spread:FindFirstChild("Recoil")
+            if recoil and recoil:IsA("NumberValue") and recoil.Value == 0 then
+                recoil.Value = 1
+            end
+        end
+    end)
+end
+
 unloadValenok = function()
+    if getgenv()._ValenokUnloading then return end
+    getgenv()._ValenokUnloading = true
+    local fromLibraryUnload = getgenv()._ValenokFromLibraryUnload == true
+
+    -- restore game state WHILE AC namecall hook is still active
+    pcall(restoreWeaponModsSafe)
+    task.wait() -- let client render/heartbeat see fixed ammo before unhook
+    pcall(restoreClientAmmoSafe)
+    task.wait()
+    pcall(restoreClientAmmoSafe)
+
+
+    -- stop loops that mutate state
+    if HitMarkerState.HeartbeatConn then
+        HitMarkerState.HeartbeatConn:Disconnect()
+        HitMarkerState.HeartbeatConn = nil
+    end
+    for _, Connection in pairs(EspRuntime.Connections) do
+        pcall(function() Connection:Disconnect() end)
+    end
+    table.clear(EspRuntime.Connections)
+
+    -- second pass after loops stopped
+    pcall(restoreClientAmmoSafe)
+
+    -- only now drop hooks
     restoreNamecallHook()
     restoreNewindexHook()
     getgenv().PSilentTarget = nil
@@ -6886,17 +7056,8 @@ unloadValenok = function()
         pcall(function() Shared.SkyboxState.originalSky.Parent = game:GetService('Lighting') end)
     end
 
-    if HitMarkerState.HeartbeatConn then
-        HitMarkerState.HeartbeatConn:Disconnect()
-        HitMarkerState.HeartbeatConn = nil
-    end
-
     if SC.Models then pcall(function() SC.Models:Destroy() end); SC.Models = nil end
 
-    for _, Connection in pairs(EspRuntime.Connections) do
-        pcall(function() Connection:Disconnect() end)
-    end
-    table.clear(EspRuntime.Connections)
 
     for _, c in ipairs({ AimRuntime.AimFovCircle, AimRuntime.RageFovCircle }) do
         pcall(function() c.Visible = false; c:Remove() end)
@@ -7051,47 +7212,10 @@ unloadValenok = function()
     }
 
 
-    local Client = getCachedClient()
-    if Client then
-        if OriginalAccuracySd ~= nil then Client.accuracy_sd = OriginalAccuracySd end
-    end
-
-    restoreAllRapidFireRates()
-    restoreAllFullAutoValues()
-
-    local Weapons = getWeaponsFolder()
-    if Weapons then
-        for weaponName, original in pairs(RCSOriginalValues) do
-            local weaponFolder = Weapons:FindFirstChild(weaponName)
-            local spread = weaponFolder and weaponFolder:FindFirstChild("Spread")
-            local recoil = spread and spread:FindFirstChild("Recoil")
-            if recoil and recoil:IsA("NumberValue") then recoil.Value = original end
-        end
-        table.clear(RCSOriginalValues)
-
-        for weaponName, original in pairs(SavedRecoilValues) do
-            local weaponFolder = Weapons:FindFirstChild(weaponName)
-            local spread = weaponFolder and weaponFolder:FindFirstChild("Spread")
-            local recoil = spread and spread:FindFirstChild("Recoil")
-            if recoil and recoil:IsA("NumberValue") then recoil.Value = original end
-        end
-        table.clear(SavedRecoilValues)
-
-        for weaponName, original in pairs(InstaWeaponState.SavedEquipTimes) do
-            local weaponFolder = Weapons:FindFirstChild(weaponName)
-            local EquipTime = weaponFolder and weaponFolder:FindFirstChild("EquipTime")
-            if EquipTime and EquipTime:IsA("NumberValue") then EquipTime.Value = original end
-        end
-        for weaponName, original in pairs(InstaWeaponState.SavedReloadTimes) do
-            local weaponFolder = Weapons:FindFirstChild(weaponName)
-            local ReloadTime = weaponFolder and weaponFolder:FindFirstChild("ReloadTime")
-            if ReloadTime and ReloadTime:IsA("NumberValue") then ReloadTime.Value = original end
-        end
-    end
-    table.clear(InstaWeaponState.SavedEquipTimes)
-    table.clear(InstaWeaponState.SavedReloadTimes)
+    -- weapon/ammo restore already done at start of unload (before unhook)
 
     if Shared.AmbienceSavedLighting then
+
         pcall(function()
             local Lighting = game:GetService('Lighting')
             Lighting.ClockTime = Shared.AmbienceSavedLighting.ClockTime
@@ -7252,9 +7376,16 @@ unloadValenok = function()
     end
     pcall(Shared.restoreFlyPhysics)
 
-    Library:Unload()
+    -- final ammo clamp after all loops stopped
+    pcall(restoreClientAmmoSafe)
+
+    if not fromLibraryUnload then
+        pcall(function() Library:Unload() end)
+    end
+    getgenv()._ValenokUnloading = nil
 end
 getgenv().ValenokUnload = unloadValenok
+
 
 
 -- weapon change listener for RapidFire
@@ -7635,7 +7766,14 @@ print("version: 3.2")
 print("open/close menu end")
 print("status: discontinued")
 Library:OnUnload(function()
+    -- UI unload button: full cleanup (ammo/mods restore BEFORE AC unhook)
+    pcall(function()
+        if unloadValenok and not getgenv()._ValenokUnloading then
+            unloadValenok()
+        end
+    end)
     getgenv().ValenokUnload = nil
+    getgenv()._ValenokUnloading = nil
     if SC.State.armsConn then SC.State.armsConn:Disconnect(); SC.State.armsConn = nil end
     pcall(function()
         if SC.Viewmodels then
@@ -7646,6 +7784,7 @@ Library:OnUnload(function()
         end
     end)
 end)
+
 
 
 -- inject watermark & keybind position saving into SaveManager
@@ -7824,6 +7963,4 @@ end)()
     if Library.KeybindFrame then
         Library:GiveSignal(Library.KeybindFrame:GetPropertyChangedSignal('Position'):Connect(saveUiPositions))
     end
-end)()  Library:GiveSignal(Library.KeybindFrame:GetPropertyChangedSignal('Position'):Connect(saveUiPositions))
-    end
-end)()
+end)() 
