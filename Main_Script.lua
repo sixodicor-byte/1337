@@ -18,12 +18,10 @@ local CONSTANTS = {
     SKIN_FILE = "Valenok_skin/Skin.json",
     GITHUB_LIB_URL = "https://raw.githubusercontent.com/sixodicor-byte/1337/refs/heads/main/NewLib.lua",
     MAX_HIT_CHAMS_CLONES = 25,
-    ESP_HEIGHT_STUDS = 6.2,
-    ESP_WIDTH_STUDS = 3.5,
-
-
-    ESP_BOX_THICKNESS = 0.5,
-    ESP_BOX_OUTLINE_THICKNESS = 1,
+    ESP_BOX_TOP_OFFSET = 2.45,
+    ESP_BOX_BOTTOM_OFFSET = 3.1,
+    ESP_BOX_THICKNESS = 1,
+    ESP_BOX_OUTLINE_THICKNESS = 3,
     ESP_HEALTH_BAR_WIDTH = 3.5,
     ESP_HEALTH_BAR_OUTLINE_THICKNESS = 1,
 
@@ -65,7 +63,20 @@ local CONSTANTS = {
     AimHitboxFallbacks = {
         Head = { "HeadHB", "Head", "FakeHead" },
         Body = { "UpperTorso", "LowerTorso", "Torso", "HumanoidRootPart" },
+        Arms = {
+            "LeftUpperArm", "LeftLowerArm", "LeftHand",
+            "RightUpperArm", "RightLowerArm", "RightHand",
+        },
+        Legs = {
+            "LeftUpperLeg", "LeftLowerLeg", "LeftFoot",
+            "RightUpperLeg", "RightLowerLeg", "RightFoot",
+        },
     },
+    RageHitboxPriority = { "Head", "Body", "Arms", "Legs" },
+    RagebotFOVColor = Color3.fromRGB(255, 255, 255),
+    RagebotDefaultHitboxes = { Head = true },
+    RagebotDefaultMethod = "Ray redirect",
+    RagebotDefaultMaxWalls = 3,
     RealHitboxNames = {
         "Head", "HeadHB", "FakeHead",
         "UpperTorso", "LowerTorso", "HumanoidRootPart",
@@ -75,9 +86,8 @@ local CONSTANTS = {
         "RightUpperLeg", "RightLowerLeg", "RightFoot",
     },
     RealHitboxLookup = {},
-    RAPID_FIRE_MULTIPLIERS = {
-        AWP = 9, Scout = 10, G3SG1 = 8, USP = 7, DesertEagle = 7, ["AK-47"] = 8,
-    },
+    RAPID_FIRE_MULTIPLIERS = {},
+    RAPID_FIRE_DEFAULT_MULTIPLIER = 30,
     GRENADE_PARAMS = {
         LOOK_SPEED = 100,
         PLR_FACTOR = 1.0,
@@ -148,6 +158,7 @@ local EspRuntime = {
     Drawings = {},
     ItemDrawings = {},
     Highlights = {},
+    Chams = {},
     Connections = {},
 }
 
@@ -158,7 +169,8 @@ local EspFrameCache = {
     options = {},
     colors = {},
     boxFillTransparency = 1,
-    chamsTransparency = 0.35,
+    chamsVisibleTransparency = 0.35,
+    chamsWallTransparency = 0.35,
 }
 
 local EspPlayerCache = {}
@@ -249,7 +261,6 @@ local RuntimePack = {
 }
 local HitpartSilent = RuntimePack.HitpartSilent
 
-
 local function getCamera()
     Camera = Workspace.CurrentCamera
     return Camera
@@ -321,6 +332,83 @@ local function getCachedRayIgnore()
 end
 
 local RayIgnoreListCache = { list = nil, t = 0 }
+local EnemyRayIgnoreNames = {
+    HumanoidRootPart = true,
+    Gun = true,
+    Head = true,
+    BackC4 = true,
+}
+for i = 1, 15 do
+    EnemyRayIgnoreNames["Hat" .. i] = true
+end
+
+local function isCompetitiveOrDeathmatch()
+    local status = Workspace:FindFirstChild("Status")
+    if not status then
+        local lpStatus = LocalPlayer:FindFirstChild("Status")
+        status = lpStatus
+    end
+    if not status then return false end
+
+    local modeObj = status:FindFirstChild("Mode")
+        or status:FindFirstChild("GameMode")
+        or status:FindFirstChild("Gamemode")
+        or status:FindFirstChild("Type")
+        or status:FindFirstChild("GameType")
+    if not modeObj then return false end
+
+    local mode = tostring(modeObj.Value or modeObj):lower()
+    if mode == "" then return false end
+    if mode:find("comp", 1, true)
+        or mode:find("death", 1, true)
+        or mode == "dm"
+        or mode:find("competitive", 1, true)
+        or mode:find("deathmatch", 1, true)
+    then
+        return true
+    end
+    return false
+end
+
+local function isSameTeamPlayer(player)
+    if not player or player == LocalPlayer then return false end
+    local myTeam, theirTeam = LocalPlayer.Team, player.Team
+    if myTeam ~= nil and theirTeam ~= nil and myTeam == theirTeam then
+        return true
+    end
+    local myTeamColor, theirTeamColor = LocalPlayer.TeamColor, player.TeamColor
+    if myTeamColor ~= nil and theirTeamColor ~= nil and myTeamColor == theirTeamColor then
+        return true
+    end
+
+    local myStatus = LocalPlayer:FindFirstChild("Status")
+    local theirStatus = player:FindFirstChild("Status")
+    local myStatusTeam = myStatus and myStatus:FindFirstChild("Team")
+    local theirStatusTeam = theirStatus and theirStatus:FindFirstChild("Team")
+    if myStatusTeam and theirStatusTeam then
+        local a, b = myStatusTeam.Value, theirStatusTeam.Value
+        if a ~= nil and b ~= nil and a ~= "" and b ~= "" and a == b then
+            return true
+        end
+    end
+    return false
+end
+
+local function appendEnemyRayIgnoreParts(list, character)
+    if not character then return end
+    local hrp = character:FindFirstChild("HumanoidRootPart")
+    if hrp then table.insert(list, hrp) end
+    local gun = character:FindFirstChild("Gun")
+    if gun then table.insert(list, gun) end
+    local head = character:FindFirstChild("Head")
+    if head then table.insert(list, head) end
+    local backC4 = character:FindFirstChild("BackC4")
+    if backC4 then table.insert(list, backC4) end
+    for i = 1, 15 do
+        local hat = character:FindFirstChild("Hat" .. i)
+        if hat then table.insert(list, hat) end
+    end
+end
 
 local function buildRayIgnoreList()
     local now = tick()
@@ -328,17 +416,33 @@ local function buildRayIgnoreList()
     if cached and (now - RayIgnoreListCache.t) < 0.005 then
         return cached
     end
-    local cam = getCamera()
+
+    local cam = getCamera() or Workspace.CurrentCamera
     local char = LocalPlayer.Character
     local rayIgnore = Workspace:FindFirstChild("Ray_Ignore") or getCachedRayIgnore()
     local debris = Workspace:FindFirstChild("Debris")
     local list = { cam, char, rayIgnore, debris }
+
     local clips = getMapClips()
     if clips then table.insert(list, clips) end
     local spawns = getMapSpawns()
     if spawns then table.insert(list, spawns) end
     if GrenadeRuntime and GrenadeRuntime.Folder then table.insert(list, GrenadeRuntime.Folder) end
     if HitChamsState and HitChamsState.Folder then table.insert(list, HitChamsState.Folder) end
+
+    local ignoreFullTeammates = not isCompetitiveOrDeathmatch()
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == LocalPlayer then continue end
+        local pChar = player.Character
+        if not pChar then continue end
+
+        if ignoreFullTeammates and isSameTeamPlayer(player) then
+            table.insert(list, pChar)
+        else
+            appendEnemyRayIgnoreParts(list, pChar)
+        end
+    end
+
     RayIgnoreListCache.list = list
     RayIgnoreListCache.t = now
     return list
@@ -350,6 +454,33 @@ local function isUnderRayIgnore(inst)
     if rayIgnore and inst:IsDescendantOf(rayIgnore) then return true end
     local debris = Workspace:FindFirstChild("Debris")
     if debris and inst:IsDescendantOf(debris) then return true end
+
+    local clips = getMapClips()
+    if clips and inst:IsDescendantOf(clips) then return true end
+    local spawns = getMapSpawns()
+    if spawns and inst:IsDescendantOf(spawns) then return true end
+
+    local cam = getCamera() or Workspace.CurrentCamera
+    if cam and (inst == cam or inst:IsDescendantOf(cam)) then return true end
+
+    local localChar = LocalPlayer.Character
+    if localChar and inst:IsDescendantOf(localChar) then return true end
+
+    if EnemyRayIgnoreNames[inst.Name] then
+        local model = inst:FindFirstAncestorOfClass("Model")
+        if model and Players:GetPlayerFromCharacter(model) then
+            return true
+        end
+    end
+
+    if not isCompetitiveOrDeathmatch() then
+        local model = inst:FindFirstAncestorOfClass("Model")
+        local plr = model and Players:GetPlayerFromCharacter(model)
+        if plr and isSameTeamPlayer(plr) then
+            return true
+        end
+    end
+
     return false
 end
 
@@ -366,7 +497,7 @@ end
 
 local function copyRayIgnoreList()
     local base = buildRayIgnoreList()
-    local out = table.create(#base + 8)
+    local out = table.create(#base + 16)
     for i = 1, #base do
         out[i] = base[i]
     end
@@ -380,6 +511,7 @@ local function shouldPierceRayHit(inst)
     if inst.Transparency >= 1 then return true end
     return false
 end
+
 
 
 
@@ -484,12 +616,12 @@ local function getOptionColor(optionName, fallback)
     return fallback
 end
 
-local function getChamsTransparency()
-    local sliderValue = Options.ESPChamsTransparency
-    if type(sliderValue) ~= "table" then
-        return 0.35
+local function getChamsTransparency(optionName, fallback)
+    local opt = Options[optionName]
+    if type(opt) == "table" and type(opt.Transparency) == "number" then
+        return math.clamp(opt.Transparency, 0, 1)
     end
-    return math.clamp(sliderValue.Value / 100, 0, 1)
+    return fallback or 0.35
 end
 
 
@@ -523,26 +655,35 @@ local function getEspDrawingFont()
     return id
 end
 
+local function getEspFontSize()
+    local opt = Options.ESPFontSize
+    if type(opt) == "table" and type(opt.Value) == "number" then
+        return math.clamp(math.floor(opt.Value + 0.5), 1, 30)
+    end
+    return 13
+end
+
 local function createText(size)
     local text = Drawing.new("Text")
     text.Visible = false
     text.Center = true
     text.Outline = true
     text.Transparency = 1
-    text.Size = size or 13
+    text.Size = size or getEspFontSize()
     text.Font = getEspDrawingFont()
     return text
 end
 
-
-local function createLine(thickness, color)
-    local line = Drawing.new("Line")
-    line.Visible = false
-    line.Thickness = thickness
-    line.Transparency = 1
-    line.Color = color
-    return line
+local function createTriangle(filled, thickness, color)
+    local triangle = Drawing.new("Triangle")
+    triangle.Visible = false
+    triangle.Filled = filled and true or false
+    triangle.Thickness = thickness or 1
+    triangle.Transparency = 1
+    triangle.Color = color or Color3.fromRGB(255, 255, 255)
+    return triangle
 end
+
 
 EspRuntime.RemoveDrawingValue = function(value, seen)
     if value == nil then return end
@@ -581,20 +722,19 @@ local function getCharacterScreenBox(character, humanoid, rootPart)
     if not camera then return nil end
 
     local rootPos = rootPart.Position
-    local screenPos, onScreen = camera:WorldToViewportPoint(rootPos)
+    local topWorld = Vector3.new(rootPos.X, rootPos.Y + CONSTANTS.ESP_BOX_TOP_OFFSET, rootPos.Z)
+    local bottomWorld = Vector3.new(rootPos.X, rootPos.Y - CONSTANTS.ESP_BOX_BOTTOM_OFFSET, rootPos.Z)
 
-    if not onScreen then return nil end
+    local topScreen, topOn = camera:WorldToViewportPoint(topWorld)
+    local bottomScreen, bottomOn = camera:WorldToViewportPoint(bottomWorld)
+    if not topOn and not bottomOn then return nil end
 
-    local topWorld = rootPos + Vector3.new(0, CONSTANTS.ESP_HEIGHT_STUDS / 2, 0)
-    local bottomWorld = rootPos - Vector3.new(0, CONSTANTS.ESP_HEIGHT_STUDS / 2, 0)
+    local height = bottomScreen.Y - topScreen.Y
+    local width = height * 0.5
+    local left = topScreen.X - width * 0.5
+    local top = topScreen.Y
 
-    local topScreen = camera:WorldToViewportPoint(topWorld)
-    local bottomScreen = camera:WorldToViewportPoint(bottomWorld)
-
-    local height = math.abs(topScreen.Y - bottomScreen.Y)
-    local width = height * (CONSTANTS.ESP_WIDTH_STUDS / CONSTANTS.ESP_HEIGHT_STUDS)
-
-    return screenPos.X - width / 2, screenPos.Y - height / 2, width, height
+    return math.floor(left + 0.5), math.floor(top + 0.5), math.floor(width + 0.5), math.floor(height + 0.5)
 end
 
 
@@ -818,16 +958,17 @@ do
     end
 
     HitpartSilent.refreshMethod = function()
-        local opts = getgenv().Options
-        local methodOpt = type(opts) == "table" and opts.RagebotMethod
-        local val = methodOpt and methodOpt.Value
-        local isHitpart = val == "Hit part"
-        HitpartSilent.isHitpart = isHitpart
-        HitpartSilent.isRay = not isHitpart
+        local hitpartOn = Toggles and Toggles.RagebotHitPart and Toggles.RagebotHitPart.Value == true
+        HitpartSilent.isHitpart = hitpartOn
+        HitpartSilent.isRay = not hitpartOn
     end
 
     HitpartSilent.isHitpartMethod = function()
-        return HitpartSilent.isHitpart
+        -- always re-sync from toggle so mode can't stick on ray
+        local hitpartOn = Toggles and Toggles.RagebotHitPart and Toggles.RagebotHitPart.Value == true
+        HitpartSilent.isHitpart = hitpartOn
+        HitpartSilent.isRay = not hitpartOn
+        return hitpartOn
     end
 
     HitpartSilent.getFireRate = function()
@@ -898,16 +1039,15 @@ do
         if mag < 0.001 then return end
         local normal = dir / mag
 
+        -- Force wallbang when Auto Penetration is on (like working backup2 hitpart pen).
         local wallbang = false
-        local toggles = getgenv().Toggles
-        if toggles and toggles.RagebotWallPenetration and toggles.RagebotWallPenetration.Value then
-            local options = getgenv().Options
-            local maxWalls = options and options.SilentAimMaxWalls and options.SilentAimMaxWalls.Value or 3
-            wallbang = getWallCount(camPos, hitPos, maxWalls) > 0
+        if Toggles.RagebotAutoPenetration and Toggles.RagebotAutoPenetration.Value then
+            wallbang = true
         end
 
         local smoke = isHitpartThroughSmoke(camPos, hitPos)
         local srvTime = Workspace:GetServerTimeNow()
+        local rangeArg = 4096
         local posArg = encodeHitPosSilent(hitPos)
 
         HitpartSilent.injecting = true
@@ -916,7 +1056,7 @@ do
                 target,
                 posArg,
                 gunName,
-                4096,
+                rangeArg,
                 fireGun,
                 nil,
                 1,
@@ -941,6 +1081,62 @@ end
 
 -- Find nearest target for silent aim with FOV and wall penetration check
 
+local function getRageHitboxSelection()
+    local opt = Options.RagebotHitbox
+    local value = opt and opt.Value
+    if type(value) == "table" then
+        return value
+    end
+    return CONSTANTS.RagebotDefaultHitboxes
+end
+
+local function isRageHitboxSelected(name)
+    local selected = getRageHitboxSelection()
+    if selected[name] == true then return true end
+    for _, v in pairs(selected) do
+        if v == name then return true end
+    end
+    return false
+end
+
+local function getRageTargetPart(character, head, rootPart)
+    if not character then return nil end
+
+    local aimPos = UserInputService:GetMouseLocation()
+    local cam = getCamera()
+    local bestPart, bestDist = nil, math.huge
+    local anySelected = false
+
+    for _, group in ipairs(CONSTANTS.RageHitboxPriority) do
+        if isRageHitboxSelected(group) then
+            anySelected = true
+            local names = CONSTANTS.AimHitboxFallbacks[group]
+            if names then
+                for i = 1, #names do
+                    local part = findCharacterPart(character, names[i])
+                    if part then
+                        if not cam then
+                            return part
+                        end
+                        local screenPos, onScreen = cam:WorldToViewportPoint(part.Position)
+                        if onScreen then
+                            local dist = (Vector2.new(screenPos.X, screenPos.Y) - aimPos).Magnitude
+                            if dist < bestDist then
+                                bestDist = dist
+                                bestPart = part
+                            end
+                        elseif not bestPart then
+                            bestPart = part
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    if bestPart then return bestPart end
+    return head or rootPart
+end
 
 local function getNearestSilentTarget()
     local camera = getCamera()
@@ -950,29 +1146,17 @@ local function getNearestSilentTarget()
     local fovValue = Options.RagebotFOV and Options.RagebotFOV.Value or 180
     local fovPixels = fovValue * (camera.ViewportSize.Y / camera.FieldOfView)
     local myTeam = LocalPlayer.Team
-    
-    local wallPenEnabled = Toggles.RagebotWallPenetration and Toggles.RagebotWallPenetration.Value
-    local maxWalls = wallPenEnabled and (Options.SilentAimMaxWalls and Options.SilentAimMaxWalls.Value or 3) or 0
-    local useVisibleCheck = Toggles.RagebotVisCheck and Toggles.RagebotVisCheck.Value
-    local useTeamCheck = Toggles.RagebotTeamCheck and Toggles.RagebotTeamCheck.Value
-    local selectedHitbox = Options.RagebotHitbox and Options.RagebotHitbox.Value or "Head"
 
-    local baimActive = false
-    if Toggles.RagebotBaim and Toggles.RagebotBaim.Value then
-        local baimKey = Options.RagebotBaimKeybind
-        if not baimKey or baimKey.Value == "None" or baimKey.Mode == "Always" then
-            baimActive = true
-        else
-            baimActive = isKeybindActive(baimKey)
-        end
-    end
+    local wallPenEnabled = Toggles.RagebotAutoPenetration and Toggles.RagebotAutoPenetration.Value
+    local maxWalls = wallPenEnabled and (Options.SilentAimMaxWalls and Options.SilentAimMaxWalls.Value or CONSTANTS.RagebotDefaultMaxWalls) or 0
+    local useTeamCheck = Toggles.RagebotTeamCheck and Toggles.RagebotTeamCheck.Value
 
     local nearestPart = nil
     local nearestDist = math.huge
 
     for _, player in ipairs(Players:GetPlayers()) do
         if player == LocalPlayer then continue end
-        
+
         if useTeamCheck then
             local theirTeam = player.Team
             local theirTeamColor = player.TeamColor
@@ -982,27 +1166,22 @@ local function getNearestSilentTarget()
 
         local character = player.Character
         if not character then continue end
-        
+
         local _, humanoid, rootPart = getCachedCharacterParts(player)
         local head = getCachedHead(player, character)
         if not humanoid or humanoid.Health <= 0 or not rootPart then continue end
 
         if character:FindFirstChildOfClass("ForceField") then continue end
 
-        -- Determine target part based on hitbox selection
-        local targetPart
-        if baimActive or selectedHitbox == "Body" then
-            targetPart = rootPart
-        else
-            targetPart = head or rootPart
-        end
-        
+        local targetPart = getRageTargetPart(character, head, rootPart)
         if not targetPart then continue end
 
         local screenPos, onScreen = camera:WorldToViewportPoint(targetPart.Position)
         if not onScreen then continue end
 
-        if useVisibleCheck and not isVisibleWithWalls(targetPart, maxWalls) then continue end
+        if wallPenEnabled then
+            if not isVisibleWithWalls(targetPart, maxWalls) then continue end
+        end
 
         local dist = (Vector2.new(screenPos.X, screenPos.Y) - aimPos).Magnitude
         if dist < nearestDist and dist <= fovPixels then
@@ -1661,6 +1840,7 @@ local function isAnyEspEnabled()
         or (Toggles.ESPWeapon and Toggles.ESPWeapon.Value)
         or (Toggles.ESPHealthBar and Toggles.ESPHealthBar.Value)
         or (Toggles.ESPChams and Toggles.ESPChams.Value)
+        or (Toggles.ESPOofArrows and Toggles.ESPOofArrows.Value)
 end
 
 
@@ -1679,13 +1859,15 @@ local function updateEspFrameCache()
         weapon = Toggles.ESPWeapon and Toggles.ESPWeapon.Value,
         healthBar = Toggles.ESPHealthBar and Toggles.ESPHealthBar.Value,
         healthBarOutline = Toggles.ESPHealthBarOutline and Toggles.ESPHealthBarOutline.Value,
-        chams = Toggles.ESPChams and Toggles.ESPChams.Value,
-        chamsOutline = Toggles.ESPChamsOutline and Toggles.ESPChamsOutline.Value,
+        chams = Toggles.ESPEnable and Toggles.ESPEnable.Value and Toggles.ESPChams and Toggles.ESPChams.Value,
+        oof = Toggles.ESPOofArrows and Toggles.ESPOofArrows.Value,
     }
 
     EspFrameCache.options = {
-        boxType = Options.ESPBoxType and Options.ESPBoxType.Value or "Full",
         font = getEspDrawingFont(),
+        fontSize = getEspFontSize(),
+        oofSize = (Options.ESPOofSize and Options.ESPOofSize.Value) or 12,
+        oofDistance = (Options.ESPOofDistance and Options.ESPOofDistance.Value) or 40,
     }
 
     EspFrameCache.colors = {
@@ -1694,8 +1876,9 @@ local function updateEspFrameCache()
         weapon = getOptionColor("ESPWeaponColor", Color3.fromRGB(255, 255, 255)),
         healthBar = getOptionColor("ESPHealthBarColor", Color3.fromRGB(0, 255, 0)),
         boxFill = getOptionColor("ESPBoxFillColor", Color3.fromRGB(255, 255, 255)),
-        chamsFill = getOptionColor("ESPChamsColor", Color3.fromRGB(255, 255, 255)),
-        chamsOutline = getOptionColor("ESPChamsOutlineColor", Color3.fromRGB(255, 255, 255)),
+        chamsVisible = getOptionColor("ESPChamsVisibleColor", Color3.fromRGB(0, 255, 120)),
+        chamsWall = getOptionColor("ESPChamsWallColor", Color3.fromRGB(255, 60, 60)),
+        oof = getOptionColor("ESPOofColor", Color3.fromRGB(255, 255, 255)),
     }
 
     local fillOpt = Options.ESPBoxFillColor
@@ -1704,14 +1887,52 @@ local function updateEspFrameCache()
         EspFrameCache.boxFillTransparency = math.clamp(1 - fillOpt.Transparency, 0, 1)
     end
 
-    EspFrameCache.chamsTransparency = getChamsTransparency()
+    EspFrameCache.chamsVisibleTransparency = getChamsTransparency("ESPChamsVisibleColor", 0.35)
+    EspFrameCache.chamsWallTransparency = getChamsTransparency("ESPChamsWallColor", 0.35)
 end
 
 
 -- forward declarations
-local updateRCS, updateRapidFire, updateFullAuto, restoreAllRapidFireRates, restoreAllFullAutoValues
+local updateRCS, updateRapidFire, updateFullAuto, restoreAllRapidFireRates, restoreAllFullAutoValues, updateInfAmmo
 local applyNoRecoil, applyNoSpread, applyInstaEquip, applyInstaReload, fireSingleShot
-local updateBhop, updateLegitBhop, updateThirdPerson, updateThirdPersonNoClip, updateNoclip, updateFly, updateAutoJump, updateAutoCrouch, updateSpeedHack
+local InfAmmoState = { table = nil, lastScan = 0, lastApply = 0 }
+local function findClientAmmoTable()
+    if InfAmmoState.table and type(InfAmmoState.table) == "table" and type(rawget(InfAmmoState.table, "ammocount")) == "number" then
+        return InfAmmoState.table
+    end
+    if not getgc then return nil end
+    for _, obj in ipairs(getgc(true)) do
+        if type(obj) == "table" then
+            local a1, a2, a3, a4 = rawget(obj, "ammocount"), rawget(obj, "ammocount2"), rawget(obj, "ammocount3"), rawget(obj, "ammocount4")
+            if type(a1) == "number" and type(a2) == "number" and type(a3) == "number" and type(a4) == "number"
+                and rawget(obj, "DISABLED") ~= nil and rawget(obj, "reloading") ~= nil then
+                InfAmmoState.table = obj
+                return obj
+            end
+        end
+    end
+    return nil
+end
+updateInfAmmo = function()
+    if not Toggles.ExploitInfAmmo or not Toggles.ExploitInfAmmo.Value then return end
+    local now = tick()
+    if now - InfAmmoState.lastApply < 0.05 then return end
+    InfAmmoState.lastApply = now
+    if not InfAmmoState.table or now - InfAmmoState.lastScan > 2 then
+        InfAmmoState.lastScan = now
+        findClientAmmoTable()
+    end
+    local t = InfAmmoState.table
+    if not t then return end
+    local v = 99999
+    t.ammocount, t.ammocount2, t.ammocount3, t.ammocount4 = v, v, v, v
+    if rawget(t, "primarystored") ~= nil then t.primarystored = v end
+    if rawget(t, "secondarystored") ~= nil then t.secondarystored = v end
+    if rawget(t, "equipmentstored") ~= nil then t.equipmentstored = v end
+    if rawget(t, "equipment2stored") ~= nil then t.equipment2stored = v end
+end
+
+local updateBhop, updateLegitBhop, updateThirdPerson, updateThirdPersonNoClip, updateNoclip, updateFly, updateAutoJump, updateAutoCrouch, updateSpeedHack, updateFakeDuck
 local updateNoScope, updateNoFlash, applyNoScope, setupNoSmoke
 local ensureCrosshair, updateCrosshair, unloadValenok
 local updateViewModelVisuals
@@ -2335,6 +2556,7 @@ end
 
 
 local _weapRemote
+
 local function getWeapRemote()
     if _weapRemote and _weapRemote.Parent then return _weapRemote end
     local events = ReplicatedStorage:FindFirstChild("Events")
@@ -2348,6 +2570,7 @@ local function fireWeapShot()
     local ok = pcall(function() weap:Fire() end)
     return ok
 end
+
 
 fireSingleShot = function()
     local character = LocalPlayer.Character
@@ -2748,12 +2971,13 @@ updateRapidFire = function()
     end
 
     local original = RapidFireState.SavedFireRates[weaponName]
-    local multiplier = CONSTANTS.RAPID_FIRE_MULTIPLIERS[weaponName] or 3
+    local multiplier = CONSTANTS.RAPID_FIRE_MULTIPLIERS[weaponName] or CONSTANTS.RAPID_FIRE_DEFAULT_MULTIPLIER or 2
     local targetValue = original / multiplier
     if fireRate.Value ~= targetValue then
         fireRate.Value = targetValue
     end
 end
+
 
 
 restoreAllFullAutoValues = function()
@@ -2835,6 +3059,76 @@ updateRCS = function()
         end
     end
 end
+
+
+-- KillAll remote
+local KillAllHitRemote
+for _, obj in pairs(ReplicatedStorage:GetDescendants()) do
+    if obj:IsA("RemoteEvent") and obj.Name:lower():find("hit") then
+        KillAllHitRemote = obj
+        break
+    end
+end
+
+local function updateKillAll()
+    local autoEnabled = Toggles.ExploitKillAll and Toggles.ExploitKillAll.Value
+    local keyActive = isKeybindActive(Options.ExploitKillAllKeybind)
+
+    if not autoEnabled or not keyActive then return end
+
+    local character = LocalPlayer.Character
+    if not character then return end
+    local _, humanoid = getCachedCharacterParts(LocalPlayer)
+    if not humanoid or humanoid.Health <= 0 then return end
+
+    local gun = character:FindFirstChild("Gun")
+    local equippedToolValue = getLocalEquippedTool()
+    if not gun or not equippedToolValue then return end
+
+    local gunName = "AWP"
+    local gunRef = gun
+    local replicatedStorageWeapons = getWeaponsFolder()
+    local awpFolder = replicatedStorageWeapons and replicatedStorageWeapons:FindFirstChild("AWP")
+    if awpFolder then gunRef = awpFolder end
+
+    local cam = getCamera()
+    if not cam then return end
+    local camPos = cam.CFrame.Position
+    local serverTime = Workspace:GetServerTimeNow()
+    local burstCount = 2
+    local nanBypass = true
+
+    for _, plr in pairs(Players:GetPlayers()) do
+        if plr == LocalPlayer then continue end
+
+        local myTeam = LocalPlayer.Team
+        local theirTeam = plr.Team
+        if myTeam ~= nil and theirTeam ~= nil and theirTeam == myTeam then continue end
+
+        local playerCharacter = plr.Character
+        if not playerCharacter then continue end
+
+        local head = getCachedHead(plr, playerCharacter)
+        local _, playerHumanoid = getCachedCharacterParts(plr)
+        if not head or not playerHumanoid or playerHumanoid.Health <= 0 then continue end
+
+        if not KillAllHitRemote then continue end
+
+        for burst = 1, burstCount do
+            pcall(function()
+                local posArg = nanBypass and {X = 0/0, Y = 0/0, Z = 0/0} or {X = head.Position.X, Y = head.Position.Y, Z = head.Position.Z}
+                KillAllHitRemote:FireServer(
+                    head, posArg, gunName, 4096, gunRef, nil, 1, false, true,
+                    camPos, serverTime, Vector3.new(0, 1, 0),
+                    true, true, true, true, true,
+                    nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
+                )
+            end)
+        end
+    end
+end
+
+
 
 
 -- movement
@@ -2985,6 +3279,62 @@ updateSpeedHack = function()
 end
 
 Shared.AutoCrouchState = { Conn = nil, WasInAir = false }
+Shared.FakeDuckState = { Conn = nil, Track = nil, Humanoid = nil }
+
+local function stopFakeDuck()
+    local track = Shared.FakeDuckState.Track
+    if track then
+        pcall(function() track:Stop() end)
+        Shared.FakeDuckState.Track = nil
+    end
+    Shared.FakeDuckState.Humanoid = nil
+end
+
+updateFakeDuck = function()
+    if Shared.FakeDuckState.Conn then
+        Shared.FakeDuckState.Conn:Disconnect()
+        Shared.FakeDuckState.Conn = nil
+    end
+    stopFakeDuck()
+    if not (Toggles.FakeDuckEnable and Toggles.FakeDuckEnable.Value) then return end
+
+    Shared.FakeDuckState.Conn = RunService.RenderStepped:Connect(function()
+        if not (Toggles.FakeDuckEnable and Toggles.FakeDuckEnable.Value) then
+            stopFakeDuck()
+            return
+        end
+
+        local active = isKeybindActive(Options.FakeDuckKeybind)
+        local _, hum = MoveUtil.getAliveMovementRig()
+        if not active or not hum then
+            stopFakeDuck()
+            return
+        end
+
+        if Shared.FakeDuckState.Track and Shared.FakeDuckState.Humanoid == hum then
+            if Shared.FakeDuckState.Track.IsPlaying == false then
+                pcall(function() Shared.FakeDuckState.Track:Play() end)
+            end
+            return
+        end
+
+        stopFakeDuck()
+
+        local pg = getPlayerGui()
+        local client = pg and pg:FindFirstChild("Client")
+        local idle = client and client:FindFirstChild("Idle")
+        if not idle or not idle:IsA("Animation") then return end
+
+        local ok, track = pcall(function()
+            return hum:LoadAnimation(idle)
+        end)
+        if ok and track then
+            Shared.FakeDuckState.Track = track
+            Shared.FakeDuckState.Humanoid = hum
+            pcall(function() track:Play() end)
+        end
+    end)
+end
 
 updateAutoCrouch = function()
     if Shared.AutoCrouchState.Conn then
@@ -3519,12 +3869,6 @@ end
 
 
 
-Shared.setCornerSeg = function(line, outline, fx, fy, tx, ty, color, visible)
-    line.From = Vector2.new(fx, fy); line.To = Vector2.new(tx, ty)
-    line.Color = color; line.Visible = visible
-    outline.From = line.From; outline.To = line.To; outline.Visible = visible
-end
-
 Shared.hideDrawingSet = function(drawingSet, resetRect)
     if not drawingSet then return end
 
@@ -3536,10 +3880,8 @@ Shared.hideDrawingSet = function(drawingSet, resetRect)
     drawingSet.HealthBarOutline.Visible = false
     drawingSet.HealthBarFill.Visible = false
     drawingSet.HealthText.Visible = false
-    for i = 1, 8 do
-        if drawingSet.CornerLines[i] then drawingSet.CornerLines[i].Visible = false end
-        if drawingSet.CornerOutlines and drawingSet.CornerOutlines[i] then drawingSet.CornerOutlines[i].Visible = false end
-    end
+    if drawingSet.OofArrow then drawingSet.OofArrow.Visible = false end
+    if drawingSet.OofArrowOutline then drawingSet.OofArrowOutline.Visible = false end
 
     if resetRect then
         drawingSet.Rect = nil
@@ -3570,8 +3912,8 @@ Shared.getDrawingSet = function(player)
     if drawingSet then return drawingSet end
 
     drawingSet = {
-        Box = createSquare(1, Color3.fromRGB(255, 255, 255)),
-        BoxOutline = createSquare(1, Color3.fromRGB(0, 0, 0)),
+        Box = createSquare(CONSTANTS.ESP_BOX_THICKNESS, Color3.fromRGB(255, 255, 255)),
+        BoxOutline = createSquare(CONSTANTS.ESP_BOX_OUTLINE_THICKNESS, Color3.fromRGB(0, 0, 0)),
         BoxFill = createSquare(1, Color3.fromRGB(255, 255, 255)),
         Name = createText(13),
         Weapon = createText(13),
@@ -3579,72 +3921,195 @@ Shared.getDrawingSet = function(player)
         HealthBarOutline = createSquare(1, Color3.fromRGB(0, 0, 0)),
         HealthBarFill = createSquare(3, Color3.fromRGB(0, 255, 0)),
         HealthText = createText(13),
-        CornerLines = {
-            createLine(1, Color3.fromRGB(255,255,255)), createLine(1, Color3.fromRGB(255,255,255)),
-            createLine(1, Color3.fromRGB(255,255,255)), createLine(1, Color3.fromRGB(255,255,255)),
-            createLine(1, Color3.fromRGB(255,255,255)), createLine(1, Color3.fromRGB(255,255,255)),
-            createLine(1, Color3.fromRGB(255,255,255)), createLine(1, Color3.fromRGB(255,255,255)),
-        },
-        CornerOutlines = {
-            createLine(1, Color3.fromRGB(0,0,0)), createLine(1, Color3.fromRGB(0,0,0)),
-            createLine(1, Color3.fromRGB(0,0,0)), createLine(1, Color3.fromRGB(0,0,0)),
-            createLine(1, Color3.fromRGB(0,0,0)), createLine(1, Color3.fromRGB(0,0,0)),
-            createLine(1, Color3.fromRGB(0,0,0)), createLine(1, Color3.fromRGB(0,0,0)),
-        },
+        OofArrow = createTriangle(true, 1, Color3.fromRGB(255, 255, 255)),
+        OofArrowOutline = createTriangle(false, 2, Color3.fromRGB(0, 0, 0)),
     }
     drawingSet.BoxFill.Filled = true
     drawingSet.BoxOutline.ZIndex = 1
     drawingSet.Box.ZIndex = 2
-
-    -- set ZIndex so color lines render on top of outlines
-    for i = 1, 8 do
-        if drawingSet.CornerOutlines[i] then drawingSet.CornerOutlines[i].ZIndex = 1 end
-        if drawingSet.CornerLines[i] then drawingSet.CornerLines[i].ZIndex = 2 end
-    end
 
     EspRuntime.Drawings[player] = drawingSet
     return drawingSet
 end
 
 
-Shared.updatePlayerChams = function(player, character)
-    if player == LocalPlayer or not character then
-        Shared.removeHighlight(player)
-        return
+local function clearPartChams(state)
+    if not state or not state.Parts then return end
+    for part, pair in pairs(state.Parts) do
+        if pair.inner then pcall(function() pair.inner:Destroy() end) end
+        if pair.outer then pcall(function() pair.outer:Destroy() end) end
+        state.Parts[part] = nil
     end
+end
 
-    local showChams = EspFrameCache.toggles.chams
-    if not showChams then
-        local highlight = EspRuntime.Highlights[player]
-        if highlight then highlight.Enabled = false end
-        return
+local function clearHighlightChams(player, state)
+    if state and state.Highlight then
+        pcall(function() state.Highlight:Destroy() end)
+        state.Highlight = nil
     end
-
-    local highlight = EspRuntime.Highlights[player]
-    if not highlight then
-        highlight = Instance.new("Highlight")
-        highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-        highlight.OutlineTransparency = 1
-        EspRuntime.Highlights[player] = highlight
+    local hl = EspRuntime.Highlights[player]
+    if hl then
+        pcall(function() hl:Destroy() end)
+        EspRuntime.Highlights[player] = nil
     end
+end
 
-    if highlight.Adornee ~= character then highlight.Adornee = character end
-    if highlight.Parent ~= character then highlight.Parent = character end
-
-    highlight.FillColor = EspFrameCache.colors.chamsFill
-    highlight.FillTransparency = EspFrameCache.chamsTransparency
-    if EspFrameCache.toggles.chamsOutline then
-        highlight.OutlineTransparency = 0
-        highlight.OutlineColor = EspFrameCache.colors.chamsOutline
+Shared.removePlayerChams = function(player)
+    local state = EspRuntime.Chams[player]
+    if state then
+        clearPartChams(state)
+        clearHighlightChams(player, state)
+        EspRuntime.Chams[player] = nil
     else
-        highlight.OutlineTransparency = 1
+        clearHighlightChams(player, nil)
     end
-    highlight.Enabled = true
+end
+
+local function createChamsPair(part)
+    local isHead = part.Name == "Head"
+    local inner, outer
+    if isHead then
+        inner = Instance.new("CylinderHandleAdornment")
+        outer = Instance.new("CylinderHandleAdornment")
+        inner.CFrame = CFrame.Angles(math.rad(90), 0, 0)
+        outer.CFrame = CFrame.Angles(math.rad(90), 0, 0)
+        inner.Radius = 0.54
+        outer.Radius = 0.62
+        inner.Height = 1.12
+        outer.Height = 1.3
+    else
+        inner = Instance.new("BoxHandleAdornment")
+        outer = Instance.new("BoxHandleAdornment")
+        inner.Size = part.Size + Vector3.new(0.02, 0.02, 0.02)
+        outer.Size = part.Size + Vector3.new(0.12, 0.12, 0.12)
+    end
+    inner.Name = "inner"
+    outer.Name = "outer"
+    inner.Adornee = part
+    outer.Adornee = part
+    inner.AlwaysOnTop = true
+    outer.AlwaysOnTop = false
+    inner.ZIndex = 5
+    outer.ZIndex = 1
+    inner.Parent = part
+    outer.Parent = part
+    return {inner = inner, outer = outer}
+end
+
+local function isChamsPairValid(pair, part)
+    return pair
+        and pair.inner and pair.inner.Parent == part
+        and pair.outer and pair.outer.Parent == part
+        and pair.inner.Adornee == part
+        and pair.outer.Adornee == part
+end
+
+local function updatePartChams(player, character, state)
+    clearHighlightChams(player, state)
+    if not state.Parts then state.Parts = {} end
+
+    local seen = {}
+    local visibleColor = EspFrameCache.colors.chamsVisible or Color3.fromRGB(0, 255, 120)
+    local wallColor = EspFrameCache.colors.chamsWall or Color3.fromRGB(255, 60, 60)
+    local visibleTransparency = EspFrameCache.chamsVisibleTransparency
+    local wallTransparency = EspFrameCache.chamsWallTransparency
+    if type(visibleTransparency) ~= "number" then visibleTransparency = 0.35 end
+    if type(wallTransparency) ~= "number" then wallTransparency = 0.35 end
+    visibleTransparency = math.clamp(visibleTransparency, 0, 1)
+    wallTransparency = math.clamp(wallTransparency, 0, 1)
+
+    for _, part in ipairs(character:GetChildren()) do
+        if part:IsA("BasePart")
+            and CONSTANTS.RealHitboxLookup[part.Name]
+            and part.Name ~= "HumanoidRootPart"
+            and part.Name ~= "HeadHB"
+            and part.Name ~= "FakeHead"
+        then
+            seen[part] = true
+            local pair = state.Parts[part]
+            if not isChamsPairValid(pair, part) then
+                if pair then
+                    if pair.inner then pcall(function() pair.inner:Destroy() end) end
+                    if pair.outer then pcall(function() pair.outer:Destroy() end) end
+                end
+                local existingInner = part:FindFirstChild("inner")
+                local existingOuter = part:FindFirstChild("outer")
+                if existingInner and existingOuter
+                    and existingInner:IsA("HandleAdornment")
+                    and existingOuter:IsA("HandleAdornment")
+                then
+                    pair = {inner = existingInner, outer = existingOuter}
+                    pair.inner.Adornee = part
+                    pair.outer.Adornee = part
+                else
+                    if existingInner then pcall(function() existingInner:Destroy() end) end
+                    if existingOuter then pcall(function() existingOuter:Destroy() end) end
+                    pair = createChamsPair(part)
+                end
+                state.Parts[part] = pair
+            end
+
+            if part.Name ~= "Head" then
+                pair.inner.Size = part.Size + Vector3.new(0.02, 0.02, 0.02)
+                pair.outer.Size = part.Size + Vector3.new(0.12, 0.12, 0.12)
+            end
+            pair.inner.Color3 = wallColor
+            pair.outer.Color3 = visibleColor
+            pair.inner.Transparency = wallTransparency
+            pair.outer.Transparency = visibleTransparency
+            pair.inner.AlwaysOnTop = true
+            pair.outer.AlwaysOnTop = false
+            pair.inner.Visible = true
+            pair.outer.Visible = true
+        end
+    end
+
+    for part, pair in pairs(state.Parts) do
+        if not seen[part] or not part.Parent then
+            if pair.inner then pcall(function() pair.inner:Destroy() end) end
+            if pair.outer then pcall(function() pair.outer:Destroy() end) end
+            state.Parts[part] = nil
+        end
+    end
+end
+
+Shared.updatePlayerChams = function(player, character)
+    if not player or player == LocalPlayer or not character or not character.Parent then
+        Shared.removePlayerChams(player)
+        return
+    end
+
+    local myTeam, theirTeam = LocalPlayer.Team, player.Team
+    local sameTeam = myTeam ~= nil and theirTeam ~= nil and myTeam == theirTeam
+    if not EspFrameCache.toggles.chams or (EspFrameCache.toggles.teamCheck and sameTeam) then
+        Shared.removePlayerChams(player)
+        return
+    end
+
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not rootPart then
+        Shared.removePlayerChams(player)
+        return
+    end
+
+    local state = EspRuntime.Chams[player]
+    if state and state.Character ~= character then
+        Shared.removePlayerChams(player)
+        state = nil
+    end
+    if not state then
+        state = {Character = character, Parts = {}, Highlight = nil}
+        EspRuntime.Chams[player] = state
+    end
+
+    updatePartChams(player, character, state)
 end
 
 
 Shared.updatePlayerEsp = function(player)
     if not player or not player.Parent then return end
+
+    Shared.updatePlayerChams(player, player.Character)
 
     if player == LocalPlayer then
         local drawingSet = EspRuntime.Drawings[player]
@@ -3655,8 +4120,7 @@ Shared.updatePlayerEsp = function(player)
     if not EspFrameCache.anyEnabled then
         local drawingSet = EspRuntime.Drawings[player]
         if drawingSet then Shared.hideDrawingSet(drawingSet, true) end
-        Shared.updatePlayerChams(player, nil)
-        return
+            return
     end
 
     local drawingSet = Shared.getDrawingSet(player)
@@ -3665,23 +4129,13 @@ Shared.updatePlayerEsp = function(player)
         local myTeam, theirTeam = LocalPlayer.Team, player.Team
         if myTeam ~= nil and theirTeam ~= nil and theirTeam == myTeam then
             Shared.hideDrawingSet(drawingSet, true)
-            Shared.updatePlayerChams(player, nil)
             return
         end
     end
 
     local character, humanoid, rootPart = getCachedCharacterParts(player)
-    if not character then
-        Shared.updatePlayerChams(player, nil)
+    if not character or not rootPart then
         Shared.hideDrawingSet(drawingSet, true)
-        return
-    end
-
-    local left, top, width, height = getCharacterScreenBox(character, humanoid, rootPart)
-    if not left then
-        Shared.hideDrawingSet(drawingSet, true)
-        local highlight = EspRuntime.Highlights[player]
-        if highlight then highlight.Enabled = false end
         return
     end
 
@@ -3690,6 +4144,56 @@ Shared.updatePlayerEsp = function(player)
         Shared.hideDrawingSet(drawingSet, true)
         return
     end
+
+    local left, top, width, height = getCharacterScreenBox(character, humanoid, rootPart)
+    local onScreen = left ~= nil
+
+    if not onScreen then
+        drawingSet.Box.Visible = false
+        drawingSet.BoxOutline.Visible = false
+        drawingSet.BoxFill.Visible = false
+        drawingSet.Name.Visible = false
+        drawingSet.Weapon.Visible = false
+        drawingSet.HealthBarOutline.Visible = false
+        drawingSet.HealthBarFill.Visible = false
+        drawingSet.HealthText.Visible = false
+
+        if EspFrameCache.toggles.oof and drawingSet.OofArrow and drawingSet.OofArrowOutline then
+            local camCf = camera.CFrame
+            local dir = camCf:PointToObjectSpace(rootPart.Position)
+            if dir.Z >= 0 then dir = Vector3.new(dir.X, dir.Y, 0.001) end
+            local angle = math.atan2(dir.Z, dir.X)
+            local cx, sy = math.cos(angle), math.sin(angle)
+            local cx1, sy1 = math.cos(angle + math.pi * 0.5), math.sin(angle + math.pi * 0.5)
+            local cx2, sy2 = math.cos(angle + math.pi * 1.5), math.sin(angle + math.pi * 1.5)
+            local viewport = camera.ViewportSize
+            local bigger = math.max(viewport.X, viewport.Y)
+            local smaller = math.min(viewport.X, viewport.Y)
+            local arrowSize = math.clamp(EspFrameCache.options.oofSize or 12, 4, 40)
+            local arrowPct = math.clamp(EspFrameCache.options.oofDistance or 40, 10, 100)
+            local arrowOrigin = viewport * 0.5 + Vector2.new(cx * bigger * arrowPct / 200, sy * smaller * arrowPct / 200)
+            local color = EspFrameCache.colors.oof or Color3.fromRGB(255, 255, 255)
+            drawingSet.OofArrow.PointA = arrowOrigin + Vector2.new(arrowSize * 2 * cx, arrowSize * 2 * sy)
+            drawingSet.OofArrow.PointB = arrowOrigin + Vector2.new(arrowSize * cx1, arrowSize * sy1)
+            drawingSet.OofArrow.PointC = arrowOrigin + Vector2.new(arrowSize * cx2, arrowSize * sy2)
+            drawingSet.OofArrow.Color = color
+            drawingSet.OofArrow.Filled = true
+            drawingSet.OofArrow.Visible = true
+            drawingSet.OofArrowOutline.PointA = drawingSet.OofArrow.PointA
+            drawingSet.OofArrowOutline.PointB = drawingSet.OofArrow.PointB
+            drawingSet.OofArrowOutline.PointC = drawingSet.OofArrow.PointC
+            drawingSet.OofArrowOutline.Color = Color3.new(color.R * 0.35, color.G * 0.35, color.B * 0.35)
+            drawingSet.OofArrowOutline.Filled = false
+            drawingSet.OofArrowOutline.Visible = true
+        else
+            if drawingSet.OofArrow then drawingSet.OofArrow.Visible = false end
+            if drawingSet.OofArrowOutline then drawingSet.OofArrowOutline.Visible = false end
+        end
+        return
+    end
+
+    if drawingSet.OofArrow then drawingSet.OofArrow.Visible = false end
+    if drawingSet.OofArrowOutline then drawingSet.OofArrowOutline.Visible = false end
 
     local rect = drawingSet.Rect
     if not rect then
@@ -3703,52 +4207,29 @@ Shared.updatePlayerEsp = function(player)
 
     local showBox = EspFrameCache.toggles.box
     local showName = EspFrameCache.toggles.name
-    local boxType = EspFrameCache.options.boxType
     local showBoxFill = EspFrameCache.toggles.boxFill
 
     local boxColor = EspFrameCache.colors.box
     local nameColor = EspFrameCache.colors.name
 
-    if boxType == "Corner" then
-        drawingSet.Box.Visible = false
-        drawingSet.BoxOutline.Visible = false
+    local boxPos = Vector2.new(left, top)
+    local boxSize = Vector2.new(width, height)
 
-        -- proportional corner length: 25% of min dimension, clamped 4-12px
-        -- this ensures corners never merge together regardless of distance
-        local cl = math.clamp(math.min(width, height) * 0.25, 4, 12)
-        local right, bot = left + width, top + height
-        local cl_, co_ = drawingSet.CornerLines, drawingSet.CornerOutlines
+    drawingSet.BoxOutline.Position = boxPos
+    drawingSet.BoxOutline.Size = boxSize
+    drawingSet.BoxOutline.Thickness = CONSTANTS.ESP_BOX_OUTLINE_THICKNESS
+    drawingSet.BoxOutline.Color = Color3.fromRGB(0, 0, 0)
+    drawingSet.BoxOutline.Visible = showBox
 
-        Shared.setCornerSeg(cl_[1], co_[1], left, top, left + cl, top, boxColor, showBox)   -- top-left horizontal
-        Shared.setCornerSeg(cl_[2], co_[2], left, top, left, top + cl, boxColor, showBox)   -- top-left vertical
-        Shared.setCornerSeg(cl_[3], co_[3], right, top, right - cl, top, boxColor, showBox) -- top-right horizontal
-        Shared.setCornerSeg(cl_[4], co_[4], right, top, right, top + cl, boxColor, showBox) -- top-right vertical
-        Shared.setCornerSeg(cl_[5], co_[5], left, bot, left + cl, bot, boxColor, showBox)   -- bottom-left horizontal
-        Shared.setCornerSeg(cl_[6], co_[6], left, bot, left, bot - cl, boxColor, showBox)   -- bottom-left vertical
-        Shared.setCornerSeg(cl_[7], co_[7], right, bot, right - cl, bot, boxColor, showBox) -- bottom-right horizontal
-        Shared.setCornerSeg(cl_[8], co_[8], right, bot, right, bot - cl, boxColor, showBox) -- bottom-right vertical
-    else
-        for i = 1, 8 do
-            drawingSet.CornerLines[i].Visible = false
-            drawingSet.CornerOutlines[i].Visible = false
-        end
-
-        local boxOT = CONSTANTS.ESP_BOX_OUTLINE_THICKNESS
-        drawingSet.BoxOutline.Position = Vector2.new(left - boxOT, top - boxOT)
-        drawingSet.BoxOutline.Size = Vector2.new(width + boxOT * 2, height + boxOT * 2)
-        drawingSet.BoxOutline.Thickness = boxOT
-        drawingSet.BoxOutline.Visible = showBox
-
-        drawingSet.Box.Position = Vector2.new(left, top)
-        drawingSet.Box.Size = Vector2.new(width, height)
-        drawingSet.Box.Color = boxColor
-        drawingSet.Box.Thickness = CONSTANTS.ESP_BOX_THICKNESS
-        drawingSet.Box.Visible = showBox
-    end
+    drawingSet.Box.Position = boxPos
+    drawingSet.Box.Size = boxSize
+    drawingSet.Box.Color = boxColor
+    drawingSet.Box.Thickness = CONSTANTS.ESP_BOX_THICKNESS
+    drawingSet.Box.Visible = showBox
 
     if showBoxFill then
-        drawingSet.BoxFill.Position = Vector2.new(left, top)
-        drawingSet.BoxFill.Size = Vector2.new(width, height)
+        drawingSet.BoxFill.Position = boxPos
+        drawingSet.BoxFill.Size = boxSize
         drawingSet.BoxFill.Color = EspFrameCache.colors.boxFill
         drawingSet.BoxFill.Transparency = EspFrameCache.boxFillTransparency
         drawingSet.BoxFill.Visible = true
@@ -3757,19 +4238,22 @@ Shared.updatePlayerEsp = function(player)
     end
 
     local espFont = EspFrameCache.options.font
+    local espFontSize = EspFrameCache.options.fontSize or 13
     drawingSet.Name.Text = player.Name
     drawingSet.Name.Position = Vector2.new(centerX, top - 15)
     drawingSet.Name.Color = nameColor
     drawingSet.Name.Font = espFont
+    drawingSet.Name.Size = espFontSize
     drawingSet.Name.Visible = showName
 
     local showWeapon = EspFrameCache.toggles.weapon
     local weaponColor = EspFrameCache.colors.weapon
     local weaponName = getCachedEquippedTool(player, character)
     drawingSet.Weapon.Text = weaponName
-    drawingSet.Weapon.Position = Vector2.new(centerX, bottom + 5)
+    drawingSet.Weapon.Position = Vector2.new(centerX, bottom + 3)
     drawingSet.Weapon.Color = weaponColor
     drawingSet.Weapon.Font = espFont
+    drawingSet.Weapon.Size = espFontSize
     drawingSet.Weapon.Visible = showWeapon and weaponName ~= ""
 
 
@@ -3802,6 +4286,8 @@ Shared.updatePlayerEsp = function(player)
             drawingSet.HealthText.Text = tostring(hp)
             drawingSet.HealthText.Position = Vector2.new(barX - 8, barY)
             drawingSet.HealthText.Color = Color3.fromRGB(255, 255, 255)
+            drawingSet.HealthText.Font = espFont
+            drawingSet.HealthText.Size = espFontSize
             drawingSet.HealthText.Visible = true
         else
             drawingSet.HealthText.Visible = false
@@ -3812,7 +4298,6 @@ Shared.updatePlayerEsp = function(player)
         drawingSet.HealthText.Visible = false
     end
 
-    Shared.updatePlayerChams(player, character)
 end
 
 
@@ -3845,10 +4330,11 @@ Shared.updateItemEsp = function()
                 text.Visible = false
                 text.Center = true
                 text.Outline = true
-                text.Size = 13
+                text.Size = getEspFontSize()
                 EspRuntime.ItemDrawings[item] = text
             end
             text.Font = getEspDrawingFont()
+            text.Size = getEspFontSize()
 
 
             local screenPos = camera:WorldToViewportPoint(item.Position)
@@ -3923,15 +4409,13 @@ Shared.updateFovCircle = function()
 
     local rageCircle = AimRuntime.RageFovCircle
     if rageCircle then
-        local show = Toggles.RagebotShowFOV and Toggles.RagebotShowFOV.Value
-            and Toggles.RagebotEnable and Toggles.RagebotEnable.Value
+        local show = Toggles.RagebotEnable and Toggles.RagebotEnable.Value
         if show then
             local fovValue = Options.RagebotFOV and Options.RagebotFOV.Value or 1
             local radius = fovValue * (viewport.Y / cam.FieldOfView)
-            local col = getOptionColor("RagebotFOVColor", Color3.fromRGB(255, 255, 255))
             rageCircle.Position = center
             rageCircle.Radius = math.min(radius, 100000)
-            rageCircle.Color = col
+            rageCircle.Color = CONSTANTS.RagebotFOVColor
             rageCircle.Visible = true
         else
             rageCircle.Visible = false
@@ -4220,7 +4704,8 @@ updateViewModelVisuals = function()
     local weaponChams = Toggles.VMWeaponChams and Toggles.VMWeaponChams.Value
     local armChams = Toggles.VMArmChams and Toggles.VMArmChams.Value
     local removeSleeves = Toggles.VMRemoveSleeves and Toggles.VMRemoveSleeves.Value
-    if not weaponChams and not armChams and not removeSleeves then
+    local removeGloves = Toggles.VMRemoveGloves and Toggles.VMRemoveGloves.Value
+    if not weaponChams and not armChams and not removeSleeves and not removeGloves then
         return
     end
 
@@ -4247,7 +4732,6 @@ updateViewModelVisuals = function()
         local name = child.Name
 
         if weaponChams and isWeaponViewPart(child) then
-            -- keep game silencer equip state: Transparency == 1 means unequipped
             local isSilencer = name == "Silencer2" or name == "Silencer" or name == "Suppressed"
             applyWeaponPartChams(child, weaponColor, weaponMatEnum, weaponTransparency, weaponReflectance, not isSilencer)
         end
@@ -4257,10 +4741,13 @@ updateViewModelVisuals = function()
         end
         if name == "Handle" then handle = child end
 
-        if (armChams or removeSleeves) and child:IsA("Model") then
+        if (armChams or removeSleeves or removeGloves) and child:IsA("Model") then
             for _, desc in ipairs(child:GetDescendants()) do
-                if removeSleeves and desc.Name == "Sleeve" and desc:GetAttribute("CW_Applied") == nil then
+                local dName = desc.Name
+                if removeSleeves and dName == "Sleeve" and desc:GetAttribute("CW_Applied") == nil then
                     desc:Destroy()
+                elseif removeGloves and (dName == "Glove" or dName == "RGlove" or dName == "LGlove" or string.find(string.lower(dName), "glove", 1, true)) then
+                    pcall(function() desc:Destroy() end)
                 elseif armChams then
                     if hasProperty(desc, "CastShadow") then desc.CastShadow = false end
                     if desc:IsA("SpecialMesh") then
@@ -4286,9 +4773,6 @@ end
 Shared.cleanupViewModelVisuals = function()
     Shared.VMState = {}
 end
-
-
-
 
 -- skybox changer
 Shared.SKYBOX_PRESETS = {
@@ -5287,28 +5771,30 @@ MovementSections.Bhop:AddToggle('BhopEnable', {Text = 'Enable', Default = false,
 MovementSections.Bhop:AddSlider('BhopMultiplier', {Text = 'Bhop multiplier', Default = 1, Min = 1, Max = 5, Rounding = 2})
 MovementSections.Misc:AddToggle('AutoJumpEnable', {Text = 'Auto jump', Default = false, Callback = function() updateAutoJump() end})
 MovementSections.Misc:AddToggle('AutoCrouchEnable', {Text = 'Auto crouch (on jump)', Default = false, Callback = function() updateAutoCrouch() end})
+MovementSections.Misc:AddToggle('FakeDuckEnable', {Text = 'Fake duck', Default = false, Callback = function() updateFakeDuck() end, KeyPicker = {Idx = 'FakeDuckKeybind', Default = 'V', Mode = 'Hold', Text = 'Fake duck'}})
 
 RageSections.Ragebot:AddToggle('RagebotEnable', {Text = 'Enable', Default = false, KeyPicker = {Idx = 'RagebotKeybind', Default = 'None', Mode = 'Hold', Text = 'Ragebot'}})
-RageSections.Ragebot:AddDropdown('RagebotMethod', {
-    Values = { 'Ray redirect', 'Hit part' },
-    Default = 'Ray redirect',
-    Text = 'Ragebot method',
+RageSections.Ragebot:AddToggle('RagebotAutoFire', {Text = 'Auto Fire', Default = false})
+RageSections.Ragebot:AddToggle('RagebotAutoScope', {Text = 'Auto Scope', Default = false})
+RageSections.Ragebot:AddToggle('RagebotTeamCheck', {Text = 'Team Check', Default = false})
+RageSections.Ragebot:AddToggle('RagebotHitPart', {
+    Text = 'Hit Part',
+    Default = false,
     Callback = function()
         if HitpartSilent.refreshMethod then HitpartSilent.refreshMethod() end
     end,
 })
-
-RageSections.Ragebot:AddToggle('RagebotAutoFire', {Text = 'Automatic fire', Default = false})
-
-RageSections.Ragebot:AddToggle('RagebotTeamCheck', {Text = 'Team check', Default = false})
-RageSections.Ragebot:AddToggle('RagebotVisCheck', {Text = 'Vis check', Default = false})
-RageSections.Ragebot:AddToggle('RagebotShowFOV', {Text = 'Show FOV', Default = false, ColorPicker = {Idx = 'RagebotFOVColor', Default = Color3.fromRGB(255, 255, 255), Title = 'FOV color'}})
+RageSections.Ragebot:AddToggle('RagebotAutoPenetration', {Text = 'Auto Penetration', Default = true})
+RageSections.Ragebot:AddDropdown('RagebotHitbox', {
+    Values = { 'Head', 'Body', 'Arms', 'Legs' },
+    Default = 1,
+    Multi = true,
+    Text = 'Hitbox',
+})
 RageSections.Ragebot:AddSlider('RagebotFOV', {Text = 'FOV', Default = 1, Min = 1, Max = 180, Rounding = 0})
-RageSections.Ragebot:AddDropdown('RagebotHitbox', {Values = { 'Head', 'Body', 'Nearest', 'All' }, Default = 'Head', Text = 'Hit box'})
-RageSections.Ragebot:AddToggle('RagebotBaim', {Text = 'Baim', Default = false, KeyPicker = {Idx = 'RagebotBaimKeybind', Default = 'None', Mode = 'Toggle', Text = 'Baim'}})
-RageSections.Ragebot:AddToggle('RagebotWallPenetration', {Text = 'Wall penetration', Default = true})
-RageSections.Ragebot:AddSlider('SilentAimMaxWalls', {Text = 'Max walls', Default = 3, Min = 1, Max = 15, Rounding = 0})
-RageSections.Ragebot:AddToggle('RagebotAutoScope', {Text = 'Auto scope', Default = false})
+RageSections.Ragebot:AddSlider('SilentAimMaxWalls', {Text = 'Max Walls', Default = 3, Min = 1, Max = 15, Rounding = 0})
+
+if HitpartSilent.refreshMethod then HitpartSilent.refreshMethod() end
 
 
 antiAimPitchTab:AddToggle('AntiAimPitchEnable', {Text = 'Enable', Default = false})
@@ -5376,21 +5862,41 @@ viewmodelTab:AddDropdown('VMArmMaterial', {Values = {'SmoothPlastic', 'Neon', 'F
 viewmodelTab:AddSlider('VMArmTransparency', {Text = 'Arm transparency', Default = 0, Min = 0, Max = 100, Rounding = 0, Suffix = '%', Callback = function() updateViewModelVisuals() end})
 
 viewmodelTab:AddToggle('VMRemoveSleeves', {Text = 'Remove sleeves', Default = false, Callback = function() updateViewModelVisuals() end})
+viewmodelTab:AddToggle('VMRemoveGloves', {Text = 'Remove gloves', Default = false, Callback = function() updateViewModelVisuals() end})
 
+RageSections.Exploit:AddToggle('ExploitKillAll', {Text = 'Kill all', Default = false, KeyPicker = {Idx = 'ExploitKillAllKeybind', Default = 'None', Mode = 'Hold', Text = 'Kill All'}})
 RageSections.Exploit:AddToggle('ExploitNoFallDamage', {Text = 'No fall damage', Default = false})
 RageSections.Exploit:AddToggle('ExploitNoFireDamage', {Text = 'No fire damage', Default = false})
+RageSections.Exploit:AddToggle('ExploitInfAmmo', {Text = 'Inf ammo', Default = false})
 espTab:AddToggle('ESPEnable', {Text = 'Enable', Default = false})
+
 espTab:AddToggle('ESPTeamCheck', {Text = 'Team check', Default = false})
 espTab:AddToggle('ESPBox', {Text = 'Box', Default = false, ColorPicker = {Idx = 'ESPBoxColor', Default = Color3.fromRGB(255, 255, 255), Title = 'Box color'}})
-espTab:AddDropdown('ESPBoxType', {Values = {'Full', 'Corner'}, Default = 'Full', Text = 'Box type'})
 espTab:AddToggle('ESPBoxFill', {Text = 'Box fill', Default = false, ColorPicker = {Idx = 'ESPBoxFillColor', Default = Color3.fromRGB(255, 255, 255), Transparency = 0.5, Title = 'Box fill color'}})
 espTab:AddToggle('ESPName', {Text = 'Name', Default = false, ColorPicker = {Idx = 'ESPNameColor', Default = Color3.fromRGB(255, 255, 255), Title = 'Name color'}})
 espTab:AddToggle('ESPHealthBar', {Text = 'Health bar', Default = false, ColorPicker = {Idx = 'ESPHealthBarColor', Default = Color3.fromRGB(0, 255, 0), Title = 'Health bar color'}})
 espTab:AddToggle('ESPHealthBarOutline', {Text = 'Health bar outline', Default = true})
 espTab:AddToggle('ESPWeapon', {Text = 'Weapon ESP', Default = false, ColorPicker = {Idx = 'ESPWeaponColor', Default = Color3.fromRGB(255, 255, 255), Title = 'Weapon color'}})
-espTab:AddToggle('ESPChams', {Text = 'Chams', Default = false, ColorPicker = {Idx = 'ESPChamsColor', Default = Color3.fromRGB(255, 255, 255), Title = 'Chams color'}})
-espTab:AddToggle('ESPChamsOutline', {Text = 'Chams outline', Default = false, ColorPicker = {Idx = 'ESPChamsOutlineColor', Default = Color3.fromRGB(255, 255, 255), Title = 'Chams outline color'}})
-espTab:AddSlider('ESPChamsTransparency', {Text = 'Chams transparency', Default = 35, Min = 0, Max = 100, Rounding = 0})
+do
+    local chamsToggle = espTab:AddToggle('ESPChams', {
+        Text = 'Chams',
+        Default = false,
+        ColorPicker = {
+            Idx = 'ESPChamsVisibleColor',
+            Default = Color3.fromRGB(0, 255, 120),
+            Title = 'Visible',
+            Transparency = 0.35,
+        },
+    })
+    chamsToggle:AddColorPicker('ESPChamsWallColor', {
+        Default = Color3.fromRGB(255, 60, 60),
+        Title = 'Wall',
+        Transparency = 0.35,
+    })
+end
+espTab:AddToggle('ESPOofArrows', {Text = 'OOF arrows', Default = false, ColorPicker = {Idx = 'ESPOofColor', Default = Color3.fromRGB(255, 255, 255), Title = 'OOF color'}})
+espTab:AddSlider('ESPOofSize', {Text = 'OOF size', Default = 12, Min = 4, Max = 30, Rounding = 0})
+espTab:AddSlider('ESPOofDistance', {Text = 'OOF distance', Default = 40, Min = 10, Max = 100, Rounding = 0, Suffix = '%'})
 espTab:AddToggle('ESPItemESP', {Text = 'Item ESP', Default = false, ColorPicker = {Idx = 'ESPItemColor', Default = Color3.fromRGB(255, 255, 255), Title = 'Item color'}})
 
 fontsTab:AddDropdown('ESPFont', {
@@ -5398,6 +5904,7 @@ fontsTab:AddDropdown('ESPFont', {
     Values = { 'UI', 'System', 'Plex', 'Monospace' },
     Default = 'Plex',
 })
+fontsTab:AddSlider('ESPFontSize', {Text = 'Font size', Default = 13, Min = 1, Max = 30, Rounding = 0})
 
 VisualSections.Menu:AddToggle('MenuBindList', {Text = 'Bind list', Default = true, Callback = function(Value) if Library.KeybindFrame then Library.KeybindFrame.Visible = Value end end})
 
@@ -5455,16 +5962,282 @@ SaveManager:SetIgnoreIndexes({ 'SkinKnifeSkin', 'SkinWeaponSkin', 'SkinGloveSkin
 ThemeManager:SetFolder('Valenok')
 SaveManager:SetFolder('Valenok')
 
+local MENU_FONT_MAP = {
+    Code = Enum.Font.Code,
+    Ubuntu = Enum.Font.Ubuntu,
+    Gotham = Enum.Font.Gotham,
+    GothamMedium = Enum.Font.GothamMedium,
+    GothamBold = Enum.Font.GothamBold,
+    SourceSans = Enum.Font.SourceSans,
+    SourceSansBold = Enum.Font.SourceSansBold,
+    Roboto = Enum.Font.Roboto,
+    RobotoMono = Enum.Font.RobotoMono,
+    Arcade = Enum.Font.Arcade,
+    Legacy = Enum.Font.Legacy,
+}
+
+local MenuFontPreviewLabels = {}
+
+local function styleMenuFontPreviewLabel(inst)
+    if not inst or not inst.Parent then return end
+    if not (inst:IsA("TextLabel") or inst:IsA("TextButton")) then return end
+    local mapped = MENU_FONT_MAP[inst.Text]
+    if not mapped then return end
+    pcall(function()
+        inst.Font = mapped
+    end)
+    MenuFontPreviewLabels[inst] = mapped
+end
+
+local function refreshMenuFontPreviews()
+    for inst in pairs(MenuFontPreviewLabels) do
+        if not inst or not inst.Parent then
+            MenuFontPreviewLabels[inst] = nil
+        end
+    end
+
+    if Library and Library.ScreenGui then
+        for _, inst in ipairs(Library.ScreenGui:GetDescendants()) do
+            styleMenuFontPreviewLabel(inst)
+        end
+    end
+
+    for inst, mapped in pairs(MenuFontPreviewLabels) do
+        if inst and inst.Parent then
+            pcall(function()
+                inst.Font = mapped
+            end)
+        end
+    end
+end
+
+local function applyMenuFont(fontName)
+    if not Library then return end
+    local font = MENU_FONT_MAP[fontName] or Enum.Font.Code
+    Library.Font = font
+
+    local function applyTo(inst)
+        if not inst then return end
+        if MenuFontPreviewLabels[inst] then return end
+        if inst:IsA("TextLabel") or inst:IsA("TextButton") or inst:IsA("TextBox") then
+            -- keep font-name option labels as their own preview font
+            if MENU_FONT_MAP[inst.Text] then
+                styleMenuFontPreviewLabel(inst)
+                return
+            end
+            pcall(function() inst.Font = font end)
+        end
+    end
+
+    if Library.ScreenGui then
+        for _, inst in ipairs(Library.ScreenGui:GetDescendants()) do
+            applyTo(inst)
+        end
+    end
+
+    if type(Library.Registry) == "table" then
+        for _, data in pairs(Library.Registry) do
+            if type(data) == "table" then
+                applyTo(data.Instance)
+            end
+        end
+    end
+
+    if type(Library.HudRegistry) == "table" then
+        for _, data in pairs(Library.HudRegistry) do
+            if type(data) == "table" then
+                applyTo(data.Instance)
+            end
+        end
+    end
+
+    refreshMenuFontPreviews()
+end
+
 do
     local ConfigSection = Tabs.Config:AddLeftGroupbox('Menu')
     ConfigSection:AddButton('Unload', function()
         if unloadValenok then unloadValenok() end
     end)
     ConfigSection:AddLabel('Menu bind'):AddKeyPicker('MenuKeybind', { Default = 'End', NoUI = true, Text = 'Menu' })
+    ConfigSection:AddDropdown('MenuFont', {
+        Text = 'Menu font',
+        Values = {
+            'Code', 'Ubuntu', 'Gotham', 'GothamMedium', 'GothamBold',
+            'SourceSans', 'SourceSansBold', 'Roboto', 'RobotoMono', 'Arcade', 'Legacy',
+        },
+        Default = 'Code',
+        Callback = function(value)
+            applyMenuFont(value)
+        end,
+    })
+
+    local menuFontOpt = Options.MenuFont
+    if menuFontOpt then
+        if type(menuFontOpt.SetValues) == "function" then
+            local origSetValues = menuFontOpt.SetValues
+            menuFontOpt.SetValues = function(self, ...)
+                local result = origSetValues(self, ...)
+                task.defer(refreshMenuFontPreviews)
+                return result
+            end
+        end
+        if type(menuFontOpt.OpenDropdown) == "function" then
+            local origOpen = menuFontOpt.OpenDropdown
+            menuFontOpt.OpenDropdown = function(self, ...)
+                local result = origOpen(self, ...)
+                task.defer(refreshMenuFontPreviews)
+                return result
+            end
+        end
+        if type(menuFontOpt.Display) == "function" then
+            local origDisplay = menuFontOpt.Display
+            menuFontOpt.Display = function(self, ...)
+                local result = origDisplay(self, ...)
+                task.defer(refreshMenuFontPreviews)
+                return result
+            end
+        end
+    end
+
+    if Library.ScreenGui then
+        Library:GiveSignal(Library.ScreenGui.DescendantAdded:Connect(function(inst)
+            task.defer(function()
+                styleMenuFontPreviewLabel(inst)
+            end)
+        end))
+    end
 end
 
 Library.ToggleKeybind = Options.MenuKeybind
 Library.KeybindFrame.Visible = true
+applyMenuFont(Options.MenuFont and Options.MenuFont.Value or 'Code')
+task.defer(refreshMenuFontPreviews)
+
+-- When menu is open: capture mouse so game/camera don't receive clicks.
+do
+    local MenuInputLock = {
+        active = false,
+        modal = nil,
+        savedMouseBehavior = nil,
+        savedIconEnabled = nil,
+    }
+
+    local function ensureMenuModal()
+        if MenuInputLock.modal and MenuInputLock.modal.Parent then
+            return MenuInputLock.modal
+        end
+        local parent = Library.ScreenGui
+        if not parent then return nil end
+
+        local modal = Instance.new("TextButton")
+        modal.Name = "ValenokMenuModal"
+        modal.BackgroundTransparency = 1
+        modal.BorderSizePixel = 0
+        modal.Text = ""
+        modal.AutoButtonColor = false
+        modal.Size = UDim2.fromScale(1, 1)
+        modal.Position = UDim2.fromScale(0, 0)
+        modal.ZIndex = 0
+        modal.Modal = false
+        modal.Active = true
+        modal.Selectable = false
+        modal.Visible = false
+        modal.Parent = parent
+        MenuInputLock.modal = modal
+        return modal
+    end
+
+    local function setMenuInputLock(open)
+        open = open == true
+        if MenuInputLock.active == open then
+            -- still re-assert mouse state while open
+            if open then
+                pcall(function()
+                    UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+                    UserInputService.MouseIconEnabled = true
+                end)
+            end
+            return
+        end
+        MenuInputLock.active = open
+
+        local modal = ensureMenuModal()
+        if modal then
+            modal.Visible = open
+            modal.Modal = open
+            -- keep under menu frames so UI stays clickable
+            modal.ZIndex = 0
+        end
+
+        if open then
+            MenuInputLock.savedMouseBehavior = UserInputService.MouseBehavior
+            MenuInputLock.savedIconEnabled = UserInputService.MouseIconEnabled
+            pcall(function()
+                UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+                UserInputService.MouseIconEnabled = true
+            end)
+        else
+            pcall(function()
+                if MenuInputLock.savedMouseBehavior ~= nil then
+                    UserInputService.MouseBehavior = MenuInputLock.savedMouseBehavior
+                end
+                if MenuInputLock.savedIconEnabled ~= nil then
+                    UserInputService.MouseIconEnabled = MenuInputLock.savedIconEnabled
+                end
+            end)
+            MenuInputLock.savedMouseBehavior = nil
+            MenuInputLock.savedIconEnabled = nil
+        end
+    end
+
+    local function isMenuOpen()
+        return Library and Library.IsMenuVisible and Library:IsMenuVisible()
+    end
+
+    -- wrap Library.Toggle so lock updates immediately
+    if type(Library.Toggle) == "function" then
+        local origToggle = Library.Toggle
+        Library.Toggle = function(...)
+            local results = table.pack(origToggle(...))
+            task.defer(function()
+                setMenuInputLock(isMenuOpen())
+            end)
+            return table.unpack(results, 1, results.n)
+        end
+    end
+
+    -- keep lock in sync (config load / external toggles)
+    EspRuntime.Connections.MenuInputLock = RunService.RenderStepped:Connect(function()
+        local open = isMenuOpen()
+        setMenuInputLock(open)
+        if open then
+            -- hard-lock camera mouse every frame while menu is open
+            pcall(function()
+                if UserInputService.MouseBehavior ~= Enum.MouseBehavior.Default then
+                    UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+                end
+                if not UserInputService.MouseIconEnabled then
+                    UserInputService.MouseIconEnabled = true
+                end
+            end)
+        end
+    end)
+
+    -- sink mouse buttons from game-side when menu is open (menu UI still works via Gui)
+    EspRuntime.Connections.MenuInputSink = UserInputService.InputBegan:Connect(function(input, gameProcessed)
+        if not isMenuOpen() then return end
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.MouseButton2
+            or input.UserInputType == Enum.UserInputType.MouseButton3 then
+            -- no-op sink marker for other systems; gameProcessed may already be true via Modal
+            return
+        end
+    end)
+
+    setMenuInputLock(isMenuOpen())
+end
+
 
 SaveManager:BuildConfigSection(Tabs.Config)
 ThemeManager:ApplyToTab(Tabs.Config)
@@ -5740,6 +6513,12 @@ local function applySilentHitParl(args)
     local hitPos = tgt.CFrame and tgt.CFrame.Position or tgt.Position
     args[1] = tgt
     args[2] = encodeHitPos(hitPos)
+    if type(args[4]) ~= "number" or args[4] <= 0 then
+        args[4] = 4096
+    end
+    if Toggles.RagebotAutoPenetration and Toggles.RagebotAutoPenetration.Value then
+        args[9] = true -- wallbang
+    end
     if typeof(args[10]) == "Vector3" and typeof(args[12]) == "Vector3" then
         local dir = hitPos - args[10]
         if dir.Magnitude > 0.001 then
@@ -5843,7 +6622,18 @@ pcall(function()
             if name == "ohnoflames" and Toggles.ExploitNoFireDamage and Toggles.ExploitNoFireDamage.Value then
                 return
             end
+            -- AC report drops: ammo kick (3), no-recoil Boogers (4), executor error HaIIoooo (5)
+            if name == "Boogers" or name == "HaIIoooooooooooo" or name == "Rem3" or name == "ewrtsjkwrslk" then
+                return
+            end
+            if name == "ParticleRemote" then
+                local a1 = ...
+                if type(a1) == "table" and a1[1] == "kick" then
+                    return
+                end
+            end
             if name == "ControlTurn" then
+
                 if Toggles.AntiAimPitchEnable and Toggles.AntiAimPitchEnable.Value then
                     local pitchMode = Options.AntiAimPitchMode and Options.AntiAimPitchMode.Value or "None"
                     if pitchMode ~= "None" then
@@ -6167,12 +6957,13 @@ unloadValenok = function()
     end
     EspRuntime.ItemDrawings = {}
 
-    for Player, Highlight in pairs(EspRuntime.Highlights) do
-        pcall(function() Highlight:Destroy() end)
-        EspRuntime.Highlights[Player] = nil
-    end
-
     clearHitChamsFolder()
+    for player in pairs(EspRuntime.Chams) do
+        Shared.removePlayerChams(player)
+    end
+    for player in pairs(EspRuntime.Highlights) do
+        Shared.removeHighlight(player)
+    end
     table.clear(EspPlayerCache)
     if Shared.NoclipState then
         Shared.NoclipState.Saved = {}
@@ -6419,6 +7210,18 @@ unloadValenok = function()
     end
     pcall(function() VirtualInputManager:SendKeyEvent(false, MoveUtil.MOVE_KEY_CTRL, false, game) end)
 
+    if Shared.FakeDuckState then
+        if Shared.FakeDuckState.Conn then
+            Shared.FakeDuckState.Conn:Disconnect()
+            Shared.FakeDuckState.Conn = nil
+        end
+        if Shared.FakeDuckState.Track then
+            pcall(function() Shared.FakeDuckState.Track:Stop() end)
+            Shared.FakeDuckState.Track = nil
+        end
+        Shared.FakeDuckState.Humanoid = nil
+    end
+
     if Shared.BhopState and Shared.BhopState.Conn then
         Shared.BhopState.Conn:Disconnect()
         Shared.BhopState.Conn = nil
@@ -6486,9 +7289,8 @@ EspRuntime.Connections.WeaponCharAdded = LocalPlayer.CharacterAdded:Connect(setu
 EspRuntime.Connections.PlayerRemoving = Players.PlayerRemoving:Connect(function(player)
     pcall(function()
         Shared.removeDrawingSet(player)
-        Shared.removeHighlight(player)
+        Shared.removePlayerChams(player)
         EspRuntime.Drawings[player] = nil
-        EspRuntime.Highlights[player] = nil
         invalidateEspPlayerCache(player)
     end)
 end)
@@ -6562,8 +7364,9 @@ local function updateRagebot()
             local rate = HitpartSilent.getFireRate and HitpartSilent.getFireRate() or 0.1
             if fireNow - HitpartSilent.lastFire >= rate then
                 HitpartSilent.lastFire = fireNow
+                local hitpartMode = HitpartSilent.isHitpartMethod and HitpartSilent.isHitpartMethod()
                 fireWeapShot()
-                if HitpartSilent.isHitpartMethod and HitpartSilent.isHitpartMethod() then
+                if hitpartMode then
                     HitpartSilent.fire(silentTarget)
                 end
             end
@@ -6649,9 +7452,11 @@ EspRuntime.Connections.RenderStepped = RunService.RenderStepped:Connect(function
         local vmAnyEnabled = (Toggles.VMWeaponChams and Toggles.VMWeaponChams.Value)
             or (Toggles.VMArmChams and Toggles.VMArmChams.Value)
             or (Toggles.VMRemoveSleeves and Toggles.VMRemoveSleeves.Value)
+            or (Toggles.VMRemoveGloves and Toggles.VMRemoveGloves.Value)
         if vmAnyEnabled then
             updateViewModelVisuals()
         end
+
 
         if now - LoopState.miscUpdate >= 2 then
             LoopState.miscUpdate = now
@@ -6810,6 +7615,19 @@ end)
         end
     end)
 end)()
+
+
+-- kill all heartbeat
+local _killAllLastRun = 0
+EspRuntime.Connections.KillAllHeartbeat = RunService.Heartbeat:Connect(function()
+    pcall(function()
+        local now = tick()
+        if now - _killAllLastRun < 0.1 then return end
+        _killAllLastRun = now
+        updateKillAll()
+        updateInfAmmo()
+    end)
+end)
 
 
 print("Valenok")
@@ -7006,5 +7824,6 @@ end)()
     if Library.KeybindFrame then
         Library:GiveSignal(Library.KeybindFrame:GetPropertyChangedSignal('Position'):Connect(saveUiPositions))
     end
+end)()  Library:GiveSignal(Library.KeybindFrame:GetPropertyChangedSignal('Position'):Connect(saveUiPositions))
+    end
 end)()
-
