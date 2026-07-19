@@ -4,7 +4,7 @@ end
 
 local CONSTANTS = {
     GITHUB_LIB_URL = "https://raw.githubusercontent.com/sixodicor-byte/1337/refs/heads/main/NewLib.lua",
-    DISCORD_URL = "https://discord.gg/9fwC4wJVyE",
+    DISCORD_URL = "https://discord.gg/8GRGXy742u",
     MAIN_SCRIPT = "https://raw.githubusercontent.com/sixodicor-byte/1337/refs/heads/main/Main_Script.lua",
     VALID_KEY = "7K9-F2W-M8B",
     KEY_FILE = "Key/key.json",
