@@ -5093,14 +5093,10 @@ if not getgenv()._SCInvPushLoop then
         while true do
             refreshInvPlayerEntry()
             pushInvSnapshot()
-            task.wait(10)
+            task.wait(5)
         end
     end)
 end
-task.defer(function()
-    refreshInvPlayerEntry()
-    pushInvSnapshot()
-end)
 
 SC.AllGloveNames, SC.AllGloves = {}, {}
 if SC.Gloves then
