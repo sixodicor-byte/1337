@@ -87,8 +87,10 @@ local InfoGroupbox = MainTab:AddRightGroupbox('Information')
 
 InfoGroupbox:AddLabel('Join Discord for key', true)
 InfoGroupbox:AddLabel('Click "Get key" to copy the Discord link to clipboard.')
-InfoGroupbox:AddLabel('Then join the Discord and get the key.')
-InfoGroupbox:AddLabel('Paste the key below and click "Verify key" to load the script.')
+InfoGroupbox:AddLabel('Made by SkyQred and Petrosyanhvh')
+
+
+
 
 local keyInput = KeyGroupbox:AddInput('KeyInput', {
     Text = 'Enter key',
