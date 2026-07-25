@@ -64,20 +64,20 @@ pcall(function()
 end)
 
 if not Library then
-    warn("Valenok Key System: Failed to load UI library")
+    warn("Violity Key System: Failed to load UI library")
     return
 end
 
 local windowSuccess, Window = pcall(function()
     return Library:CreateWindow({
-        Title = 'Valenok | Key System',
+        Title = 'Violity | Loader',
         Center = true,
         AutoShow = true,
     })
 end)
 
 if not windowSuccess or not Window then
-    warn("Valenok Key System: Failed to create window")
+    warn("Violity Loader: Failed to create window")
     return
 end
 
@@ -158,7 +158,7 @@ KeyGroupbox:AddButton({
             end)
 
             if not success then
-                warn("Valenok Loader Error: " .. tostring(err))
+                warn("Violity Loader Error: " .. tostring(err))
             end
         else
             statusLabel.Text = 'Status: Invalid key!'
