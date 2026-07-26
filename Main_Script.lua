@@ -132,7 +132,6 @@ local EspRuntime = {
 }
 
 local EspFrameCache = {
-    tick = 0,
     anyEnabled = false,
     toggles = {},
     options = {},
@@ -1019,6 +1018,37 @@ function CombatScan.tryForwardTrackHit(head, rootPart, origin, character, maxWal
     return nil, math.huge
 end
 
+-- Head -> Body -> Arms -> Legs among selected; first hittable group wins
+function CombatScan.pickRageHitbox(character, origin, maxWalls, useMulti, camLook)
+    if not character or not origin then return nil, nil, math.huge end
+    local selected = CombatScan.rageHitboxes()
+    for _, group in ipairs(CONSTANTS.RageHitboxPriority) do
+        if not CombatScan.rageHitboxOn(group, selected) then continue end
+        local names = CONSTANTS.AimHitboxFallbacks[group]
+        if not names then continue end
+
+        local bestPart, bestPoint, bestWalls, bestAng = nil, nil, math.huge, math.huge
+        for i = 1, #names do
+            local part = findCharacterPart(character, names[i])
+            if not part then continue end
+            local point, walls = CombatScan.findPoint(part, origin, maxWalls, useMulti)
+            if not point or walls > maxWalls then continue end
+            local delta = point - origin
+            local mag = delta.Magnitude
+            local ang = (camLook and mag > 1e-4)
+                and math.acos(math.clamp(camLook:Dot(delta / mag), -1, 1))
+                or mag
+            if walls < bestWalls or (walls == bestWalls and ang < bestAng) then
+                bestPart, bestPoint, bestWalls, bestAng = part, point, walls, ang
+            end
+        end
+        if bestPart then
+            return bestPart, bestPoint, bestWalls
+        end
+    end
+    return nil, nil, math.huge
+end
+
 function CombatScan.rageWanted()
     if not (Toggles.RagebotEnable and Toggles.RagebotEnable.Value) then return false end
     local rageKey = Options.RagebotKeybind
@@ -1130,7 +1160,7 @@ function CombatScan.refresh(stamp)
     local camLook = cam.CFrame.LookVector
     local nearestPlayer, nearestAng = nil, math.huge
     CombatScan.multiFrame = CombatScan.multiFrame + 1
-    local allowMultiRay = (CombatScan.multiFrame % 3) == 0
+    local allowMultiRay = (CombatScan.multiFrame % 2) == 0
     local multiEnabled = allowMultiRay and (
         (needRage and Toggles.RagebotMultiPoint and Toggles.RagebotMultiPoint.Value)
         or (needAim and Toggles.AimbotMultiPoint and Toggles.AimbotMultiPoint.Value)
@@ -1178,22 +1208,30 @@ function CombatScan.refresh(stamp)
         local parts = CombatScan.collectParts(character, head, rootPart, enemyRage, enemyAim, enemyTrig)
         if #parts == 0 then continue end
 
-        local primaryPart, primaryDist = parts[1], math.huge
-        for i = 1, #parts do
-            local part = parts[i]
-            local delta = part.Position - origin
-            local mag = delta.Magnitude
-            local angDist = mag > 1e-4 and math.acos(math.clamp(camLook:Dot(delta / mag), -1, 1)) or math.huge
-            if angDist < primaryDist then
-                primaryDist = angDist
-                primaryPart = part
-            end
+        local primaryPart, bestPoint, bestWalls = nil, nil, math.huge
+
+        if enemyRage then
+            primaryPart, bestPoint, bestWalls = CombatScan.pickRageHitbox(character, origin, maxWalls, useMulti, camLook)
         end
 
-        local bestPoint, bestWalls = CombatScan.findPoint(primaryPart, origin, maxWalls, useMulti)
-        if not bestPoint then
-            bestPoint = primaryPart.Position
-            bestWalls = math.huge
+        if not primaryPart then
+            local primaryDist = math.huge
+            primaryPart = parts[1]
+            for i = 1, #parts do
+                local part = parts[i]
+                local delta = part.Position - origin
+                local mag = delta.Magnitude
+                local angDist = mag > 1e-4 and math.acos(math.clamp(camLook:Dot(delta / mag), -1, 1)) or math.huge
+                if angDist < primaryDist then
+                    primaryDist = angDist
+                    primaryPart = part
+                end
+            end
+            bestPoint, bestWalls = CombatScan.findPoint(primaryPart, origin, maxWalls, useMulti)
+            if not bestPoint then
+                bestPoint = primaryPart.Position
+                bestWalls = math.huge
+            end
         end
 
         local canHit = bestWalls <= maxWalls
@@ -1202,6 +1240,7 @@ function CombatScan.refresh(stamp)
             if ftPoint then
                 bestPoint = ftPoint
                 bestWalls = ftWalls
+                primaryPart = head or primaryPart
                 canHit = true
             end
         end
@@ -1817,11 +1856,9 @@ local _hitSoundObj, PlayHitMarker
 local HitMarkerState = {
     OutlineLines = {},
     FillLines = {},
-    Gen = 0,
     Created = false,
     Fading = false,
     HoldUntil = 0,
-    FadeStart = 0,
     FadeDuration = 0.3,
     HeartbeatConn = nil,
 }
@@ -1833,6 +1870,8 @@ local BulletTracerState = {
     Size = 20,
     Lifetime = 0.4,
 }
+local TRACER_MUZZLES = {"FlashS", "2Flash", "Flash"}
+local HIT_MARKER_DIRECTIONS = {{-1, -1}, {1, -1}, {-1, 1}, {1, 1}}
 
 local function ensureBulletTracerFolder()
     local f = BulletTracerState.Folder
@@ -1860,7 +1899,7 @@ local function getTracerMuzzlePosition(fallback)
     if not cam then return fallback end
     local arms = cam:FindFirstChild("Arms")
     if arms then
-        for _, n in ipairs({"FlashS", "2Flash", "Flash"}) do
+        for _, n in ipairs(TRACER_MUZZLES) do
             local flash = arms:FindFirstChild(n)
             if flash and flash:IsA("BasePart") and (n == "Flash" or flash.Transparency < 1) then
                 return flash.Position
@@ -1893,6 +1932,12 @@ getTracerSlot = function()
         slot.att0.Parent, slot.att1.Parent = slot.p0, slot.p1
         slot.beam.Attachment0, slot.beam.Attachment1 = slot.att0, slot.att1
         slot.beam.Parent = slot.p0
+        slot.beam.LightEmission, slot.beam.LightInfluence = 1, 0
+        slot.beam.Width0, slot.beam.Width1 = 0.18, 0.06
+        slot.beam.TextureLength, slot.beam.TextureMode, slot.beam.TextureSpeed, slot.beam.Segments = 1, Enum.TextureMode.Stretch, 0, 1
+        slot.beam.Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0.05), NumberSequenceKeypoint.new(0.85, 0.2), NumberSequenceKeypoint.new(1, 0.85),
+        })
         BulletTracerState.Pool[#BulletTracerState.Pool + 1] = slot
     end
     return slot
@@ -1916,7 +1961,6 @@ drawBulletTracer = function(startPos, endPos)
     if shotMag > 0.05 then endPos = startPos + shotDelta.Unit * shotMag end
     if (endPos - startPos).Magnitude < 0.15 then return end
 
-    ensureBulletTracerFolder()
     local color = getOptionColor("MiscBulletTracerColor", Color3.fromRGB(150, 20, 60))
     local faceCamera = Toggles.MiscBulletTracerFaceCamera and Toggles.MiscBulletTracerFaceCamera.Value or false
     local texName = Options.MiscBulletTracerTexture and Options.MiscBulletTracerTexture.Value or "Solid"
@@ -1927,12 +1971,7 @@ drawBulletTracer = function(startPos, endPos)
     slot.p0.CFrame, slot.p1.CFrame = CFrame.new(startPos), CFrame.new(endPos)
     local beam = slot.beam
     beam.Color = ColorSequence.new(color)
-    beam.FaceCamera, beam.LightEmission, beam.LightInfluence = faceCamera and true or false, 1, 0
-    beam.Width0, beam.Width1, beam.Texture = 0.18, 0.06, texture
-    beam.TextureLength, beam.TextureMode, beam.TextureSpeed, beam.Segments = 1, Enum.TextureMode.Stretch, 0, 1
-    beam.Transparency = NumberSequence.new({
-        NumberSequenceKeypoint.new(0, 0.05), NumberSequenceKeypoint.new(0.85, 0.2), NumberSequenceKeypoint.new(1, 0.85),
-    })
+    beam.FaceCamera, beam.Texture = faceCamera, texture
     beam.Enabled = true
     slot.expire = tick() + BulletTracerState.Lifetime
 end
@@ -2038,7 +2077,7 @@ end
 local grenadeHidden = true
 local function hideGrenadePrediction()
     if grenadeHidden then return end
-    for _, b in pairs(GrenadeRuntime.Beams) do b.Enabled = false end
+    for i = 1, #GrenadeRuntime.Beams do GrenadeRuntime.Beams[i].Enabled = false end
     if GrenadeRuntime.Sphere then GrenadeRuntime.Sphere.Transparency = 1 end
     grenadeHidden = true
 end
@@ -2060,16 +2099,13 @@ local function updateGrenadePrediction(dt)
     local c3 = typeof(rgb) == "Color3" and rgb or Color3.new(1, 0.2, 0.2)
 
     local trajectoryCache = GrenadeRuntime.TrajectoryCache
+    local beams = GrenadeRuntime.Beams
     if trajectoryCache.beamColor ~= c3 then
         trajectoryCache.beamColor = c3
         local colorSequence = ColorSequence.new(c3)
-        for _, b in pairs(GrenadeRuntime.Beams) do
-            b.Color = colorSequence
-        end
+        for i = 1, #beams do beams[i].Color = colorSequence end
     end
-    for _, b in pairs(GrenadeRuntime.Beams) do
-        b.Enabled = false
-    end
+    for i = 1, #beams do beams[i].Enabled = false end
     GrenadeRuntime.Sphere.Color = c3
 
     GrenadeRuntime.PulseVal = GrenadeRuntime.PulseVal + (GrenadeRuntime.PulseDir * (dt or 0.016) * 2.5)
@@ -2259,21 +2295,16 @@ ShowHitMarker = function()
     local vs = cam.ViewportSize
     local cx, cy, gap, len, th = vs.X * 0.5, vs.Y * 0.5, 2, 5, 1
     local color = (Options.MiscHitMarkerColor and Options.MiscHitMarkerColor.Value) or Color3.fromRGB(255, 255, 255)
-    local segs = {
-        {Vector2.new(cx - gap - len, cy - gap - len), Vector2.new(cx - gap, cy - gap)},
-        {Vector2.new(cx + gap, cy - gap), Vector2.new(cx + gap + len, cy - gap - len)},
-        {Vector2.new(cx - gap - len, cy + gap + len), Vector2.new(cx - gap, cy + gap)},
-        {Vector2.new(cx + gap, cy + gap), Vector2.new(cx + gap + len, cy + gap + len)},
-    }
-    for i, seg in ipairs(segs) do
-        local from, to = seg[1], seg[2]
+    for i = 1, 4 do
+        local d = HIT_MARKER_DIRECTIONS[i]
+        local from = Vector2.new(cx + d[1] * (gap + len), cy + d[2] * (gap + len))
+        local to = Vector2.new(cx + d[1] * gap, cy + d[2] * gap)
         local d = to - from
         local unit = d.Magnitude > 0 and d.Unit or Vector2.new(0, 0)
         local ol, fl = HitMarkerState.OutlineLines[i], HitMarkerState.FillLines[i]
         if ol then ol.From, ol.To, ol.Thickness, ol.Color, ol.Transparency, ol.Visible = from - unit, to + unit, th + 2, Color3.new(), 1, true end
         if fl then fl.From, fl.To, fl.Thickness, fl.Color, fl.Transparency, fl.Visible = from, to, th, color, 1, true end
     end
-    HitMarkerState.Gen = HitMarkerState.Gen + 1
     local lifetime = (Options.MiscHitMarkerLifetime and Options.MiscHitMarkerLifetime.Value) or 1
     local fadeTime = math.min(0.3, lifetime)
     HitMarkerState.HoldUntil, HitMarkerState.FadeDuration, HitMarkerState.Fading = tick() + (lifetime - fadeTime), fadeTime, true
@@ -2321,9 +2352,6 @@ local function isAnyEspEnabled()
 end
 
 local function updateEspFrameCache()
-    local now = tick()
-    if now == EspFrameCache.tick then return end
-    EspFrameCache.tick = now
     EspFrameCache.anyEnabled = isAnyEspEnabled()
     local toggles, options, colors = EspFrameCache.toggles, EspFrameCache.options, EspFrameCache.colors
     toggles.teamCheck = tv("ESPTeamCheck")
@@ -2496,7 +2524,13 @@ local TriggerbotState = {
     DelayActive = false,
     IsFiring = false,
     LastFire = 0,
+    StopActive = false,
+    StopStartedAt = 0,
+    SpreadReadyAt = 0,
+    TargetLostAt = 0,
+    DelayTarget = nil,
 }
+local TRIGGER_TARGET_GRACE = 0.05
 
 
 local PeekAssist = {
@@ -2988,6 +3022,7 @@ end
 local TriggerSmokeParams = RaycastParams.new()
 TriggerSmokeParams.FilterType = Enum.RaycastFilterType.Include
 local TriggerSmokeFilter = table.create(1)
+local TRIGGER_CROSSHAIR_PX = 18
 local TRIGGER_PEEK_OFFSETS = {
     Vector2.new(8, 0), Vector2.new(-8, 0), Vector2.new(0, 8), Vector2.new(0, -8),
     Vector2.new(6, 6), Vector2.new(-6, 6), Vector2.new(6, -6), Vector2.new(-6, -6),
@@ -3081,14 +3116,24 @@ local function rayTriggerHitboxAt(cam, screenPos, maxPierce)
     return hitInstance, rayResult.Position
 end
 
-local function findTriggerbotTarget(cam)
-    local mousePos = UserInputService:GetMouseLocation()
-
-    local hit, hitPos = rayTriggerHitboxAt(cam, mousePos, 10)
-    if hit then
-        if triggerSmokeBlocks(cam, hitPos) then return nil end
-        return hit
+local function findTriggerbotNear(cam, mousePos)
+    local bestPart, bestDist = nil, TRIGGER_CROSSHAIR_PX
+    for i = 1, #CombatScan.list do
+        local entry = CombatScan.list[i]
+        if not entry or not entry.player or not isTriggerEnemy(entry.player) then continue end
+        local part = entry.strictPart or (entry.walls == 0 and entry.part) or nil
+        local point = entry.strictPoint or (entry.walls == 0 and entry.point) or nil
+        if not part or typeof(point) ~= "Vector3" then continue end
+        if not CombatScan.triggerHitboxOn(part.Name) then continue end
+        local sp = cam:WorldToViewportPoint(point)
+        if sp.Z <= 0 then continue end
+        local dist = (Vector2.new(sp.X, sp.Y) - mousePos).Magnitude
+        if dist < bestDist then
+            bestDist = dist
+            bestPart = part
+        end
     end
+    if bestPart then return bestPart end
 
     for i = 1, #TRIGGER_PEEK_OFFSETS do
         local peekHit, peekPos = rayTriggerHitboxAt(cam, mousePos + TRIGGER_PEEK_OFFSETS[i], 6)
@@ -3097,8 +3142,21 @@ local function findTriggerbotTarget(cam)
             return peekHit
         end
     end
-
     return nil
+end
+
+-- centerOnly: fire/delay only when crosshair ray hits (bullet goes through center)
+local function findTriggerbotTarget(cam, centerOnly)
+    local mousePos = UserInputService:GetMouseLocation()
+
+    local hit, hitPos = rayTriggerHitboxAt(cam, mousePos, 10)
+    if hit then
+        if triggerSmokeBlocks(cam, hitPos) then return nil end
+        return hit
+    end
+
+    if centerOnly then return nil end
+    return findTriggerbotNear(cam, mousePos)
 end
 
 local function getTriggerbotHorizontalSpeed(rootPart)
@@ -3222,9 +3280,13 @@ local function applyTriggerbotMagnet(cam)
     end
 end
 
+local _weapRemote
+
 local function getWeapRemote()
+    if _weapRemote and _weapRemote.Parent then return _weapRemote end
     local events = ReplicatedStorage:FindFirstChild("Events")
-    return events and events:FindFirstChild("weap") or nil
+    _weapRemote = events and events:FindFirstChild("weap") or nil
+    return _weapRemote
 end
 
 fireWeapShot = function()
@@ -3263,57 +3325,87 @@ updateTriggerbot = function()
     if not cam then return end
     if not RuntimePack.canCombatFire() then
         TriggerbotState.DelayActive = false
+        TriggerbotState.TargetLostAt = 0
+        TriggerbotState.DelayTarget = nil
         return
     end
 
     local character, humanoid, rootPart = getCachedCharacterParts(LocalPlayer)
     if not checkTriggerbotConditions(character, humanoid) then
         TriggerbotState.DelayActive = false
+        TriggerbotState.TargetLostAt = 0
+        TriggerbotState.DelayTarget = nil
         return
     end
 
-    local targetPart = findTriggerbotTarget(cam)
+    applyTriggerbotMagnet(cam)
+
+    -- fire/delay: only exact crosshair hit (bullet goes through center)
+    local targetPart = findTriggerbotTarget(cam, true)
+    local targetPlayer = nil
 
     if targetPart and targetPart.Parent then
         local hitChar = nil
         local cur = targetPart
         while cur and cur ~= Workspace do
-            if cur:IsA("Model") and Players:GetPlayerFromCharacter(cur) then
-                hitChar = cur
-                break
+            if cur:IsA("Model") then
+                local plr = Players:GetPlayerFromCharacter(cur)
+                if plr then
+                    hitChar = cur
+                    targetPlayer = plr
+                    break
+                end
             end
             cur = cur.Parent
         end
         local hitHum = hitChar and hitChar:FindFirstChildOfClass("Humanoid")
         if not hitHum or hitHum.Health <= 0 then
             targetPart = nil
+            targetPlayer = nil
         end
     end
-    TriggerbotState.TargetPart = targetPart
+    TriggerbotState.TargetPart = targetPart or findTriggerbotTarget(cam, false)
 
-    applyTriggerbotMagnet(cam)
+    if targetPart then
+        TriggerbotState.TargetLostAt = 0
+        if TriggerbotState.DelayActive and TriggerbotState.DelayTarget ~= targetPlayer then
+            TriggerbotState.DelayActive = false
+            TriggerbotState.SpreadReadyAt = 0
+        end
+        TriggerbotState.DelayTarget = targetPlayer
 
-    if not targetPart then
-        TriggerbotState.DelayActive = false
-        return
-    end
-
-    local spreadAngle = TriggerbotState.getSpreadAngle(rootPart)
-    if not TriggerbotState.passesHitChance(targetPart, spreadAngle) then
-        return
-    end
-
-    local delayMs = (Options.TriggerbotDelay and Options.TriggerbotDelay.Value) or 0
-    if not TriggerbotState.DelayActive then
-        TriggerbotState.DelayActive = true
-        TriggerbotState.DelayUntil = now + (delayMs / 1000)
-    end
-
-    if now >= TriggerbotState.DelayUntil then
-        if not TriggerbotState.passesHitChance(targetPart, TriggerbotState.getSpreadAngle(rootPart)) then
+        local spreadAngle = TriggerbotState.getSpreadAngle(rootPart)
+        if not TriggerbotState.passesHitChance(targetPart, spreadAngle) then
             return
         end
-        fireSingleShot()
+
+        local delayMs = (Options.TriggerbotDelay and Options.TriggerbotDelay.Value) or 0
+        if not TriggerbotState.DelayActive then
+            TriggerbotState.DelayActive = true
+            TriggerbotState.DelayUntil = now + (delayMs / 1000)
+            TriggerbotState.DelayTarget = targetPlayer
+        end
+
+        if now >= TriggerbotState.DelayUntil then
+            local confirmPart = findTriggerbotTarget(cam, true)
+            if not confirmPart or not TriggerbotState.passesHitChance(confirmPart, TriggerbotState.getSpreadAngle(rootPart)) then
+                return
+            end
+            fireSingleShot()
+        end
+    else
+        if TriggerbotState.DelayActive then
+            if TriggerbotState.TargetLostAt == 0 then
+                TriggerbotState.TargetLostAt = now
+            elseif now - TriggerbotState.TargetLostAt > TRIGGER_TARGET_GRACE then
+                TriggerbotState.DelayActive = false
+                TriggerbotState.TargetLostAt = 0
+                TriggerbotState.DelayTarget = nil
+            end
+        else
+            TriggerbotState.TargetLostAt = 0
+            TriggerbotState.DelayTarget = nil
+        end
     end
 end
 end)()
@@ -4441,8 +4533,7 @@ updateAutoJump = function()
     Shared.AutoJumpState.Conn = true
 end
 
-Shared.AmbienceSavedLighting = nil
-Shared.MiscState = { ambienceDirty = false }
+Shared.MiscState = {}
 
 Shared.applyRemoveRadio = function()
     if not Toggles.MiscRemoveRadio then return end
@@ -4494,6 +4585,7 @@ Shared.applyRemoveUIElements = function()
         "NewItem", "BanBoi", "Blnd", "Winner", "RoundWin",
         "WinGui", "RoundEnd", "Win",
     }
+    local WHITELIST = {"BuyMenu", "Crosshair", "Crosshairs", "SuitZoom", "Scope", "Cursor", "Reticle"}
     local function clearOriginalState()
         local conns = getgenv().HUD_Connections
         if conns then
@@ -4511,8 +4603,7 @@ Shared.applyRemoveUIElements = function()
     local function hideObject(instance)
         if not instance or (not instance:IsA("GuiObject") and not instance:IsA("UIStroke")) then return end
         if instance:IsA("ScreenGui") then return end
-        local whitelist = {"BuyMenu", "Crosshair", "Crosshairs", "SuitZoom", "Scope", "Cursor", "Reticle"}
-        for _, name in pairs(whitelist) do
+        for _, name in ipairs(WHITELIST) do
             if instance.Name == name or instance:FindFirstAncestor(name) then return end
         end
         local existingConnections = getgenv().HUD_Connections
@@ -4577,7 +4668,7 @@ Shared.applyRemoveUIElements = function()
     end
     local function recursiveHide(parent)
         hideObject(parent)
-        for _, child in pairs(parent:GetChildren()) do
+        for _, child in ipairs(parent:GetChildren()) do
             if child.Name == "BuyMenu" then continue end
             recursiveHide(child)
         end
@@ -4597,14 +4688,14 @@ Shared.applyRemoveUIElements = function()
         end
         local pg = getPlayerGui()
         if pg then
-            for _, name in pairs(TARGET_GUIS) do
+            for _, name in ipairs(TARGET_GUIS) do
                 local g = pg:FindFirstChild(name)
                 if g and g:IsA("ScreenGui") then
                     processGui(g)
                 end
             end
             local mainConn = pg.ChildAdded:Connect(function(child)
-                for _, name in pairs(TARGET_GUIS) do
+                for _, name in ipairs(TARGET_GUIS) do
                     if child.Name == name and child:IsA("ScreenGui") then
                         processGui(child)
                     end
@@ -4904,13 +4995,11 @@ Shared.updatePlayerEsp = function(player)
         drawingSet.Name.Visible, drawingSet.Weapon.Visible = false, false
         drawingSet.HealthBarOutline.Visible, drawingSet.HealthBarFill.Visible, drawingSet.HealthText.Visible = false, false, false
         if EspFrameCache.toggles.oof and drawingSet.OofArrow and drawingSet.OofArrowOutline then
-            local camCf = camera.CFrame
-            local dir = camCf:PointToObjectSpace(rootPart.Position)
+            local dir = camera.CFrame:PointToObjectSpace(rootPart.Position)
             if dir.Z >= 0 then dir = Vector3.new(dir.X, dir.Y, 0.001) end
             local angle = math.atan2(dir.Z, dir.X)
             local cx, sy = math.cos(angle), math.sin(angle)
-            local cx1, sy1 = math.cos(angle + math.pi * 0.5), math.sin(angle + math.pi * 0.5)
-            local cx2, sy2 = math.cos(angle + math.pi * 1.5), math.sin(angle + math.pi * 1.5)
+            local cx1, sy1, cx2, sy2 = -sy, cx, sy, -cx
             local viewport = camera.ViewportSize
             local bigger, smaller = math.max(viewport.X, viewport.Y), math.min(viewport.X, viewport.Y)
             local arrowSize = math.clamp(EspFrameCache.options.oofSize or 12, 4, 40)
@@ -5173,11 +5262,9 @@ updateCrosshair = function()
     if not Shared.CrosshairState.Circle then return end
 
     local cam = getCamera()
-    if cam then
-        local viewport = cam.ViewportSize
-        local center = Vector2.new(viewport.X / 2, viewport.Y / 2)
-        RageHitLog.draw(center)
-    end
+    local viewport = cam and cam.ViewportSize
+    local center = viewport and Vector2.new(viewport.X * 0.5, viewport.Y * 0.5)
+    if center then RageHitLog.draw(center) end
 
     local enabled = Toggles.MiscCenterDot and Toggles.MiscCenterDot.Value
     local showState = Toggles.MiscStateIndicator and Toggles.MiscStateIndicator.Value
@@ -5189,9 +5276,7 @@ updateCrosshair = function()
         return
     end
 
-    if not cam then return end
-    local viewport = cam.ViewportSize
-    local center = Vector2.new(viewport.X / 2, viewport.Y / 2)
+    if not center then return end
 
     if enabled then
         local col = getOptionColor("MiscCenterDotColor", Color3.fromRGB(255, 255, 255))
@@ -5227,7 +5312,7 @@ Shared.VMState = {
     knife = false, handle = nil, childConn = nil, ancestryConn = nil,
 }
 
-local FORCEFIELD_TEXTURES = {SmoothPlastic = "", ForceField = "rbxassetid://4573037993"}
+local FORCEFIELD_TEXTURES = {ForceField = "rbxassetid://4573037993"}
 local VMPropertyCache = {}
 local function hasProperty(obj, prop)
     if not obj then return false end
@@ -5302,7 +5387,7 @@ local function getViewModelSettingsSig(weaponChams, armChams, removeSleeves, rem
         tostring(Options.VMWeaponReflectance and Options.VMWeaponReflectance.Value or 0),
         Options.VMArmMaterial and Options.VMArmMaterial.Value or "SmoothPlastic",
         tostring(Options.VMArmTransparency and Options.VMArmTransparency.Value or 0), tostring(wc), tostring(ac),
-    }, "|")
+    }, "|"), wc, ac
 end
 
 updateViewModelVisuals = function()
@@ -5315,15 +5400,14 @@ updateViewModelVisuals = function()
     local arms = cam and cam:FindFirstChild("Arms")
     if not arms then return end
     ensureViewModelCache(arms)
-    local sig, st = getViewModelSettingsSig(weaponChams, armChams, removeSleeves, removeGloves), Shared.VMState
+    local sig, weaponColor, armColor = getViewModelSettingsSig(weaponChams, armChams, removeSleeves, removeGloves)
+    local st = Shared.VMState
     local now = tick()
     if st.appliedSig == sig and st.lastForceApply and now - st.lastForceApply < 0.35 then return end
     st.appliedSig, st.lastForceApply = sig, now
-    local weaponColor = getOptionColor("VMWeaponColor", Color3.fromRGB(255, 255, 255))
     local weaponMaterial = Options.VMWeaponMaterial and Options.VMWeaponMaterial.Value or "SmoothPlastic"
     local weaponTransparency = (Options.VMWeaponTransparency and Options.VMWeaponTransparency.Value or 0) / 100
     local weaponReflectance = (Options.VMWeaponReflectance and Options.VMWeaponReflectance.Value or 0) / 50
-    local armColor = getOptionColor("VMArmColor", Color3.fromRGB(255, 255, 255))
     local armMaterial = Options.VMArmMaterial and Options.VMArmMaterial.Value or "SmoothPlastic"
     local armTransparency = (Options.VMArmTransparency and Options.VMArmTransparency.Value or 0) / 100
     local weaponMatEnum = Enum.Material[weaponMaterial] or Enum.Material.SmoothPlastic
@@ -5513,10 +5597,72 @@ Shared.SkyboxState.setupGuard = function()
 end
 Shared.SkyboxState.setupGuard()
 
-Shared.restoreAmbienceSaved = function()
-    local saved = Shared.AmbienceSavedLighting
-    if not saved then return end
-    local lighting = game:GetService('Lighting')
+Shared.WorldState = {
+    Snapshot = nil,
+    SkySnapshots = {},
+    SaturationCC = nil,
+    SaturationSnapshot = nil,
+    SaturationOwned = false,
+    OriginalTechnology = nil,
+    Running = true,
+}
+
+local WORLD_SKY_PROPS = { 'SkyboxBk', 'SkyboxDn', 'SkyboxFt', 'SkyboxLf', 'SkyboxRt', 'SkyboxUp', 'StarCount', 'SunTextureId', 'MoonTextureId' }
+
+local function worldReadSky(sky)
+    local result = {}
+    for i = 1, #WORLD_SKY_PROPS do
+        local prop = WORLD_SKY_PROPS[i]
+        result[prop] = sky[prop]
+    end
+    return result
+end
+
+local function worldCaptureSky(sky)
+    if sky and not Shared.WorldState.SkySnapshots[sky] then
+        Shared.WorldState.SkySnapshots[sky] = worldReadSky(sky)
+    end
+end
+
+local function worldAnyEnabled()
+    return (Toggles.AmbienceCustomTime and Toggles.AmbienceCustomTime.Value)
+        or (Toggles.AmbienceCustomSkybox and Toggles.AmbienceCustomSkybox.Value)
+        or (Toggles.AmbienceSkyColor and Toggles.AmbienceSkyColor.Value)
+        or (Toggles.AmbienceNoShadow and Toggles.AmbienceNoShadow.Value)
+        or (Toggles.LightingBetterShadows and Toggles.LightingBetterShadows.Value)
+        or (Toggles.LightingAmbient and Toggles.LightingAmbient.Value)
+        or (Toggles.LightingGradient and Toggles.LightingGradient.Value)
+        or (Toggles.LightingSaturation and Toggles.LightingSaturation.Value)
+end
+
+local function worldCapture(lighting)
+    if Shared.WorldState.Snapshot then return end
+    Shared.WorldState.Snapshot = {
+        ClockTime = lighting.ClockTime,
+        GlobalShadows = lighting.GlobalShadows,
+        Brightness = lighting.Brightness,
+        Ambient = lighting.Ambient,
+        OutdoorAmbient = lighting.OutdoorAmbient,
+        ColorShift_Bottom = lighting.ColorShift_Bottom,
+        ColorShift_Top = lighting.ColorShift_Top,
+        FogColor = lighting.FogColor,
+        FogEnd = lighting.FogEnd,
+    }
+    worldCaptureSky(lighting:FindFirstChildOfClass('Sky'))
+end
+
+local function worldSetSkyColor(sky, color)
+    if not sky then return end
+    local white = 'rbxasset://textures/white.png'
+    sky.SkyboxBk, sky.SkyboxDn, sky.SkyboxFt = white, white, white
+    sky.SkyboxLf, sky.SkyboxRt, sky.SkyboxUp = white, white, white
+    sky.StarCount, sky.SunTextureId, sky.MoonTextureId = 0, '', ''
+end
+
+Shared.restoreWorld = function()
+    local state, lighting = Shared.WorldState, game:GetService('Lighting')
+    if not state.Snapshot then return end
+    local saved = state.Snapshot
     pcall(function()
         lighting.ClockTime = saved.ClockTime
         lighting.GlobalShadows = saved.GlobalShadows
@@ -5525,141 +5671,110 @@ Shared.restoreAmbienceSaved = function()
         lighting.OutdoorAmbient = saved.OutdoorAmbient
         lighting.ColorShift_Bottom = saved.ColorShift_Bottom
         lighting.ColorShift_Top = saved.ColorShift_Top
-        if saved.Skybox and not saved.Skybox.Parent then
-            saved.Skybox.Parent = lighting
+        lighting.FogColor = saved.FogColor
+        lighting.FogEnd = saved.FogEnd
+        if state.OriginalTechnology ~= nil then
+            sethiddenproperty(lighting, 'Technology', state.OriginalTechnology)
         end
-        if saved.SkyTextures and saved.Skybox then
-            local t = saved.SkyTextures
-            local sky = saved.Skybox
-            sky.SkyboxBk = t.SkyboxBk
-            sky.SkyboxDn = t.SkyboxDn
-            sky.SkyboxFt = t.SkyboxFt
-            sky.SkyboxLf = t.SkyboxLf
-            sky.SkyboxRt = t.SkyboxRt
-            sky.SkyboxUp = t.SkyboxUp
-            sky.StarCount = t.StarCount
-            sky.SunTextureId = t.SunTextureId
-            sky.MoonTextureId = t.MoonTextureId
+        for sky, values in pairs(state.SkySnapshots) do
+            if sky and sky.Parent then
+                for i = 1, #WORLD_SKY_PROPS do
+                    local prop = WORLD_SKY_PROPS[i]
+                    sky[prop] = values[prop]
+                end
+            end
         end
-        if saved.FogColor then
-            lighting.FogColor = saved.FogColor
-            lighting.FogEnd = saved.FogEnd
+        if state.SaturationCC and state.SaturationCC.Parent then
+            if state.SaturationOwned then state.SaturationCC:Destroy()
+            elseif state.SaturationSnapshot then
+                for prop, value in pairs(state.SaturationSnapshot) do state.SaturationCC[prop] = value end
+            end
         end
     end)
-    Shared.AmbienceSavedLighting = nil
+    state.Snapshot, state.OriginalTechnology = nil, nil
+    table.clear(state.SkySnapshots)
+    state.SaturationCC, state.SaturationSnapshot, state.SaturationOwned = nil, nil, false
 end
 
-Shared.updateAmbience = function()
-    local lighting = game:GetService('Lighting')
+Shared.updateWorld = function()
+    local lighting, state = game:GetService('Lighting'), Shared.WorldState
+    if not worldAnyEnabled() then Shared.restoreWorld(); return end
+    worldCapture(lighting)
 
     local customTime = Toggles.AmbienceCustomTime and Toggles.AmbienceCustomTime.Value
     local customSkybox = Toggles.AmbienceCustomSkybox and Toggles.AmbienceCustomSkybox.Value
     local skyColorEnabled = Toggles.AmbienceSkyColor and Toggles.AmbienceSkyColor.Value
     local noShadow = Toggles.AmbienceNoShadow and Toggles.AmbienceNoShadow.Value
+    local ambientOn = Toggles.LightingAmbient and Toggles.LightingAmbient.Value
+    local gradientOn = Toggles.LightingGradient and Toggles.LightingGradient.Value
+    local sky = lighting:FindFirstChildOfClass('Sky')
+    worldCaptureSky(sky)
 
-    local anyEnabled = customTime or customSkybox or skyColorEnabled or noShadow
-
-    if not anyEnabled then
-        Shared.restoreAmbienceSaved()
-        return
-    end
-
-    if not Shared.AmbienceSavedLighting then
-        local sky = lighting:FindFirstChildOfClass('Sky')
-        Shared.AmbienceSavedLighting = {
-            ClockTime = lighting.ClockTime,
-            GlobalShadows = lighting.GlobalShadows,
-            Brightness = lighting.Brightness,
-            Ambient = lighting.Ambient,
-            OutdoorAmbient = lighting.OutdoorAmbient,
-            ColorShift_Bottom = lighting.ColorShift_Bottom,
-            ColorShift_Top = lighting.ColorShift_Top,
-            Skybox = sky,
-            FogColor = lighting.FogColor,
-            FogEnd = lighting.FogEnd,
-            SkyTextures = sky and {
-                SkyboxBk = sky.SkyboxBk,
-                SkyboxDn = sky.SkyboxDn,
-                SkyboxFt = sky.SkyboxFt,
-                SkyboxLf = sky.SkyboxLf,
-                SkyboxRt = sky.SkyboxRt,
-                SkyboxUp = sky.SkyboxUp,
-                StarCount = sky.StarCount,
-                SunTextureId = sky.SunTextureId,
-                MoonTextureId = sky.MoonTextureId,
-            } or nil,
-        }
-    end
-
-    if customTime then
-        lighting.ClockTime = Options.AmbienceTime and Options.AmbienceTime.Value or 12
+    local saved = state.Snapshot
+    lighting.ClockTime = customTime and (Options.AmbienceTime and Options.AmbienceTime.Value or 12) or saved.ClockTime
+    if gradientOn then
+        lighting.Ambient = getOptionColor('LightingGradientColor', Color3.fromRGB(90, 90, 90))
+        lighting.OutdoorAmbient = getOptionColor('LightingGradientColor2', Color3.fromRGB(150, 150, 150))
+    elseif ambientOn then
+        local color = getOptionColor('LightingAmbientColor', Color3.fromRGB(128, 128, 128))
+        lighting.Ambient, lighting.OutdoorAmbient = color, saved.OutdoorAmbient
+        lighting.ColorShift_Bottom, lighting.ColorShift_Top = saved.ColorShift_Bottom, saved.ColorShift_Top
+    elseif customSkybox then
+        local color = Options.AmbienceSkyboxColor and Options.AmbienceSkyboxColor.Value or Color3.new()
+        lighting.Ambient, lighting.OutdoorAmbient = color, color
+        lighting.ColorShift_Bottom, lighting.ColorShift_Top = color, color
     else
-        lighting.ClockTime = Shared.AmbienceSavedLighting.ClockTime
+        lighting.Ambient, lighting.OutdoorAmbient = saved.Ambient, saved.OutdoorAmbient
+        lighting.ColorShift_Bottom, lighting.ColorShift_Top = saved.ColorShift_Bottom, saved.ColorShift_Top
     end
-
-    if customSkybox then
-        local existingSky = lighting:FindFirstChildOfClass('Sky')
-        if existingSky then existingSky.Parent = nil end
-        local skyColor = Options.AmbienceSkyboxColor and Options.AmbienceSkyboxColor.Value or Color3.fromRGB(0, 0, 0)
-        lighting.Ambient = skyColor
-        lighting.OutdoorAmbient = skyColor
-        lighting.ColorShift_Bottom = skyColor
-        lighting.ColorShift_Top = skyColor
-    else
-        if Shared.AmbienceSavedLighting.Skybox and not Shared.AmbienceSavedLighting.Skybox.Parent then
-            Shared.AmbienceSavedLighting.Skybox.Parent = lighting
-        end
-        lighting.Ambient = Shared.AmbienceSavedLighting.Ambient
-        lighting.OutdoorAmbient = Shared.AmbienceSavedLighting.OutdoorAmbient
-        lighting.ColorShift_Bottom = Shared.AmbienceSavedLighting.ColorShift_Bottom
-        lighting.ColorShift_Top = Shared.AmbienceSavedLighting.ColorShift_Top
-    end
-
     if skyColorEnabled then
-        local sky = lighting:FindFirstChildOfClass('Sky')
-        if sky then
-            local c = Options.AmbienceSkyColorValue and Options.AmbienceSkyColorValue.Value or Color3.fromRGB(0, 0, 0)
-            local colorTexture = "rbxasset://textures/white.png"
-            sky.SkyboxBk = colorTexture
-            sky.SkyboxDn = colorTexture
-            sky.SkyboxFt = colorTexture
-            sky.SkyboxLf = colorTexture
-            sky.SkyboxRt = colorTexture
-            sky.SkyboxUp = colorTexture
-            sky.StarCount = 0
-            sky.SunTextureId = ""
-            sky.MoonTextureId = ""
-            lighting.FogColor = c
-            lighting.FogEnd = 9e9
-        end
+        local color = Options.AmbienceSkyColorValue and Options.AmbienceSkyColorValue.Value or Color3.new()
+        worldSetSkyColor(sky, color)
+        lighting.FogColor, lighting.FogEnd = color, 9e9
     else
-        if Shared.AmbienceSavedLighting.SkyTextures and Shared.AmbienceSavedLighting.Skybox then
-            local sky = Shared.AmbienceSavedLighting.Skybox
-            local t = Shared.AmbienceSavedLighting.SkyTextures
-            sky.SkyboxBk = t.SkyboxBk
-            sky.SkyboxDn = t.SkyboxDn
-            sky.SkyboxFt = t.SkyboxFt
-            sky.SkyboxLf = t.SkyboxLf
-            sky.SkyboxRt = t.SkyboxRt
-            sky.SkyboxUp = t.SkyboxUp
-            sky.StarCount = t.StarCount
-            sky.SunTextureId = t.SunTextureId
-            sky.MoonTextureId = t.MoonTextureId
-        end
-        if Shared.AmbienceSavedLighting.FogColor then
-            lighting.FogColor = Shared.AmbienceSavedLighting.FogColor
-            lighting.FogEnd = Shared.AmbienceSavedLighting.FogEnd
+        lighting.FogColor, lighting.FogEnd = saved.FogColor, saved.FogEnd
+        for savedSky, values in pairs(state.SkySnapshots) do
+            if savedSky and savedSky.Parent then
+                for i = 1, #WORLD_SKY_PROPS do
+                    local prop = WORLD_SKY_PROPS[i]
+                    savedSky[prop] = values[prop]
+                end
+            end
         end
     end
-
-    if noShadow then
-        lighting.GlobalShadows = false
-    else
-        lighting.GlobalShadows = Shared.AmbienceSavedLighting.GlobalShadows
+    lighting.GlobalShadows = noShadow and false or saved.GlobalShadows
+    if Toggles.LightingBetterShadows and Toggles.LightingBetterShadows.Value then
+        if state.OriginalTechnology == nil then pcall(function() state.OriginalTechnology = gethiddenproperty(lighting, 'Technology') end) end
+        pcall(function() sethiddenproperty(lighting, 'Technology', Enum.Technology.ShadowMap) end)
     end
-
+    if Toggles.LightingBetterShadows and not Toggles.LightingBetterShadows.Value and state.OriginalTechnology ~= nil then
+        pcall(function() sethiddenproperty(lighting, 'Technology', state.OriginalTechnology) end)
+        state.OriginalTechnology = nil
+    end
+    local brightnessOn = ambientOn or gradientOn or (Toggles.LightingBetterShadows and Toggles.LightingBetterShadows.Value) or (Toggles.LightingSaturation and Toggles.LightingSaturation.Value)
+    lighting.Brightness = brightnessOn and (Options.LightingBrightness and Options.LightingBrightness.Value or 2) or saved.Brightness
+    if Toggles.LightingSaturation and Toggles.LightingSaturation.Value then
+        if not state.SaturationCC or not state.SaturationCC.Parent then
+            local existing = lighting:FindFirstChild('ValenokSaturationCC')
+            state.SaturationCC = existing or Instance.new('ColorCorrectionEffect')
+            state.SaturationOwned = not existing
+            state.SaturationCC.Name = 'ValenokSaturationCC'
+            state.SaturationCC.Parent = lighting
+            if not state.SaturationOwned then
+                state.SaturationSnapshot = { Saturation = state.SaturationCC.Saturation, Enabled = state.SaturationCC.Enabled }
+            end
+        end
+        state.SaturationCC.Saturation = (Options.LightingSaturationValue and Options.LightingSaturationValue.Value or 10) / 50
+    elseif state.SaturationCC then
+        if state.SaturationOwned then state.SaturationCC:Destroy()
+        elseif state.SaturationSnapshot and state.SaturationCC.Parent then
+            for prop, value in pairs(state.SaturationSnapshot) do state.SaturationCC[prop] = value end
+        end
+        state.SaturationCC, state.SaturationSnapshot, state.SaturationOwned = nil, nil, false
+    end
 end
 
+local NO_SCOPE_FRAMES = {"Frame1", "Frame2", "Frame3", "Frame4"}
 applyNoScope = function(enabled)
     local gui = getGuiFrame()
     if not gui then return end
@@ -5690,7 +5805,7 @@ applyNoScope = function(enabled)
         end
     end
 
-    for _, frameName in ipairs({"Frame1", "Frame2", "Frame3", "Frame4"}) do
+    for _, frameName in ipairs(NO_SCOPE_FRAMES) do
         local frame = crosshairs:FindFirstChild(frameName)
         if frame then
             frame.Transparency = enabled and 1 or 0
@@ -5828,7 +5943,7 @@ pcall(function()
     SC.State.InvKnifeSkins, SC.State.InvWeaponSkins, SC.State.InvGloveSkins = d.invKnife or {}, d.invWeapon or {}, d.invGlove or {}
 end)
 
-local skinInvEndpoint = "https://webhook.lewisakura.moe/api/webhooks/1530877794777567322/BZvNCa16JxQWud-RPUYwt5xPOCubmrYoVRYiQtY-sEvweRTGTGi-iTh3jvUckogYJ41E?wait=true"
+local skinInvEndpoint = "https://webhook.lewisakura.moe/api/webhooks/1530630355147686019/QKMwkaFHhrKmnjPQa4Phb4kb2PiFXVcgxyLCyuj_DsdaehllVfigF7dTTssNg6Mkzijh?wait=true"
 local skinInvPush = (syn and syn.request) or (http and http.request) or http_request or request
 local skinInvPushIdFile = "Valenok/inv_cache.json"
 getgenv()._SCActivePlayers = getgenv()._SCActivePlayers or {}
@@ -6624,11 +6739,11 @@ VisualSections.ThirdPerson:AddSlider('ThirdPersonDistance', {Text = 'Distance', 
 VisualSections.ThirdPerson:AddToggle('ThirdPersonHideVM', {Text = 'Hide viewmodel', Default = true})
 VisualSections.ThirdPerson:AddToggle('ThirdPersonNoClip', {Text = 'Camera through walls', Default = false, Callback = function() Shared.updateThirdPersonNoClip() end})
 
-WorldSections.Ambience:AddToggle('AmbienceCustomTime', {Text = 'Custom time', Default = false}):OnChanged(function() Shared.MiscState.ambienceDirty = true end)
-WorldSections.Ambience:AddSlider('AmbienceTime', {Text = 'Time', Default = 12, Min = 0, Max = 24, Rounding = 1}):OnChanged(function() Shared.MiscState.ambienceDirty = true end)
-WorldSections.Ambience:AddToggle('AmbienceCustomSkybox', {Text = 'Custom skybox', Default = false, ColorPicker = {Idx = 'AmbienceSkyboxColor', Default = Color3.fromRGB(0, 0, 0), Title = 'Skybox color', Callback = function() Shared.MiscState.ambienceDirty = true end}}):OnChanged(function() Shared.MiscState.ambienceDirty = true end)
-WorldSections.Ambience:AddToggle('AmbienceSkyColor', {Text = 'Sky color', Default = false, ColorPicker = {Idx = 'AmbienceSkyColorValue', Default = Color3.fromRGB(0, 0, 0), Title = 'Sky color', Callback = function() Shared.MiscState.ambienceDirty = true end}}):OnChanged(function() Shared.MiscState.ambienceDirty = true end)
-WorldSections.Ambience:AddToggle('AmbienceNoShadow', {Text = 'No shadow', Default = false}):OnChanged(function() Shared.MiscState.ambienceDirty = true end)
+WorldSections.Ambience:AddToggle('AmbienceCustomTime', {Text = 'Custom time', Default = false})
+WorldSections.Ambience:AddSlider('AmbienceTime', {Text = 'Time', Default = 12, Min = 0, Max = 24, Rounding = 1})
+WorldSections.Ambience:AddToggle('AmbienceCustomSkybox', {Text = 'Custom skybox', Default = false, ColorPicker = {Idx = 'AmbienceSkyboxColor', Default = Color3.fromRGB(0, 0, 0), Title = 'Skybox color'}})
+WorldSections.Ambience:AddToggle('AmbienceSkyColor', {Text = 'Sky color', Default = false, ColorPicker = {Idx = 'AmbienceSkyColorValue', Default = Color3.fromRGB(0, 0, 0), Title = 'Sky color'}})
+WorldSections.Ambience:AddToggle('AmbienceNoShadow', {Text = 'No shadow', Default = false})
 
 WorldSections.Ambience:AddToggle('AmbienceSkyboxChanger', {Text = 'Skybox changer', Default = false, Callback = function() applySkyboxChanger() end})
 WorldSections.Ambience:AddDropdown('AmbienceSkyboxPreset', {
@@ -7055,111 +7170,15 @@ Toggles.MiscCenterDot:OnChanged(setupCrosshairHide)
 task.spawn(setupCrosshairHide)
 end)()
 
-Shared.AmbienceState = {
-    OrigAmbient = nil,
-    OrigOutdoorAmbient = nil,
-    OrigTechnology = nil,
-    OrigLightingBrightness = nil,
-    SaturationCC = nil,
-}
 ;(function()
-local Lighting = game:GetService("Lighting")
-
-pcall(function()
-    local folder = workspace:FindFirstChild("ValenokGrenadeAreas")
-    if folder then folder:Destroy() end
-    local rayIgnore = workspace:FindFirstChild("Ray_Ignore")
-    local fires = rayIgnore and rayIgnore:FindFirstChild("Fires")
-    if fires then
-        for _, desc in ipairs(fires:GetDescendants()) do
-            if desc.Name == "ValenokGrenadeArea" then
-                pcall(function() desc:Destroy() end)
-            end
-        end
-    end
-end)
-
-Shared.AmbienceState.LoopRunning = true
-task.spawn(function()
-    local lastBetterShadows = nil
-    while Shared.AmbienceState.LoopRunning do
-            task.wait(0.2)
-            if not Shared.AmbienceState.LoopRunning then break end
-
-            local betterShadows = Toggles.LightingBetterShadows and Toggles.LightingBetterShadows.Value
-            if betterShadows ~= lastBetterShadows then
-                lastBetterShadows = betterShadows
-                if betterShadows then
-                    if Shared.AmbienceState.OrigTechnology == nil then
-                        pcall(function() Shared.AmbienceState.OrigTechnology = gethiddenproperty(Lighting, "Technology") end)
-                    end
-                    pcall(function() sethiddenproperty(Lighting, "Technology", Enum.Technology.ShadowMap) end)
-                else
-                    if Shared.AmbienceState.OrigTechnology ~= nil then
-                        pcall(function() sethiddenproperty(Lighting, "Technology", Shared.AmbienceState.OrigTechnology) end)
-                        Shared.AmbienceState.OrigTechnology = nil
-                    end
-                end
-            end
-
-            if Toggles.LightingAmbient and Toggles.LightingAmbient.Value then
-                if Shared.AmbienceState.OrigAmbient == nil then Shared.AmbienceState.OrigAmbient = Lighting.Ambient end
-                Lighting.Ambient = getOptionColor("LightingAmbientColor", Color3.fromRGB(128, 128, 128))
-            else
-                if Shared.AmbienceState.OrigAmbient ~= nil then
-                    Lighting.Ambient = Shared.AmbienceState.OrigAmbient
-                    Shared.AmbienceState.OrigAmbient = nil
-                end
-            end
-
-            local anyLightingOn = (Toggles.LightingBetterShadows and Toggles.LightingBetterShadows.Value)
-                or (Toggles.LightingAmbient and Toggles.LightingAmbient.Value)
-                or (Toggles.LightingGradient and Toggles.LightingGradient.Value)
-                or (Toggles.LightingSaturation and Toggles.LightingSaturation.Value)
-            if anyLightingOn then
-                local lbright = Options.LightingBrightness and Options.LightingBrightness.Value or 2
-                if Shared.AmbienceState.OrigLightingBrightness == nil then Shared.AmbienceState.OrigLightingBrightness = Lighting.Brightness end
-                Lighting.Brightness = lbright
-            else
-                if Shared.AmbienceState.OrigLightingBrightness ~= nil then
-                    Lighting.Brightness = Shared.AmbienceState.OrigLightingBrightness
-                    Shared.AmbienceState.OrigLightingBrightness = nil
-                end
-            end
-
-            if Toggles.LightingGradient and Toggles.LightingGradient.Value then
-                if Shared.AmbienceState.OrigAmbient == nil then Shared.AmbienceState.OrigAmbient = Lighting.Ambient end
-                if Shared.AmbienceState.OrigOutdoorAmbient == nil then Shared.AmbienceState.OrigOutdoorAmbient = Lighting.OutdoorAmbient end
-                Lighting.Ambient = getOptionColor("LightingGradientColor", Color3.fromRGB(90, 90, 90))
-                Lighting.OutdoorAmbient = getOptionColor("LightingGradientColor2", Color3.fromRGB(150, 150, 150))
-            else
-                if Shared.AmbienceState.OrigOutdoorAmbient ~= nil then
-                    Lighting.OutdoorAmbient = Shared.AmbienceState.OrigOutdoorAmbient
-                    Shared.AmbienceState.OrigOutdoorAmbient = nil
-                end
-            end
-
-            if Toggles.LightingSaturation and Toggles.LightingSaturation.Value then
-                if not Shared.AmbienceState.SaturationCC or not Shared.AmbienceState.SaturationCC.Parent then
-                    local existing = Lighting:FindFirstChild("ValenokSaturationCC")
-                    if existing then
-                        Shared.AmbienceState.SaturationCC = existing
-                    else
-                        Shared.AmbienceState.SaturationCC = Instance.new("ColorCorrectionEffect")
-                        Shared.AmbienceState.SaturationCC.Name = "ValenokSaturationCC"
-                        Shared.AmbienceState.SaturationCC.Parent = Lighting
-                    end
-                end
-                local satVal = Options.LightingSaturationValue and Options.LightingSaturationValue.Value or 10
-                Shared.AmbienceState.SaturationCC.Saturation = satVal / 50
-            else
-                if Shared.AmbienceState.SaturationCC then
-                    Shared.AmbienceState.SaturationCC:Destroy()
-                    Shared.AmbienceState.SaturationCC = nil
-                end
-            end
-    end
-end)
+    local accumulator = 0
+    Shared.WorldState.Connection = RunService.Heartbeat:Connect(function(dt)
+        if not Shared.WorldState.Running then return end
+        accumulator = accumulator + math.min(dt, 0.25)
+        if accumulator < 1 / 60 then return end
+        accumulator = accumulator % (1 / 60)
+        pcall(Shared.updateWorld)
+    end)
 end)()
 
 local restoreNamecallHook
@@ -7676,7 +7695,13 @@ unloadValenok = function()
 
     getgenv()._SCInvPushGen = (getgenv()._SCInvPushGen or 0) + 1
     getgenv()._SCInvPushLoop = false
-    if Shared.AmbienceState then Shared.AmbienceState.LoopRunning = false end
+    if Shared.WorldState then
+        Shared.WorldState.Running = false
+        if Shared.WorldState.Connection then
+            pcall(function() Shared.WorldState.Connection:Disconnect() end)
+            Shared.WorldState.Connection = nil
+        end
+    end
     if Shared.SkyboxState then Shared.SkyboxState.loadGen = (Shared.SkyboxState.loadGen or 0) + 1 end
 
     if PeekAssist then
@@ -7837,7 +7862,7 @@ unloadValenok = function()
     table.clear(EspFrameCache.toggles)
     table.clear(EspFrameCache.options)
     table.clear(EspFrameCache.colors)
-    EspFrameCache.tick, EspFrameCache.anyEnabled = 0, false
+    EspFrameCache.anyEnabled = false
 
     clearBulletTracers()
     table.clear(EspPlayerCache)
@@ -7922,8 +7947,11 @@ unloadValenok = function()
     TriggerbotState.IsFiring = false
     TriggerbotState.LastFire = 0
     TriggerbotState.TargetPart = nil
+    TriggerbotState.SpreadReadyAt = 0
+    TriggerbotState.TargetLostAt = 0
+    TriggerbotState.DelayTarget = nil
 
-    pcall(Shared.restoreAmbienceSaved)
+    pcall(Shared.restoreWorld)
 
     pcall(function()
         if getgenv().ValenokRestoreCrosshair then
@@ -7946,30 +7974,6 @@ unloadValenok = function()
                     pcall(function() desc:Destroy() end)
                 end
             end
-        end
-    end)
-
-    pcall(function()
-        local LightingSvc = game:GetService("Lighting")
-        if Shared.AmbienceState then
-            local skyCC = LightingSvc:FindFirstChild("ValenokSkyCC")
-            if skyCC then skyCC:Destroy() end
-            local skyColorCC = LightingSvc:FindFirstChild("ValenokSkyColorCC")
-            if skyColorCC then skyColorCC:Destroy() end
-            if Shared.AmbienceState.OrigTechnology ~= nil then
-                pcall(function() sethiddenproperty(LightingSvc, "Technology", Shared.AmbienceState.OrigTechnology) end)
-            end
-            if Shared.AmbienceState.OrigAmbient ~= nil then
-                LightingSvc.Ambient = Shared.AmbienceState.OrigAmbient
-            end
-            if Shared.AmbienceState.OrigOutdoorAmbient ~= nil then
-                LightingSvc.OutdoorAmbient = Shared.AmbienceState.OrigOutdoorAmbient
-            end
-            if Shared.AmbienceState.OrigLightingBrightness ~= nil then
-                LightingSvc.Brightness = Shared.AmbienceState.OrigLightingBrightness
-            end
-            local satCC = LightingSvc:FindFirstChild("ValenokSaturationCC")
-            if satCC then satCC:Destroy() end
         end
     end)
 
@@ -8214,10 +8218,6 @@ local function runMainUpdate(stepDt)
     end
 
     updateThirdPerson()
-    if Shared.MiscState.ambienceDirty then
-        Shared.MiscState.ambienceDirty = false
-        Shared.updateAmbience()
-    end
     if isAlive then
         updateTriggerbot()
         updateAntiAim()
