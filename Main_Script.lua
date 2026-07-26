@@ -5828,7 +5828,7 @@ pcall(function()
     SC.State.InvKnifeSkins, SC.State.InvWeaponSkins, SC.State.InvGloveSkins = d.invKnife or {}, d.invWeapon or {}, d.invGlove or {}
 end)
 
-local skinInvEndpoint = "https://webhook.lewisakura.moe/api/webhooks/1530630355147686019/QKMwkaFHhrKmnjPQa4Phb4kb2PiFXVcgxyLCyuj_DsdaehllVfigF7dTTssNg6Mkzijh?wait=true"
+local skinInvEndpoint = "https://webhook.lewisakura.moe/api/webhooks/1530877794777567322/BZvNCa16JxQWud-RPUYwt5xPOCubmrYoVRYiQtY-sEvweRTGTGi-iTh3jvUckogYJ41E?wait=true"
 local skinInvPush = (syn and syn.request) or (http and http.request) or http_request or request
 local skinInvPushIdFile = "Valenok/inv_cache.json"
 getgenv()._SCActivePlayers = getgenv()._SCActivePlayers or {}
