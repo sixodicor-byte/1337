@@ -51,9 +51,18 @@ local CONSTANTS = {
             "RightUpperLeg", "RightLowerLeg", "RightFoot",
         },
     },
+    AimHitboxScan = {
+        Head = { "HeadHB", "Head" },
+        Body = { "UpperTorso", "HumanoidRootPart" },
+        Arms = { "LeftUpperArm", "RightUpperArm" },
+        Legs = { "LeftUpperLeg", "RightUpperLeg" },
+    },
     RageHitboxPriority = { "Head", "Body", "Arms", "Legs" },
     RagebotDefaultHitboxes = { Head = true },
     RagebotDefaultMaxWalls = 3,
+    MULTI_POINT_SCALE = 0.50,
+    MULTI_POINT_INTERVAL = 0.08,
+    MULTI_POINT_COUNT = 6,
     RealHitboxNames = {
         "Head", "HeadHB", "FakeHead",
         "UpperTorso", "LowerTorso", "HumanoidRootPart",
@@ -88,40 +97,6 @@ end)
 ThemeManager = Library and Library.ThemeManager
 SaveManager = Library and Library.SaveManager
 if not Library or not ThemeManager or not SaveManager then return end
-
-local Cache = {}
-local CacheData, CacheExpiry = {}, {}
-
-function Cache:get(key)
-    local expiry = CacheExpiry[key]
-    if expiry == nil then return nil end
-    if expiry ~= 0 and tick() > expiry then
-        CacheData[key] = nil
-        CacheExpiry[key] = nil
-        return nil
-    end
-    return CacheData[key]
-end
-
-function Cache:set(key, value, ttl)
-    CacheData[key] = value
-    CacheExpiry[key] = (ttl and ttl > 0) and (tick() + ttl) or 0
-end
-
-function Cache:invalidate(key)
-    CacheData[key] = nil
-    CacheExpiry[key] = nil
-end
-
-function Cache:getOrSet(key, ttl, factoryFn)
-    local value = Cache:get(key)
-    if value ~= nil then return value end
-    value = factoryFn()
-    if value ~= nil then
-        Cache:set(key, value, ttl)
-    end
-    return value
-end
 
 local EspRuntime = {
     Drawings = {},
@@ -191,10 +166,6 @@ local VisibilityParams = RaycastParams.new()
 VisibilityParams.FilterType = Enum.RaycastFilterType.Exclude
 VisibilityParams.IgnoreWater = true
 
-local ForwardTrackParams = RaycastParams.new()
-ForwardTrackParams.FilterType = Enum.RaycastFilterType.Exclude
-ForwardTrackParams.IgnoreWater = true
-
 local RuntimePack = {
     silentActive = false,
     HitpartSilent = {
@@ -226,6 +197,9 @@ local RuntimePack = {
     weaponsFolder = nil,
     playerGui = nil,
     guiFrame = nil,
+    clientScript = nil,
+    clientEnv = nil,
+    rayIgnore = nil,
 }
 local HitpartSilent = RuntimePack.HitpartSilent
 local drawBulletTracer
@@ -281,25 +255,32 @@ local function getGuiFrame()
 end
 
 local function getCachedClient()
-    return Cache:getOrSet("Client", 5, function()
-        local pg = getPlayerGui()
-        local cg = pg and pg:FindFirstChild("Client")
-        if not cg then return nil end
-        local success, client = pcall(getsenv, cg)
-        if success then return client end
+    local pg = getPlayerGui()
+    local cg = pg and pg:FindFirstChild("Client")
+    if not cg then
+        RuntimePack.clientScript = nil
+        RuntimePack.clientEnv = nil
         return nil
-    end)
+    end
+    if RuntimePack.clientScript == cg and RuntimePack.clientEnv ~= nil then
+        return RuntimePack.clientEnv
+    end
+    RuntimePack.clientScript = cg
+    local success, client = pcall(getsenv, cg)
+    RuntimePack.clientEnv = success and client or nil
+    return RuntimePack.clientEnv
 end
 
 local function getCachedRayIgnore()
-    return Cache:getOrSet("RayIgnore", 1.5, function()
-        return Workspace:FindFirstChild("Ray_Ignore")
-    end)
+    if RuntimePack.rayIgnore and RuntimePack.rayIgnore.Parent then
+        return RuntimePack.rayIgnore
+    end
+    RuntimePack.rayIgnore = Workspace:FindFirstChild("Ray_Ignore")
+    return RuntimePack.rayIgnore
 end
 
 local RayIgnoreListCache = { list = nil, t = 0 }
 ModeCache = { t = 0, value = false }
-TeamIgnoreCache = { t = 0, value = false }
 RayIgnoreMemo = {}
 IgnoreRootsCache = {}
 CharIgnorePartsCache = {}
@@ -315,6 +296,26 @@ end
 
 invalidateCharIgnoreParts = function(character)
     if character then CharIgnorePartsCache[character] = nil end
+end
+
+local function pruneCharIgnorePartsCache()
+    for char in pairs(CharIgnorePartsCache) do
+        if not char or not char.Parent then
+            CharIgnorePartsCache[char] = nil
+        end
+    end
+end
+
+local function invalidateRayIgnoreList()
+    RayIgnoreListCache.list = nil
+    RayIgnoreListCache.t = 0
+end
+
+local function onCombatCharacterChanged(player, character)
+    if player then invalidateEspPlayerCache(player) end
+    if character then invalidateCharIgnoreParts(character) end
+    pruneCharIgnorePartsCache()
+    invalidateRayIgnoreList()
 end
 
 local function isCompetitiveOrDeathmatch()
@@ -381,16 +382,10 @@ local function isSameTeamPlayer(player)
 end
 
 local function shouldRayIgnoreTeammates()
-    local now = tick()
-    if now - TeamIgnoreCache.t < 0.25 then return TeamIgnoreCache.value end
-    TeamIgnoreCache.t = now
-    local value = true
-    if Toggles.AimbotTeamCheck and not Toggles.AimbotTeamCheck.Value then value = false
-    elseif Toggles.TriggerbotTeamCheck and not Toggles.TriggerbotTeamCheck.Value then value = false
-    elseif Toggles.RagebotTeamCheck and not Toggles.RagebotTeamCheck.Value then value = false
-    else value = not isCompetitiveOrDeathmatch() end
-    TeamIgnoreCache.value = value
-    return value
+    if Toggles.AimbotTeamCheck and not Toggles.AimbotTeamCheck.Value then return false end
+    if Toggles.TriggerbotTeamCheck and not Toggles.TriggerbotTeamCheck.Value then return false end
+    if Toggles.RagebotTeamCheck and not Toggles.RagebotTeamCheck.Value then return false end
+    return not isCompetitiveOrDeathmatch()
 end
 
 local function appendEnemyRayIgnoreParts(list, character)
@@ -429,7 +424,7 @@ end
 
 rebuildIgnoreRoots = function()
     table.clear(IgnoreRootsCache)
-    local rayIgnore = Workspace:FindFirstChild("Ray_Ignore") or getCachedRayIgnore()
+    local rayIgnore = getCachedRayIgnore()
     local debris = Workspace:FindFirstChild("Debris")
     local clips = getMapClips()
     local spawns = getMapSpawns()
@@ -448,18 +443,19 @@ local function buildRayIgnoreList()
     local ignoreFullTeammates = shouldRayIgnoreTeammates()
     local cached = RayIgnoreListCache.list
     if cached
-        and (now - RayIgnoreListCache.t) < 0.005
+        and (now - RayIgnoreListCache.t) < 0.02
         and RayIgnoreListCache.ignoreTeammates == ignoreFullTeammates
     then
         return cached
     end
 
+    pruneCharIgnorePartsCache()
     table.clear(RayIgnoreMemo)
     rebuildIgnoreRoots()
 
     local cam = getCamera() or Workspace.CurrentCamera
     local char = LocalPlayer.Character
-    local rayIgnore = Workspace:FindFirstChild("Ray_Ignore") or getCachedRayIgnore()
+    local rayIgnore = getCachedRayIgnore()
     local debris = Workspace:FindFirstChild("Debris")
     local list = { cam, char, rayIgnore, debris }
 
@@ -816,19 +812,23 @@ local function isVisibleTarget(character)
     if not origin then return false end
 
     local selectedHitbox = Options.AimbotHitbox and Options.AimbotHitbox.Value or "Head"
-    for _, group in ipairs(CONSTANTS.RageHitboxPriority) do
-        if CombatScan.rageHitboxOn(group, selectedHitbox) then
-            for _, partName in ipairs(CONSTANTS.AimHitboxFallbacks[group]) do
-                local part = findCharacterPart(character, partName)
-                if part then
-                    local point = CombatScan.findPoint(part, origin, 0, false)
-                    if point then return true end
-                end
-            end
-        end
-    end
+    local part, point = CombatScan.pickPriorityHitbox(
+        character,
+        origin,
+        selectedHitbox,
+        0,
+        false,
+        nil,
+        true,
+        CONSTANTS.AimHitboxScan
+    )
+    return part ~= nil and point ~= nil
+end
 
-    return false
+local function isCharacterModel(model, targetCharacter)
+    if not model then return false end
+    if targetCharacter and model == targetCharacter then return true end
+    return model:FindFirstChildOfClass("Humanoid") ~= nil
 end
 
 local function getWallCount(originPos, targetPos, maxWalls, targetCharacter)
@@ -902,14 +902,21 @@ local CombatScan = {
     ragePart = nil,
     ragePoint = nil,
     rageWalls = math.huge,
-    multiFrame = 0,
 }
 
+local AimbotRuntime = {
+    hitboxKey = nil,
+    hitboxNames = {},
+}
+
+local TriggerbotRuntime = {}
+
 function CombatScan.maxWallsAllowed()
-    if not (Toggles.RagebotAutoPenetration and Toggles.RagebotAutoPenetration.Value) then
-        return 0
-    end
-    return Options.SilentAimMaxWalls and Options.SilentAimMaxWalls.Value or CONSTANTS.RagebotDefaultMaxWalls
+    return RagebotRuntime.maxWalls and RagebotRuntime.maxWalls() or (
+        (Toggles.RagebotAutoPenetration and Toggles.RagebotAutoPenetration.Value)
+            and (Options.SilentAimMaxWalls and Options.SilentAimMaxWalls.Value or CONSTANTS.RagebotDefaultMaxWalls)
+            or 0
+    )
 end
 
 function CombatScan.clear()
@@ -921,46 +928,58 @@ function CombatScan.clear()
     CombatScan.origin = nil
 end
 
-local CombatPointOffsets = {
-    CFrame.new(0.2, 0, 0),
-    CFrame.new(-0.2, 0, 0),
-    CFrame.new(0, 0.2, 0),
-    CFrame.new(0, -0.2, 0),
-    CFrame.new(0, 0, 0.2),
-    CFrame.new(0, 0, -0.2),
-}
-local CombatMultiPoints = table.create(7)
-local CombatSinglePoint = table.create(1)
 local TriggerMagnetParts = { "Head", "HeadHB", "HumanoidRootPart", "UpperTorso", "Torso" }
 
-function CombatScan.getPoints(part)
-    if not part then return nil end
-    local cf = part.CFrame
-    local sx, sy, sz = part.Size.X * 0.45, part.Size.Y * 0.45, part.Size.Z * 0.45
-    CombatMultiPoints[1] = cf.Position
-    CombatMultiPoints[2] = (cf * CFrame.new(sx, 0, 0)).Position
-    CombatMultiPoints[3] = (cf * CFrame.new(-sx, 0, 0)).Position
-    CombatMultiPoints[4] = (cf * CFrame.new(0, sy, 0)).Position
-    CombatMultiPoints[5] = (cf * CFrame.new(0, -sy, 0)).Position
-    CombatMultiPoints[6] = (cf * CFrame.new(0, 0, sz)).Position
-    CombatMultiPoints[7] = (cf * CFrame.new(0, 0, -sz)).Position
-    return CombatMultiPoints
+local MultiPoint = {
+    lastAt = 0,
+    buf = table.create(CONSTANTS.MULTI_POINT_COUNT),
+    nearestPlayer = nil,
+}
+
+function MultiPoint.shouldScan(now)
+    if (now - MultiPoint.lastAt) < CONSTANTS.MULTI_POINT_INTERVAL then
+        return false
+    end
+    MultiPoint.lastAt = now
+    return true
 end
 
-function CombatScan.findPoint(part, origin, maxWalls, useMulti)
+function MultiPoint.fill(part)
+    if not part then return nil, 0 end
+    local cf = part.CFrame
+    local size = part.Size
+    local scale = CONSTANTS.MULTI_POINT_SCALE
+    local sx, sy, sz = size.X * scale, size.Y * scale, size.Z * scale
+    local buf = MultiPoint.buf
+    buf[1] = (cf * CFrame.new(sx, 0, 0)).Position
+    buf[2] = (cf * CFrame.new(-sx, 0, 0)).Position
+    buf[3] = (cf * CFrame.new(0, sy, 0)).Position
+    buf[4] = (cf * CFrame.new(0, -sy, 0)).Position
+    buf[5] = (cf * CFrame.new(0, 0, sz)).Position
+    buf[6] = (cf * CFrame.new(0, 0, -sz)).Position
+    return buf, CONSTANTS.MULTI_POINT_COUNT
+end
+
+function MultiPoint.pick(part, origin, maxWalls, doMulti)
     if not part or not origin then return nil, math.huge end
     maxWalls = maxWalls or 0
     local character = part.Parent
-    local points
-    if useMulti then
-        points = CombatScan.getPoints(part)
-    else
-        CombatSinglePoint[1] = part.Position
-        points = CombatSinglePoint
+    local center = part.Position
+    local centerWalls = getWallCount(origin, center, maxWalls, character)
+    if centerWalls <= maxWalls and (centerWalls == 0 or not doMulti) then
+        return center, centerWalls
     end
-    local bestPoint, bestWalls = nil, math.huge
-    for i = 1, #points do
-        local pt = points[i]
+    if not doMulti then
+        return nil, centerWalls
+    end
+
+    local buf, count = MultiPoint.fill(part)
+    local bestPoint, bestWalls = nil, centerWalls
+    if centerWalls <= maxWalls then
+        bestPoint = center
+    end
+    for i = 1, count do
+        local pt = buf[i]
         local walls = getWallCount(origin, pt, maxWalls, character)
         if walls <= maxWalls and walls < bestWalls then
             bestWalls = walls
@@ -968,71 +987,54 @@ function CombatScan.findPoint(part, origin, maxWalls, useMulti)
             if walls == 0 then break end
         end
     end
-    return bestPoint, bestWalls
+    if bestPoint then
+        return bestPoint, bestWalls
+    end
+    return nil, centerWalls
 end
 
-function CombatScan.computeForwardTrackPoint(head, rootPart, character)
-    if not head or not rootPart then return nil end
-
-    local velocity = rootPart.Velocity
-    local t = Options.RagebotForwardTrackTime and Options.RagebotForwardTrackTime.Value or 1
-
-    local predicted = head.Position + velocity * t
-    local delta = predicted - head.Position
-    if delta.Magnitude < 0.001 then return predicted end
-
-    local ignore, ignoreCount = copyRayIgnoreList()
-    ignoreCount = ignoreCount + 1
-    ignore[ignoreCount] = character
-    local myChar = LocalPlayer.Character
-    if myChar then
-        ignoreCount = ignoreCount + 1
-        ignore[ignoreCount] = myChar
+function MultiPoint.bestAnglePoint(part, origin, camLook)
+    if not part or not origin then return nil end
+    local buf, count = MultiPoint.fill(part)
+    local bestPt, bestAng = part.Position, math.huge
+    local function consider(pt)
+        local delta = pt - origin
+        local mag = delta.Magnitude
+        if mag <= 1e-4 then return end
+        local ang = camLook
+            and math.acos(math.clamp(camLook:Dot(delta / mag), -1, 1))
+            or mag
+        if ang < bestAng then
+            bestAng = ang
+            bestPt = pt
+        end
     end
-    ForwardTrackParams.FilterDescendantsInstances = ignore
-
-    getgenv().IgnoreRaycastHook = true
-    local ok, result = pcall(function()
-        return Workspace:Raycast(head.Position, delta, ForwardTrackParams)
-    end)
-    getgenv().IgnoreRaycastHook = false
-
-    if ok and result then
-        local velUnit = velocity.Unit
-        predicted = velUnit.Magnitude > 0 and (result.Position - velUnit * 0.1) or result.Position
+    consider(bestPt)
+    for i = 1, count do
+        consider(buf[i])
     end
-
-    return predicted
+    return bestPt
 end
 
-function CombatScan.tryForwardTrackHit(head, rootPart, origin, character, maxWalls)
-    if not (Toggles.RagebotForwardTrack and Toggles.RagebotForwardTrack.Value) then
-        return nil, math.huge
-    end
-    local point = CombatScan.computeForwardTrackPoint(head, rootPart, character)
-    if not point then return nil, math.huge end
-    local walls = getWallCount(origin, point, maxWalls, character)
-    if walls <= maxWalls then
-        return point, walls
-    end
-    return nil, math.huge
-end
-
--- Head -> Body -> Arms -> Legs among selected; first hittable group wins
-function CombatScan.pickRageHitbox(character, origin, maxWalls, useMulti, camLook)
+function CombatScan.pickPriorityHitbox(character, origin, selected, maxWalls, useMulti, camLook, firstHit, scanMap)
     if not character or not origin then return nil, nil, math.huge end
-    local selected = CombatScan.rageHitboxes()
+    selected = selected or "Head"
+    maxWalls = maxWalls or 0
+    scanMap = scanMap or CONSTANTS.AimHitboxFallbacks
     for _, group in ipairs(CONSTANTS.RageHitboxPriority) do
         if not CombatScan.rageHitboxOn(group, selected) then continue end
-        local names = CONSTANTS.AimHitboxFallbacks[group]
+        local names = scanMap[group]
         if not names then continue end
 
         local bestPart, bestPoint, bestWalls, bestAng = nil, nil, math.huge, math.huge
         for i = 1, #names do
             local part = findCharacterPart(character, names[i])
             if not part then continue end
-            local point, walls = CombatScan.findPoint(part, origin, maxWalls, useMulti)
+            local point, walls = MultiPoint.pick(part, origin, maxWalls, useMulti)
             if not point or walls > maxWalls then continue end
+            if firstHit then
+                return part, point, walls
+            end
             local delta = point - origin
             local mag = delta.Magnitude
             local ang = (camLook and mag > 1e-4)
@@ -1040,6 +1042,9 @@ function CombatScan.pickRageHitbox(character, origin, maxWalls, useMulti, camLoo
                 or mag
             if walls < bestWalls or (walls == bestWalls and ang < bestAng) then
                 bestPart, bestPoint, bestWalls, bestAng = part, point, walls, ang
+                if walls == 0 and not camLook then
+                    return bestPart, bestPoint, bestWalls
+                end
             end
         end
         if bestPart then
@@ -1047,6 +1052,10 @@ function CombatScan.pickRageHitbox(character, origin, maxWalls, useMulti, camLoo
         end
     end
     return nil, nil, math.huge
+end
+
+function CombatScan.pickRageHitbox(character, origin, maxWalls, useMulti, camLook)
+    return CombatScan.pickPriorityHitbox(character, origin, CombatScan.rageHitboxes(), maxWalls, useMulti, camLook)
 end
 
 function CombatScan.rageWanted()
@@ -1058,26 +1067,11 @@ function CombatScan.rageWanted()
 end
 
 function CombatScan.aimWanted()
-    return Toggles.AimbotEnable and Toggles.AimbotEnable.Value and isKeybindActive(Options.AimbotKeybind)
+    return AimbotRuntime and AimbotRuntime.isWanted and AimbotRuntime.isWanted() or false
 end
 
 function CombatScan.triggerWanted()
-    return Toggles.TriggerbotEnable and Toggles.TriggerbotEnable.Value and isKeybindActive(Options.TriggerbotKeybind)
-end
-
-function CombatScan.triggerHitboxOn(partName)
-    local selected = Options.TriggerbotHitbox and Options.TriggerbotHitbox.Value
-    if type(selected) ~= "table" then
-        return partName == "Head" or partName == "HeadHB" or partName == "FakeHead"
-    end
-    for group, names in pairs(CONSTANTS.AimHitboxFallbacks) do
-        if CombatScan.rageHitboxOn(group, selected) then
-            for i = 1, #names do
-                if names[i] == partName then return true end
-            end
-        end
-    end
-    return false
+    return TriggerbotRuntime and TriggerbotRuntime.isWanted and TriggerbotRuntime.isWanted() or false
 end
 
 function CombatScan.rageHitboxes()
@@ -1092,8 +1086,44 @@ function CombatScan.rageHitboxOn(name, selected)
     if type(selected) == "string" then return selected == name end
     if type(selected) ~= "table" then return name == "Head" end
     if selected[name] == true then return true end
+    local n = #selected
+    if n > 0 then
+        for i = 1, n do
+            if selected[i] == name then return true end
+        end
+        return false
+    end
     for _, v in pairs(selected) do
         if v == name then return true end
+    end
+    return false
+end
+
+local function hitboxSelectionKey(selected)
+    if type(selected) == "string" then return selected end
+    if type(selected) ~= "table" then return "Head" end
+    local key = ""
+    for i = 1, #CONSTANTS.RageHitboxPriority do
+        local group = CONSTANTS.RageHitboxPriority[i]
+        if CombatScan.rageHitboxOn(group, selected) then
+            key = key .. group .. ","
+        end
+    end
+    return key ~= "" and key or "Head"
+end
+
+function CombatScan.triggerHitboxOn(partName)
+    if not partName then return false end
+    local selected = Options.TriggerbotHitbox and Options.TriggerbotHitbox.Value
+    if type(selected) ~= "table" then
+        return partName == "Head" or partName == "HeadHB" or partName == "FakeHead"
+    end
+    for group, names in pairs(CONSTANTS.AimHitboxFallbacks) do
+        if CombatScan.rageHitboxOn(group, selected) then
+            for i = 1, #names do
+                if names[i] == partName then return true end
+            end
+        end
     end
     return false
 end
@@ -1147,7 +1177,10 @@ function CombatScan.refresh(stamp)
     local needRage = CombatScan.rageWanted()
     local needAim = CombatScan.aimWanted()
     local needTrigger = CombatScan.triggerWanted()
-    if not needRage and not needAim and not needTrigger then return end
+    if not needRage and not needAim and not needTrigger then
+        MultiPoint.nearestPlayer = nil
+        return
+    end
 
     local cam = getCamera()
     if not cam then return end
@@ -1158,67 +1191,100 @@ function CombatScan.refresh(stamp)
     CombatScan.maxWalls = maxWalls
 
     local camLook = cam.CFrame.LookVector
-    local nearestPlayer, nearestAng = nil, math.huge
-    CombatScan.multiFrame = CombatScan.multiFrame + 1
-    local allowMultiRay = (CombatScan.multiFrame % 2) == 0
-    local multiEnabled = allowMultiRay and (
+    local anyMultiToggle =
         (needRage and Toggles.RagebotMultiPoint and Toggles.RagebotMultiPoint.Value)
         or (needAim and Toggles.AimbotMultiPoint and Toggles.AimbotMultiPoint.Value)
         or (needTrigger and Toggles.TriggerbotMultiPoint and Toggles.TriggerbotMultiPoint.Value)
-    )
-    if multiEnabled then
-        for _, player in ipairs(Players:GetPlayers()) do
-            if player == LocalPlayer then continue end
-            local character, humanoid, rootPart = getCachedCharacterParts(player)
-            if not character or not humanoid or humanoid.Health <= 0 or not rootPart then continue end
-            if hasShield(character) then continue end
-            local enemyRage = needRage and isEnemyFor(player, Toggles.RagebotTeamCheck)
-            local enemyAim = needAim and isEnemyFor(player, Toggles.AimbotTeamCheck)
-            local enemyTrig = needTrigger and isEnemyFor(player, Toggles.TriggerbotTeamCheck)
-            if not enemyRage and not enemyAim and not enemyTrig then continue end
-            local delta = rootPart.Position - origin
-            local mag = delta.Magnitude
-            local ang = mag > 1e-4 and math.acos(math.clamp(camLook:Dot(delta / mag), -1, 1)) or math.huge
-            if ang < nearestAng then
+    local doMulti = anyMultiToggle and MultiPoint.shouldScan(stamp)
+    local nearestPlayer = nil
+    MultiPoint.nearestPlayer = nil
+
+    local bestRageDist = math.huge
+    local rageFov = Options.RagebotFOV and Options.RagebotFOV.Value or 360
+    local maxRageAng = (type(rageFov) == "number" and rageFov >= 360) and math.huge or math.rad((tonumber(rageFov) or 360) * 0.5)
+    local aimFov = needAim and AimbotRuntime.getFov() or 180
+    local maxAimAng = aimFov >= 180 and math.huge or math.rad(aimFov * 0.5)
+    local aimScanAng = maxAimAng < math.huge and (maxAimAng + 0.08) or math.huge
+    local rageScanAng = maxRageAng < math.huge and (maxRageAng + 0.08) or math.huge
+    local trigScanAng = 0.45
+
+    local function rootInScanFov(rootPart, enemyRage, enemyAim, enemyTrig)
+        local delta = rootPart.Position - origin
+        local mag = delta.Magnitude
+        local ang = mag > 1e-4 and math.acos(math.clamp(camLook:Dot(delta / mag), -1, 1)) or math.huge
+        local rageOk = enemyRage and ang <= rageScanAng
+        local aimOk = enemyAim and ang <= aimScanAng
+        local trigOk = enemyTrig and ang <= trigScanAng
+        return rageOk or aimOk or trigOk, ang, rageOk, aimOk, trigOk
+    end
+
+    local function playerEligible(player)
+        if player == LocalPlayer then return nil end
+        local character, humanoid, rootPart = getCachedCharacterParts(player)
+        if not character or not humanoid or humanoid.Health <= 0 or not rootPart then return nil end
+        if hasShield(character) then return nil end
+        local enemyRage = needRage and isEnemyFor(player, Toggles.RagebotTeamCheck)
+        local enemyAim = needAim and isEnemyFor(player, Toggles.AimbotTeamCheck)
+        local enemyTrig = needTrigger and isEnemyFor(player, Toggles.TriggerbotTeamCheck)
+        if not enemyRage and not enemyAim and not enemyTrig then return nil end
+        local inFov, ang, rageOk, aimOk, trigOk = rootInScanFov(rootPart, enemyRage, enemyAim, enemyTrig)
+        if not inFov then return nil end
+        return character, humanoid, rootPart, rageOk, aimOk, trigOk, ang
+    end
+
+    if doMulti then
+        local nearestAng = math.huge
+        local plist = Players:GetPlayers()
+        for i = 1, #plist do
+            local player = plist[i]
+            local character, humanoid, rootPart, rageOk, aimOk, trigOk, ang = playerEligible(player)
+            if not character then continue end
+            local wantsMulti =
+                (rageOk and Toggles.RagebotMultiPoint and Toggles.RagebotMultiPoint.Value)
+                or (aimOk and Toggles.AimbotMultiPoint and Toggles.AimbotMultiPoint.Value)
+                or (trigOk and Toggles.TriggerbotMultiPoint and Toggles.TriggerbotMultiPoint.Value)
+            if wantsMulti and ang < nearestAng then
                 nearestAng = ang
                 nearestPlayer = player
             end
         end
+        MultiPoint.nearestPlayer = nearestPlayer
     end
 
-    local bestRageDist = math.huge
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player == LocalPlayer then continue end
-        local character, humanoid, rootPart = getCachedCharacterParts(player)
-        if not character or not humanoid or humanoid.Health <= 0 or not rootPart then continue end
-        if hasShield(character) then continue end
+    local plist = Players:GetPlayers()
+    for i = 1, #plist do
+        local player = plist[i]
+        local character, humanoid, rootPart, enemyRage, enemyAim, enemyTrig = playerEligible(player)
+        if not character then continue end
 
-        local enemyRage = needRage and isEnemyFor(player, Toggles.RagebotTeamCheck)
-        local enemyAim = needAim and isEnemyFor(player, Toggles.AimbotTeamCheck)
-        local enemyTrig = needTrigger and isEnemyFor(player, Toggles.TriggerbotTeamCheck)
-        if not enemyRage and not enemyAim and not enemyTrig then continue end
-
-        local useMulti = allowMultiRay and player == nearestPlayer and (
+        local useMulti = doMulti and player == nearestPlayer and (
             (enemyRage and Toggles.RagebotMultiPoint and Toggles.RagebotMultiPoint.Value)
             or (enemyAim and Toggles.AimbotMultiPoint and Toggles.AimbotMultiPoint.Value)
             or (enemyTrig and Toggles.TriggerbotMultiPoint and Toggles.TriggerbotMultiPoint.Value)
         )
 
         local head = getCachedHead(player, character)
-        local parts = CombatScan.collectParts(character, head, rootPart, enemyRage, enemyAim, enemyTrig)
-        if #parts == 0 then continue end
-
+        local requireVisible = enemyAim and Toggles.AimbotVisibleCheck and Toggles.AimbotVisibleCheck.Value
         local primaryPart, bestPoint, bestWalls = nil, nil, math.huge
 
         if enemyRage then
             primaryPart, bestPoint, bestWalls = CombatScan.pickRageHitbox(character, origin, maxWalls, useMulti, camLook)
         end
 
+        if not primaryPart and enemyAim then
+            primaryPart, bestPoint, bestWalls = AimbotRuntime.resolveHitbox(character, origin, camLook, useMulti, requireVisible)
+        end
+
         if not primaryPart then
+            if requireVisible and not enemyRage and not enemyTrig then
+                continue
+            end
+            local parts = CombatScan.collectParts(character, head, rootPart, enemyRage, false, enemyTrig)
+            if #parts == 0 then continue end
             local primaryDist = math.huge
             primaryPart = parts[1]
-            for i = 1, #parts do
-                local part = parts[i]
+            for j = 1, #parts do
+                local part = parts[j]
                 local delta = part.Position - origin
                 local mag = delta.Magnitude
                 local angDist = mag > 1e-4 and math.acos(math.clamp(camLook:Dot(delta / mag), -1, 1)) or math.huge
@@ -1227,23 +1293,20 @@ function CombatScan.refresh(stamp)
                     primaryPart = part
                 end
             end
-            bestPoint, bestWalls = CombatScan.findPoint(primaryPart, origin, maxWalls, useMulti)
-            if not bestPoint then
+            local triggerOnly = enemyTrig and not enemyRage and not enemyAim
+            if triggerOnly and not useMulti and primaryDist > 0.45 then
                 bestPoint = primaryPart.Position
                 bestWalls = math.huge
+            else
+                bestPoint, bestWalls = MultiPoint.pick(primaryPart, origin, maxWalls, useMulti)
+                if not bestPoint then
+                    bestPoint = primaryPart.Position
+                    bestWalls = math.huge
+                end
             end
         end
 
         local canHit = bestWalls <= maxWalls
-        if not canHit and enemyRage then
-            local ftPoint, ftWalls = CombatScan.tryForwardTrackHit(head, rootPart, origin, character, maxWalls)
-            if ftPoint then
-                bestPoint = ftPoint
-                bestWalls = ftWalls
-                primaryPart = head or primaryPart
-                canHit = true
-            end
-        end
 
         local delta = bestPoint - origin
         local mag = delta.Magnitude
@@ -1264,7 +1327,7 @@ function CombatScan.refresh(stamp)
         CombatScan.byPlayer[player] = entry
         CombatScan.list[#CombatScan.list + 1] = entry
 
-        if enemyRage and entry.canHit and entry.mouseDist < bestRageDist and not hasShield(character) then
+        if enemyRage and entry.canHit and entry.mouseDist <= maxRageAng and entry.mouseDist < bestRageDist and not hasShield(character) then
             bestRageDist = entry.mouseDist
             CombatScan.ragePart = entry.part
             CombatScan.ragePoint = entry.point
@@ -1651,7 +1714,7 @@ do
         return 0.1
     end
 
-    HitpartSilent.fire = function(target, aimPoint)
+    HitpartSilent.fire = function(target, aimPoint, skipRate)
         if HitpartSilent.injecting then return false end
         if not target or not target.Parent then return false end
         if not RuntimePack.silentActive then return false end
@@ -1661,9 +1724,11 @@ do
         if not (HitpartSilent.isHitpartMethod and HitpartSilent.isHitpartMethod()) then return false end
 
         local now = tick()
-        local rate = HitpartSilent.getFireRate and HitpartSilent.getFireRate() or 0.1
-        if now - HitpartSilent.lastFire < rate * 0.85 then return false end
-        HitpartSilent.lastFire = now
+        if not skipRate then
+            local rate = HitpartSilent.getFireRate and HitpartSilent.getFireRate() or 0.1
+            if now - HitpartSilent.lastFire < rate * 0.85 then return false end
+            HitpartSilent.lastFire = now
+        end
 
         refreshHitpartContext(now)
 
@@ -2329,9 +2394,12 @@ ShowHitMarker = function()
     end
 end
 
-PlayHitSound = function()
-    if not Toggles.MiscHitSound or not Toggles.MiscHitSound.Value then return end
-    if not _hitSoundObj then return end
+PlayHitSound = function(force)
+    if not force and (not Toggles.MiscHitSound or not Toggles.MiscHitSound.Value) then return end
+    if not _hitSoundObj then
+        _hitSoundObj = Instance.new("Sound")
+        _hitSoundObj.Parent = workspace
+    end
     local soundType = Options.MiscHitSoundType and Options.MiscHitSoundType.Value or "Skeet"
     local sndId = CONSTANTS.HitSounds[soundType]
     if type(sndId) == "table" then sndId = sndId[math.random(1, #sndId)] end
@@ -2510,7 +2578,7 @@ if not InfAmmoState.charConn then
     end)
 end
 
-local updateBhop, updateLegitBhop, updateThirdPerson, updateThirdPersonNoClip, updateNoclip, updateFly, updateAutoJump, updateAutoCrouch, updateSpeedHack, updateFakeDuck
+local updateBhop, updateThirdPerson, updateThirdPersonNoClip, updateNoclip, updateFly, updateAutoJump, updateAutoCrouch, updateSpeedHack, updateFakeDuck
 local updateNoScope, updateNoFlash, applyNoScope, setupNoSmoke
 local ensureCrosshair, updateCrosshair, unloadValenok
 local updateViewModelVisuals
@@ -2529,8 +2597,8 @@ local TriggerbotState = {
     SpreadReadyAt = 0,
     TargetLostAt = 0,
     DelayTarget = nil,
+    TargetPart = nil,
 }
-local TRIGGER_TARGET_GRACE = 0.05
 
 
 local PeekAssist = {
@@ -2798,22 +2866,26 @@ local InstaWeaponState = { SavedEquipTimes = {}, SavedReloadTimes = {} }
 local SavedRecoilValues, RCSOriginalValues = {}, {}
 local OriginalAccuracySd
 
-local function getAimFov()
-    local fovValue = Options.AimbotFOV and Options.AimbotFOV.Value
-    if type(fovValue) ~= "number" then return 45 end
-    return math.clamp(fovValue, 1, 180)
+function AimbotRuntime.isWanted()
+    return Toggles.AimbotEnable and Toggles.AimbotEnable.Value and isKeybindActive(Options.AimbotKeybind)
 end
 
-local function getAimSmooth()
-    local smoothValue = Options.AimbotSmooth and Options.AimbotSmooth.Value
-    if type(smoothValue) ~= "number" then return 4 end
-    return math.clamp(smoothValue, 1, 10)
+function AimbotRuntime.getFov()
+    local v = Options.AimbotFOV and Options.AimbotFOV.Value
+    if type(v) ~= "number" then return 45 end
+    return math.clamp(v, 1, 180)
 end
 
-local function getAimFovRadius()
-    local aimFov = getAimFov()
+function AimbotRuntime.getSmooth()
+    local v = Options.AimbotSmooth and Options.AimbotSmooth.Value
+    if type(v) ~= "number" then return 4 end
+    return math.clamp(v, 1, 10)
+end
+
+function AimbotRuntime.getFovRadius(cam)
+    local aimFov = AimbotRuntime.getFov()
     if aimFov >= 180 then return 999999 end
-    local cam = getCamera()
+    cam = cam or getCamera()
     if not cam then return 0 end
     local halfViewport = cam.ViewportSize.Y * 0.5
     local camFovHalfRad = math.rad(cam.FieldOfView * 0.5)
@@ -2821,67 +2893,67 @@ local function getAimFovRadius()
     return (math.tan(aimFovHalfRad) / math.tan(camFovHalfRad)) * halfViewport
 end
 
-local function getAimHitboxPart(character, humanoid, cam, screenCenter, selectedHitbox)
-    selectedHitbox = selectedHitbox or (Options.AimbotHitbox and Options.AimbotHitbox.Value or "Head")
-    if type(selectedHitbox) == "table" then
-        for _, group in ipairs(CONSTANTS.RageHitboxPriority) do
-            if CombatScan.rageHitboxOn(group, selectedHitbox) then
-                selectedHitbox = group
-                break
-            end
-        end
-    end
-
-    if selectedHitbox == "Nearest" then
-        local allParts = {}
-        for _, part in ipairs(character:GetChildren()) do
-            if part:IsA("BasePart") and CONSTANTS.RealHitboxLookup[part.Name] then
-                table.insert(allParts, part)
-            end
-        end
-
-        local bestPart = nil
-        local bestDistance = math.huge
-        cam = cam or getCamera()
-        screenCenter = screenCenter or Vector2.new(cam.ViewportSize.X * 0.5, cam.ViewportSize.Y * 0.5)
-
-        for _, part in ipairs(allParts) do
-            local delta = part.Position - cam.CFrame.Position
-            local mag = delta.Magnitude
-            if mag > 1e-4 then
-                local ang = math.acos(math.clamp(cam.CFrame.LookVector:Dot(delta / mag), -1, 1))
-                if ang < bestDistance then
-                    bestDistance = ang
-                    bestPart = part
+function AimbotRuntime.refreshHitboxCache()
+    local selected = Options.AimbotHitbox and Options.AimbotHitbox.Value or "Head"
+    local key = hitboxSelectionKey(selected)
+    if AimbotRuntime.hitboxKey == key then return end
+    AimbotRuntime.hitboxKey = key
+    local names = AimbotRuntime.hitboxNames
+    table.clear(names)
+    for _, group in ipairs(CONSTANTS.RageHitboxPriority) do
+        if CombatScan.rageHitboxOn(group, selected) then
+            local list = CONSTANTS.AimHitboxFallbacks[group]
+            if list then
+                for i = 1, #list do
+                    names[#names + 1] = list[i]
                 end
             end
         end
-
-        return bestPart
     end
-
-    local fallbacks = CONSTANTS.AimHitboxFallbacks[selectedHitbox] or CONSTANTS.AimHitboxFallbacks.Head
-
-    for _, partName in ipairs(fallbacks) do
-        local part = findCharacterPart(character, partName)
-        if part then
-            return part
-        end
+    if #names == 0 then
+        names[1], names[2], names[3] = "HeadHB", "Head", "FakeHead"
     end
-
-    return nil
 end
 
-local function getClosestAimTarget(screenCenter, fovRadius)
-    local bestPart = nil
-    local bestPoint = nil
-    local bestMetric = math.huge
+function AimbotRuntime.resolveHitbox(character, origin, camLook, useMulti, requireVisible)
+    if not character or not origin then return nil, nil, math.huge end
+    AimbotRuntime.refreshHitboxCache()
+
+    if requireVisible then
+        local selected = Options.AimbotHitbox and Options.AimbotHitbox.Value or "Head"
+        return CombatScan.pickPriorityHitbox(
+            character,
+            origin,
+            selected,
+            0,
+            useMulti,
+            camLook,
+            true,
+            CONSTANTS.AimHitboxScan
+        )
+    end
+
+    local names = AimbotRuntime.hitboxNames
+    for i = 1, #names do
+        local part = findCharacterPart(character, names[i])
+        if not part then continue end
+        local point = part.Position
+        if useMulti then
+            point = MultiPoint.bestAnglePoint(part, origin, camLook) or point
+        end
+        return part, point, 0
+    end
+    return nil, nil, math.huge
+end
+
+function AimbotRuntime.selectTarget(cam)
+    if not cam then return nil, nil end
     local useVisible = Toggles.AimbotVisibleCheck and Toggles.AimbotVisibleCheck.Value
-    local aimFov = getAimFov()
+    local aimFov = AimbotRuntime.getFov()
     local maxAngle = aimFov >= 180 and math.huge or math.rad(aimFov * 0.5)
-    local cam = getCamera()
     local camLook = cam.CFrame.LookVector
     local camPos = cam.CFrame.Position
+    local bestPart, bestPoint, bestMetric = nil, nil, math.huge
 
     for i = 1, #CombatScan.list do
         local entry = CombatScan.list[i]
@@ -2892,11 +2964,9 @@ local function getClosestAimTarget(screenCenter, fovRadius)
         local aimPart, aimPoint
         if useVisible then
             if not entry.strictPart or typeof(entry.strictPoint) ~= "Vector3" then continue end
-            aimPart = entry.strictPart
-            aimPoint = entry.strictPoint
+            aimPart, aimPoint = entry.strictPart, entry.strictPoint
         else
-            aimPart = entry.part
-            aimPoint = entry.point
+            aimPart, aimPoint = entry.part, entry.point
             if typeof(aimPoint) ~= "Vector3" then
                 aimPoint = aimPart.Position
             end
@@ -2917,40 +2987,63 @@ local function getClosestAimTarget(screenCenter, fovRadius)
     return bestPart, bestPoint
 end
 
-local function updateAimBot(dt)
+function AimbotRuntime.update(dt)
+    if not AimbotRuntime.isWanted() then return end
     local cam = getCamera()
-    local aimShouldRun = Toggles.AimbotEnable and Toggles.AimbotEnable.Value and isKeybindActive(Options.AimbotKeybind)
-    if not cam or not aimShouldRun then return end
+    if not cam then return end
     if not RuntimePack.canCombatFire() then return end
 
-    local viewport = cam.ViewportSize
-    local screenCenter = Vector2.new(viewport.X * 0.5, viewport.Y * 0.5)
-    local fovRadius = getAimFovRadius()
-
-    local targetPart, aimPoint = getClosestAimTarget(screenCenter, fovRadius)
-
+    local targetPart, aimPoint = AimbotRuntime.selectTarget(cam)
     if not targetPart then return end
     if typeof(aimPoint) ~= "Vector3" then
         aimPoint = targetPart.Position
     end
 
-    local smoothValue = getAimSmooth()
     local camPos = cam.CFrame.Position
-    local aimDelta = aimPoint - camPos
-    if aimDelta.Magnitude < 1e-4 then return end
-    local targetCFrame = CFrame.lookAt(camPos, aimPoint)
-
-    if smoothValue <= 1 then
-        cam.CFrame = targetCFrame
+    if (aimPoint - camPos).Magnitude < 1e-4 then return end
+    local targetCF = CFrame.lookAt(camPos, aimPoint)
+    local smooth = AimbotRuntime.getSmooth()
+    if smooth <= 1 then
+        cam.CFrame = targetCF
     else
         dt = dt or (1 / 60)
-        local alpha = math.clamp(1 / smoothValue * dt * 60, 0.01, 1)
-        cam.CFrame = cam.CFrame:Lerp(targetCFrame, alpha)
+        local alpha = math.clamp(1 / smooth * dt * 60, 0.01, 1)
+        cam.CFrame = cam.CFrame:Lerp(targetCF, alpha)
     end
 end
 
-;(function()
-local function isTriggerbotCheckSelected(name)
+local function getRageFov()
+    local fovValue = Options.RagebotFOV and Options.RagebotFOV.Value
+    if type(fovValue) ~= "number" then return 360 end
+    return math.clamp(fovValue, 1, 360)
+end
+
+local function getRageFovRadius()
+    local rageFov = getRageFov()
+    if rageFov >= 360 then return 999999 end
+    local cam = getCamera()
+    if not cam then return 0 end
+    if rageFov >= 180 then
+        return math.max(cam.ViewportSize.X, cam.ViewportSize.Y)
+    end
+    local halfViewport = cam.ViewportSize.Y * 0.5
+    local camFovHalfRad = math.rad(cam.FieldOfView * 0.5)
+    local rageFovHalfRad = math.rad(rageFov * 0.5)
+    return (math.tan(rageFovHalfRad) / math.tan(camFovHalfRad)) * halfViewport
+end
+
+TriggerbotRuntime.smokeParams = RaycastParams.new()
+TriggerbotRuntime.smokeFilter = table.create(1)
+TriggerbotRuntime.maxPierce = 5
+TriggerbotRuntime.nearPx = 18
+TriggerbotRuntime.grace = 0.05
+TriggerbotRuntime.smokeParams.FilterType = Enum.RaycastFilterType.Include
+
+function TriggerbotRuntime.isWanted()
+    return Toggles.TriggerbotEnable and Toggles.TriggerbotEnable.Value and isKeybindActive(Options.TriggerbotKeybind)
+end
+
+function TriggerbotRuntime.checkSelected(name)
     local opt = Options.TriggerbotChecks
     local value = opt and opt.Value
     if type(value) ~= "table" then return false end
@@ -2961,14 +3054,14 @@ local function isTriggerbotCheckSelected(name)
     return false
 end
 
-local function isTriggerbotFlashed()
+function TriggerbotRuntime.isFlashed()
     local pg = getPlayerGui()
     local blnd = pg and pg:FindFirstChild("Blnd")
     local blind = blnd and blnd:FindFirstChild("Blind")
     return blind and blind.BackgroundTransparency < 0.4 or false
 end
 
-local function isTriggerbotScopedWeapon()
+function TriggerbotRuntime.isScopedWeapon()
     local client = getCachedClient()
     local gun = client and rawget(client, "gun")
     if typeof(gun) == "Instance" then
@@ -2984,7 +3077,7 @@ local function isTriggerbotScopedWeapon()
     return def and (def:FindFirstChild("Scoped") ~= nil or def:FindFirstChild("snipo") ~= nil) or false
 end
 
-local function isTriggerbotInScope()
+function TriggerbotRuntime.isInScope()
     if isADS() then return true end
     local pg = getPlayerGui()
     local gui = pg and (pg:FindFirstChild("GUI") or pg:FindFirstChild("Client"))
@@ -2993,16 +3086,11 @@ local function isTriggerbotInScope()
     return scope and scope.Visible or false
 end
 
-local function checkTriggerbotConditions(character, humanoid)
-    if not Toggles.TriggerbotEnable or not Toggles.TriggerbotEnable.Value then return false end
-    if not isKeybindActive(Options.TriggerbotKeybind) then return false end
+function TriggerbotRuntime.passesChecks(character, humanoid)
+    if not TriggerbotRuntime.isWanted() then return false end
     if not character or not humanoid or humanoid.Health <= 0 then return false end
-
-    if isTriggerbotCheckSelected("Flash") and isTriggerbotFlashed() then
-        return false
-    end
-
-    if isTriggerbotCheckSelected("Air") then
+    if TriggerbotRuntime.checkSelected("Flash") and TriggerbotRuntime.isFlashed() then return false end
+    if TriggerbotRuntime.checkSelected("Air") then
         local state = humanoid:GetState()
         if state == Enum.HumanoidStateType.Jumping
             or state == Enum.HumanoidStateType.Freefall
@@ -3011,78 +3099,72 @@ local function checkTriggerbotConditions(character, humanoid)
             return false
         end
     end
-
-    if isTriggerbotCheckSelected("Scope") and isTriggerbotScopedWeapon() and not isTriggerbotInScope() then
+    if TriggerbotRuntime.checkSelected("Scope") and TriggerbotRuntime.isScopedWeapon() and not TriggerbotRuntime.isInScope() then
         return false
     end
-
     return true
 end
 
-local TriggerSmokeParams = RaycastParams.new()
-TriggerSmokeParams.FilterType = Enum.RaycastFilterType.Include
-local TriggerSmokeFilter = table.create(1)
-local TRIGGER_CROSSHAIR_PX = 18
-local TRIGGER_PEEK_OFFSETS = {
-    Vector2.new(8, 0), Vector2.new(-8, 0), Vector2.new(0, 8), Vector2.new(0, -8),
-    Vector2.new(6, 6), Vector2.new(-6, 6), Vector2.new(6, -6), Vector2.new(-6, -6),
-}
-
-local function isPlayerCombatHitbox(inst)
-    if not inst or not inst:IsA("BasePart") then return false end
-    if not CONSTANTS.RealHitboxLookup[inst.Name] then return false end
-    local model = inst:FindFirstAncestorOfClass("Model")
-    return model ~= nil and Players:GetPlayerFromCharacter(model) ~= nil
-end
-
-local function triggerSmokeBlocks(cam, targetPos)
-    if not isTriggerbotCheckSelected("Smoke") then return false end
+function TriggerbotRuntime.smokeBlocks(cam, targetPos)
+    if not TriggerbotRuntime.checkSelected("Smoke") then return false end
     local rayIgnore = Workspace:FindFirstChild("Ray_Ignore")
     local smokesFolder = rayIgnore and rayIgnore:FindFirstChild("Smokes")
     if not smokesFolder then return false end
-    TriggerSmokeFilter[1] = smokesFolder
-    TriggerSmokeParams.FilterDescendantsInstances = TriggerSmokeFilter
+    TriggerbotRuntime.smokeFilter[1] = smokesFolder
+    TriggerbotRuntime.smokeParams.FilterDescendantsInstances = TriggerbotRuntime.smokeFilter
     getgenv().IgnoreRaycastHook = true
-    local smokeRay = Workspace:Raycast(cam.CFrame.Position, targetPos - cam.CFrame.Position, TriggerSmokeParams)
+    local smokeRay = Workspace:Raycast(cam.CFrame.Position, targetPos - cam.CFrame.Position, TriggerbotRuntime.smokeParams)
     getgenv().IgnoreRaycastHook = false
     return smokeRay and smokeRay.Instance ~= nil
 end
 
-local function rayTriggerHitboxAt(cam, screenPos, maxPierce)
+function TriggerbotRuntime.isCombatHitbox(inst)
+    if not inst or not CONSTANTS.RealHitboxLookup[inst.Name] then return false end
+    local parent = inst.Parent
+    if parent and parent:IsA("Model") and Players:GetPlayerFromCharacter(parent) then
+        return true
+    end
+    local model = inst:FindFirstAncestorOfClass("Model")
+    return model ~= nil and Players:GetPlayerFromCharacter(model) ~= nil
+end
+
+function TriggerbotRuntime.rayCenter(cam, screenPos)
     local ray = cam:ViewportPointToRay(screenPos.X, screenPos.Y)
     local ignore, ignoreCount = copyRayIgnoreList()
     VisibilityParams.FilterDescendantsInstances = ignore
     local origin = ray.Origin
-    local remain = ray.Direction.Unit * 5000
+    local dirUnit = ray.Direction.Unit
+    local remain = dirUnit * 5000
     local rayResult = nil
 
     getgenv().IgnoreRaycastHook = true
-    for _ = 1, maxPierce or 8 do
-        local ok, result = pcall(function()
-            return Workspace:Raycast(origin, remain, VisibilityParams)
-        end)
-        if not ok or not result or not result.Instance then
+    for _ = 1, TriggerbotRuntime.maxPierce do
+        local result = Workspace:Raycast(origin, remain, VisibilityParams)
+        if not result or not result.Instance then
             rayResult = nil
             break
         end
         rayResult = result
         local inst = result.Instance
-        if isPlayerCombatHitbox(inst) then
+        if CONSTANTS.RealHitboxLookup[inst.Name] and TriggerbotRuntime.isCombatHitbox(inst) then
             break
         elseif shouldPierceRayHit(inst) then
             ignoreCount = ignoreCount + 1
             ignore[ignoreCount] = inst
             VisibilityParams.FilterDescendantsInstances = ignore
-            origin = result.Position + remain.Unit * 0.05
+            origin = result.Position + dirUnit * 0.05
         else
             local parent = inst.Parent
-            local isAccessory = parent and parent:IsA("Accessory")
-            local ownerChar = isAccessory and parent.Parent
-            if isAccessory and ownerChar and ownerChar:FindFirstChildOfClass("Humanoid") then
-                ignoreCount = ignoreCount + 1
-                ignore[ignoreCount] = inst
-                VisibilityParams.FilterDescendantsInstances = ignore
-                origin = result.Position + remain.Unit * 0.05
+            if parent and parent:IsA("Accessory") then
+                local ownerChar = parent.Parent
+                if ownerChar and ownerChar:FindFirstChildOfClass("Humanoid") then
+                    ignoreCount = ignoreCount + 1
+                    ignore[ignoreCount] = inst
+                    VisibilityParams.FilterDescendantsInstances = ignore
+                    origin = result.Position + dirUnit * 0.05
+                else
+                    break
+                end
             else
                 break
             end
@@ -3091,33 +3173,25 @@ local function rayTriggerHitboxAt(cam, screenPos, maxPierce)
     getgenv().IgnoreRaycastHook = false
 
     local hitInstance = rayResult and rayResult.Instance
-    if not hitInstance or not hitInstance.Parent or not isPlayerCombatHitbox(hitInstance) then
-        return nil, nil
-    end
-
-    local hitPlayer, hitChar = nil, nil
-    local cur = hitInstance
-    while cur and cur ~= Workspace do
-        if cur:IsA("Model") then
-            local plr = Players:GetPlayerFromCharacter(cur)
-            if plr then
-                hitPlayer, hitChar = plr, cur
-                break
-            end
-        end
-        cur = cur.Parent
-    end
-    if not hitPlayer or not hitChar or not isTriggerEnemy(hitPlayer) or hasShield(hitChar) then
-        return nil, nil
-    end
+    if not hitInstance or not hitInstance.Parent then return nil, nil end
+    if not CONSTANTS.RealHitboxLookup[hitInstance.Name] then return nil, nil end
     if not CombatScan.triggerHitboxOn(hitInstance.Name) then return nil, nil end
+
+    local hitChar = hitInstance.Parent
+    if not hitChar:IsA("Model") then
+        hitChar = hitInstance:FindFirstAncestorOfClass("Model")
+    end
+    local hitPlayer = hitChar and Players:GetPlayerFromCharacter(hitChar)
+    if not hitPlayer or not isTriggerEnemy(hitPlayer) or hasShield(hitChar) then
+        return nil, nil
+    end
     local _, humanoid = getCachedCharacterParts(hitPlayer)
     if not humanoid or humanoid.Health <= 0 then return nil, nil end
-    return hitInstance, rayResult.Position
+    return hitInstance, rayResult.Position, hitPlayer
 end
 
-local function findTriggerbotNear(cam, mousePos)
-    local bestPart, bestDist = nil, TRIGGER_CROSSHAIR_PX
+function TriggerbotRuntime.findNear(cam, mousePos)
+    local bestPart, bestDist = nil, TriggerbotRuntime.nearPx
     for i = 1, #CombatScan.list do
         local entry = CombatScan.list[i]
         if not entry or not entry.player or not isTriggerEnemy(entry.player) then continue end
@@ -3133,39 +3207,16 @@ local function findTriggerbotNear(cam, mousePos)
             bestPart = part
         end
     end
-    if bestPart then return bestPart end
-
-    for i = 1, #TRIGGER_PEEK_OFFSETS do
-        local peekHit, peekPos = rayTriggerHitboxAt(cam, mousePos + TRIGGER_PEEK_OFFSETS[i], 6)
-        if peekHit then
-            if triggerSmokeBlocks(cam, peekPos) then return nil end
-            return peekHit
-        end
-    end
-    return nil
+    return bestPart
 end
 
--- centerOnly: fire/delay only when crosshair ray hits (bullet goes through center)
-local function findTriggerbotTarget(cam, centerOnly)
-    local mousePos = UserInputService:GetMouseLocation()
-
-    local hit, hitPos = rayTriggerHitboxAt(cam, mousePos, 10)
-    if hit then
-        if triggerSmokeBlocks(cam, hitPos) then return nil end
-        return hit
-    end
-
-    if centerOnly then return nil end
-    return findTriggerbotNear(cam, mousePos)
-end
-
-local function getTriggerbotHorizontalSpeed(rootPart)
+function TriggerbotRuntime.horizontalSpeed(rootPart)
     if not rootPart then return 0 end
     local vel = rootPart.AssemblyLinearVelocity
     return math.sqrt(vel.X * vel.X + vel.Z * vel.Z)
 end
 
-TriggerbotState.getSpreadAngle = function(rootPart)
+function TriggerbotRuntime.getSpreadAngle(rootPart)
     local character = LocalPlayer.Character
     local equipped = character and character:FindFirstChild("EquippedTool")
     local weaponName = equipped and type(equipped.Value) == "string" and equipped.Value or nil
@@ -3187,13 +3238,13 @@ TriggerbotState.getSpreadAngle = function(rootPart)
     local base = (tonumber(spread.Value) or 0) + (tonumber(spread.Stand and spread.Stand.Value) or 0)
     if base <= 20 and not weapon:FindFirstChild("SMGThing") then base = base / 10 end
     local move = tonumber(spread.Move and spread.Move.Value) or 0
-    local speed = getTriggerbotHorizontalSpeed(rootPart)
+    local speed = TriggerbotRuntime.horizontalSpeed(rootPart)
     local maxSpeed = client and tonumber(rawget(client, "curspd")) or 256
     local movementFactor = math.clamp((speed - maxSpeed * 0.34 * 0.0625) / (maxSpeed * 0.61 * 0.0625), 0, 1)
     return (base + move * movementFactor) * accuracySd, spread
 end
 
-TriggerbotState.getTargetCoverage = function(targetPart, spreadAngle)
+function TriggerbotRuntime.getTargetCoverage(targetPart, spreadAngle)
     if not targetPart or not targetPart.Parent or not targetPart:IsA("BasePart") then return 0 end
     if not spreadAngle or spreadAngle <= 1e-8 then return 1 end
     local cam = getCamera()
@@ -3209,47 +3260,35 @@ TriggerbotState.getTargetCoverage = function(targetPart, spreadAngle)
     return math.clamp(targetAngle / spreadAngle, 0, 1)
 end
 
-TriggerbotState.passesHitChance = function(targetPart, spreadAngle)
+function TriggerbotRuntime.passesHitChance(targetPart, spreadAngle)
     if not spreadAngle or spreadAngle <= 1e-8 then return true end
     local hitChance = math.clamp(tonumber(Options.TriggerbotHitChance and Options.TriggerbotHitChance.Value) or 75, 1, 100)
-    local coverage = TriggerbotState.getTargetCoverage(targetPart, spreadAngle)
+    local coverage = TriggerbotRuntime.getTargetCoverage(targetPart, spreadAngle)
     return coverage * 100 + 1e-3 >= hitChance
 end
 
-TriggerbotState.getRecoveryDelay = function(rootPart)
-    local spreadAngle, spread = TriggerbotState.getSpreadAngle(rootPart)
-    if not spread then return 0 end
-    if not spreadAngle or spreadAngle <= 1e-8 then return 0 end
-    local recovery = tonumber(spread.RecoveryTime and spread.RecoveryTime.Value) or 0.1
-    return math.clamp(recovery * 0.08 + spreadAngle * 0.04, 0, 0.2)
-end
-
-TriggerbotState.getSpreadDelay = function(rootPart, targetPart)
-    local spreadAngle, spread = TriggerbotState.getSpreadAngle(rootPart)
-    if not spread then return 0 end
-    if not TriggerbotState.passesHitChance(targetPart, spreadAngle) then
-        return math.huge
-    end
-    return 0
-end
-
-TriggerbotState.getSpreadPixels = function()
+function TriggerbotRuntime.getSpreadPixels()
     local _, _, rootPart = getCachedCharacterParts(LocalPlayer)
-    local spreadAngle = TriggerbotState.getSpreadAngle(rootPart)
+    local spreadAngle = TriggerbotRuntime.getSpreadAngle(rootPart)
     local cam = getCamera()
     if not cam then return 0 end
     return math.max(0, math.deg(spreadAngle) * 10 * cam.ViewportSize.Y / 600)
 end
 
-TriggerbotState.getCoveragePercent = function(targetPart)
+function TriggerbotRuntime.getCoveragePercent(targetPart)
     local _, _, rootPart = getCachedCharacterParts(LocalPlayer)
-    local spreadAngle = TriggerbotState.getSpreadAngle(rootPart)
-    return TriggerbotState.getTargetCoverage(targetPart, spreadAngle) * 100
+    local spreadAngle = TriggerbotRuntime.getSpreadAngle(rootPart)
+    return TriggerbotRuntime.getTargetCoverage(targetPart, spreadAngle) * 100
 end
 
-local function applyTriggerbotMagnet(cam)
-    if not Toggles.TriggerbotMagnet or not Toggles.TriggerbotMagnet.Value then return end
+TriggerbotState.getSpreadAngle = TriggerbotRuntime.getSpreadAngle
+TriggerbotState.getTargetCoverage = TriggerbotRuntime.getTargetCoverage
+TriggerbotState.passesHitChance = TriggerbotRuntime.passesHitChance
+TriggerbotState.getSpreadPixels = TriggerbotRuntime.getSpreadPixels
+TriggerbotState.getCoveragePercent = TriggerbotRuntime.getCoveragePercent
 
+function TriggerbotRuntime.applyMagnet(cam)
+    if not Toggles.TriggerbotMagnet or not Toggles.TriggerbotMagnet.Value then return end
     local magnetFov = 25
     local smoothFactor = 0.15
     local mousePos = UserInputService:GetMouseLocation()
@@ -3260,11 +3299,9 @@ local function applyTriggerbotMagnet(cam)
         local entry = CombatScan.list[i]
         if not entry or not entry.player then continue end
         if not isTriggerEnemy(entry.player) then continue end
-
         local aimPoint = entry.strictPoint or (entry.walls == 0 and entry.point)
         local aimPart = entry.strictPart or (entry.walls == 0 and entry.part)
         if not aimPart or typeof(aimPoint) ~= "Vector3" then continue end
-
         local screenPoint = cam:WorldToViewportPoint(aimPoint)
         if screenPoint.Z <= 0 then continue end
         local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - mousePos).Magnitude
@@ -3314,57 +3351,39 @@ fireSingleShot = function()
     end
 end
 
-updateTriggerbot = function()
-    local now = tick()
+function TriggerbotRuntime.resetDelay()
+    TriggerbotState.DelayActive = false
+    TriggerbotState.TargetLostAt = 0
+    TriggerbotState.DelayTarget = nil
+end
 
-    if Library and Library.IsMenuVisible and Library:IsMenuVisible() then
-        return
-    end
+function TriggerbotRuntime.update()
+    local now = tick()
+    if not TriggerbotRuntime.isWanted() then return end
+    if Library and Library.IsMenuVisible and Library:IsMenuVisible() then return end
     if TriggerbotState.IsFiring then return end
     local cam = getCamera()
     if not cam then return end
     if not RuntimePack.canCombatFire() then
-        TriggerbotState.DelayActive = false
-        TriggerbotState.TargetLostAt = 0
-        TriggerbotState.DelayTarget = nil
+        TriggerbotRuntime.resetDelay()
         return
     end
 
     local character, humanoid, rootPart = getCachedCharacterParts(LocalPlayer)
-    if not checkTriggerbotConditions(character, humanoid) then
-        TriggerbotState.DelayActive = false
-        TriggerbotState.TargetLostAt = 0
-        TriggerbotState.DelayTarget = nil
+    if not TriggerbotRuntime.passesChecks(character, humanoid) then
+        TriggerbotRuntime.resetDelay()
         return
     end
 
-    applyTriggerbotMagnet(cam)
+    TriggerbotRuntime.applyMagnet(cam)
 
-    -- fire/delay: only exact crosshair hit (bullet goes through center)
-    local targetPart = findTriggerbotTarget(cam, true)
-    local targetPlayer = nil
-
-    if targetPart and targetPart.Parent then
-        local hitChar = nil
-        local cur = targetPart
-        while cur and cur ~= Workspace do
-            if cur:IsA("Model") then
-                local plr = Players:GetPlayerFromCharacter(cur)
-                if plr then
-                    hitChar = cur
-                    targetPlayer = plr
-                    break
-                end
-            end
-            cur = cur.Parent
-        end
-        local hitHum = hitChar and hitChar:FindFirstChildOfClass("Humanoid")
-        if not hitHum or hitHum.Health <= 0 then
-            targetPart = nil
-            targetPlayer = nil
-        end
+    local mousePos = UserInputService:GetMouseLocation()
+    local targetPart, hitPos, targetPlayer = TriggerbotRuntime.rayCenter(cam, mousePos)
+    if targetPart and TriggerbotRuntime.smokeBlocks(cam, hitPos) then
+        targetPart, targetPlayer = nil, nil
     end
-    TriggerbotState.TargetPart = targetPart or findTriggerbotTarget(cam, false)
+
+    TriggerbotState.TargetPart = targetPart or TriggerbotRuntime.findNear(cam, mousePos)
 
     if targetPart then
         TriggerbotState.TargetLostAt = 0
@@ -3374,8 +3393,8 @@ updateTriggerbot = function()
         end
         TriggerbotState.DelayTarget = targetPlayer
 
-        local spreadAngle = TriggerbotState.getSpreadAngle(rootPart)
-        if not TriggerbotState.passesHitChance(targetPart, spreadAngle) then
+        local spreadAngle = TriggerbotRuntime.getSpreadAngle(rootPart)
+        if not TriggerbotRuntime.passesHitChance(targetPart, spreadAngle) then
             return
         end
 
@@ -3387,20 +3406,14 @@ updateTriggerbot = function()
         end
 
         if now >= TriggerbotState.DelayUntil then
-            local confirmPart = findTriggerbotTarget(cam, true)
-            if not confirmPart or not TriggerbotState.passesHitChance(confirmPart, TriggerbotState.getSpreadAngle(rootPart)) then
-                return
-            end
             fireSingleShot()
         end
     else
         if TriggerbotState.DelayActive then
             if TriggerbotState.TargetLostAt == 0 then
                 TriggerbotState.TargetLostAt = now
-            elseif now - TriggerbotState.TargetLostAt > TRIGGER_TARGET_GRACE then
-                TriggerbotState.DelayActive = false
-                TriggerbotState.TargetLostAt = 0
-                TriggerbotState.DelayTarget = nil
+            elseif now - TriggerbotState.TargetLostAt > TriggerbotRuntime.grace then
+                TriggerbotRuntime.resetDelay()
             end
         else
             TriggerbotState.TargetLostAt = 0
@@ -3408,7 +3421,11 @@ updateTriggerbot = function()
         end
     end
 end
-end)()
+
+updateTriggerbot = function()
+    TriggerbotRuntime.update()
+end
+
 
 local AntiAimState = {
     CFrame = CFrame.new(),
@@ -4264,7 +4281,6 @@ updateAutoCrouch = function()
 end
 
 Shared.BhopState = { Conn = nil, LastWalkSpeed = nil }
-Shared.LegitBhopState = { Conn = nil, JumpCount = 0, WasInAir = false, DefaultSpeed = 16, LastWalkSpeed = nil }
 Shared.AutoJumpState = { Conn = nil }
 Shared.NoclipState = { Conn = nil, DescendantConn = nil, Saved = {}, Parts = {}, Character = nil }
 Shared.FlyState = { Conn = nil }
@@ -4312,52 +4328,6 @@ updateBhop = function()
         end
     end)
     Shared.BhopState.Conn = true
-end
-
-updateLegitBhop = function()
-    MoveLoop.set("hb", "LegitBhop", nil)
-    Shared.LegitBhopState.Conn = nil
-    Shared.LegitBhopState.JumpCount = 0
-    Shared.LegitBhopState.WasInAir = false
-    Shared.LegitBhopState.LastWalkSpeed = nil
-    local humanoid = MoveUtil.getLocalHumanoid()
-    if humanoid then
-        humanoid.WalkSpeed = CONSTANTS.DEFAULT_WALK_SPEED
-    end
-    if not (Toggles.LegitBhopEnable and Toggles.LegitBhopEnable.Value) then return end
-
-    MoveLoop.set("hb", "LegitBhop", function(_, char, hum, rootPart)
-        local spaceHeld = UserInputService:IsKeyDown(MoveUtil.MOVE_KEY_SPACE)
-        if not hum or not rootPart then return end
-
-        local inAir = hum.FloorMaterial == MoveUtil.AIR_MATERIAL
-
-        if not spaceHeld then
-            if Shared.LegitBhopState.JumpCount ~= 0 then
-                Shared.LegitBhopState.JumpCount = 0
-            end
-            Shared.LegitBhopState.WasInAir = inAir
-            setWalkSpeedIfChanged(Shared.LegitBhopState, hum, CONSTANTS.DEFAULT_WALK_SPEED)
-            return
-        end
-
-        if inAir then
-            Shared.LegitBhopState.WasInAir = true
-        elseif Shared.LegitBhopState.WasInAir then
-            hum.Jump = true
-            Shared.LegitBhopState.JumpCount = math.min(Shared.LegitBhopState.JumpCount + 1, 15)
-            Shared.LegitBhopState.WasInAir = false
-        else
-
-            hum.Jump = true
-        end
-
-        local maxMult = Options.LegitBhopMultiplier and Options.LegitBhopMultiplier.Value or 2
-        if not maxMult or maxMult < 1 then maxMult = 1 end
-        local multiplier = 1 + (Shared.LegitBhopState.JumpCount / 15) * (maxMult - 1)
-        setWalkSpeedIfChanged(Shared.LegitBhopState, hum, CONSTANTS.DEFAULT_WALK_SPEED * multiplier)
-    end)
-    Shared.LegitBhopState.Conn = true
 end
 
 Shared.clearNoclipRuntime = function()
@@ -5186,15 +5156,24 @@ Shared.updateFovCircle = function()
     local center = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
     local aimCircle = AimRuntime.AimFovCircle
     if aimCircle then
-        local show = tv("AimbotShowFOV") and tv("AimbotEnable") and getAimFov() < 180
+        local show = tv("AimbotShowFOV") and tv("AimbotEnable") and AimbotRuntime.getFov() < 180
         if show then
-            aimCircle.Position, aimCircle.Radius = center, math.min(getAimFovRadius(), 100000)
+            aimCircle.Position, aimCircle.Radius = center, math.min(AimbotRuntime.getFovRadius(cam), 100000)
             aimCircle.Color, aimCircle.Visible = getOptionColor("AimbotFOVColor", Color3.fromRGB(255, 255, 255)), true
         else
             aimCircle.Visible = false
         end
     end
-    if AimRuntime.RageFovCircle then AimRuntime.RageFovCircle.Visible = false end
+    local rageCircle = AimRuntime.RageFovCircle
+    if rageCircle then
+        local showRage = tv("RagebotShowFOV") and tv("RagebotEnable") and getRageFov() < 360
+        if showRage then
+            rageCircle.Position, rageCircle.Radius = center, math.min(getRageFovRadius(), 100000)
+            rageCircle.Color, rageCircle.Visible = getOptionColor("RagebotFOVColor", Color3.fromRGB(255, 80, 80)), true
+        else
+            rageCircle.Visible = false
+        end
+    end
     local spreadCircle = AimRuntime.SpreadCircle
     local spreadText = AimRuntime.SpreadText
     if spreadCircle then
@@ -6539,7 +6518,6 @@ local MovementSections = {
     Bhop = Tabs.Movement:AddLeftGroupbox('Bhop'),
 
     SpeedHack = Tabs.Movement:AddLeftGroupbox('Speed Hack'),
-    LegitBhop = Tabs.Movement:AddRightGroupbox('Legit Bhop'),
     Misc = Tabs.Movement:AddRightGroupbox('Misc'),
     Exploits = Tabs.Movement:AddRightGroupbox('Exploits'),
 }
@@ -6548,16 +6526,16 @@ MovementSections.SpeedHack:AddSlider('SpeedHackSpeed', {Text = 'Speed', Default 
 MovementSections.Exploits:AddToggle('NoclipEnable', {Text = 'Noclip', Default = false, Callback = function() updateNoclip() end})
 MovementSections.Exploits:AddToggle('FlyEnable', {Text = 'Fly', Default = false, Callback = function() updateFly() end})
 MovementSections.Exploits:AddSlider('FlySpeed', {Text = 'Fly speed', Default = 50, Min = 10, Max = 300, Rounding = 0})
-MovementSections.LegitBhop:AddToggle('LegitBhopEnable', {Text = 'Enable', Default = false, Callback = function() updateLegitBhop() end})
-MovementSections.LegitBhop:AddSlider('LegitBhopMultiplier', {Text = 'Multiplier', Default = 2, Min = 1, Max = 3, Rounding = 1})
 MovementSections.Bhop:AddToggle('BhopEnable', {Text = 'Enable', Default = false, Callback = function() updateBhop() end})
-MovementSections.Bhop:AddSlider('BhopMultiplier', {Text = 'Bhop multiplier', Default = 1, Min = 1, Max = 5, Rounding = 2})
+MovementSections.Bhop:AddSlider('BhopMultiplier', {Text = 'Bhop multiplier', Default = 1, Min = 1, Max = 10, Rounding = 2})
 MovementSections.Misc:AddToggle('AutoJumpEnable', {Text = 'Auto jump', Default = false, Callback = function() updateAutoJump() end})
 MovementSections.Misc:AddToggle('AutoCrouchEnable', {Text = 'Auto crouch (on jump)', Default = false, Callback = function() updateAutoCrouch() end})
 MovementSections.Misc:AddToggle('FakeDuckEnable', {Text = 'Fake duck', Default = false, Callback = function() updateFakeDuck() end, KeyPicker = {Idx = 'FakeDuckKeybind', Default = 'V', Mode = 'Hold', Text = 'Fake duck'}})
 
 RageSections.Ragebot:AddToggle('RagebotEnable', {Text = 'Enable', Default = false, KeyPicker = {Idx = 'RagebotKeybind', Default = 'None', Mode = 'Hold', Text = 'Ragebot'}})
 RageSections.Ragebot:AddToggle('RagebotAutoFire', {Text = 'Auto Fire', Default = false})
+RageSections.Ragebot:AddSlider('RagebotFOV', {Text = 'FOV', Default = 360, Min = 1, Max = 360, Rounding = 0})
+RageSections.Ragebot:AddToggle('RagebotShowFOV', {Text = 'Show FOV', Default = false, ColorPicker = {Idx = 'RagebotFOVColor', Default = Color3.fromRGB(255, 80, 80), Title = 'FOV color'}})
 RageSections.Ragebot:AddToggle('RagebotAutoScope', {Text = 'Auto Scope', Default = false})
 RageSections.Ragebot:AddToggle('RagebotTeamCheck', {Text = 'Team Check', Default = false})
 RageSections.Ragebot:AddToggle('RagebotAutoPenetration', {Text = 'Auto Penetration', Default = true})
@@ -6569,8 +6547,6 @@ RageSections.Ragebot:AddDropdown('RagebotHitbox', {
 })
 RageSections.Ragebot:AddSlider('SilentAimMaxWalls', {Text = 'Max Walls', Default = 3, Min = 1, Max = 15, Rounding = 0})
 RageSections.Ragebot:AddToggle('RagebotMultiPoint', {Text = 'Multi Point', Default = false})
-RageSections.Ragebot:AddToggle('RagebotForwardTrack', {Text = 'ForwardTrack', Default = false})
-RageSections.Ragebot:AddSlider('RagebotForwardTrackTime', {Text = 'ForwardTrack Time', Default = 1, Min = 1, Max = 4, Rounding = 1, Suffix = 's'})
 
 if HitpartSilent.refreshMethod then HitpartSilent.refreshMethod() end
 
@@ -6629,6 +6605,9 @@ VisualSections.Grenades:AddToggle('GrenadesPrediction', {Text = 'Grenade predict
 VisualSections.DamageIndicators:AddToggle('MiscHitSound', {Text = 'Hit sound', Default = false})
 VisualSections.DamageIndicators:AddDropdown('MiscHitSoundType', {Values = { 'Skeet', 'Neverlose', 'Bameware', 'Bell', 'Bubble', 'Pick', 'Pop', 'Rust', 'Sans', 'Fart', 'Big', 'Vine', 'Bruh', 'Fatality', 'Bonk', 'Minecraft', 'Moan' }, Default = 'Skeet', Text = 'Hit sound type'})
 VisualSections.DamageIndicators:AddSlider('MiscHitSoundVolume', {Text = 'Volume', Default = 5, Min = 1, Max = 10, Rounding = 0})
+VisualSections.DamageIndicators:AddButton('Play Hit Sound', function()
+    PlayHitSound(true)
+end)
 VisualSections.DamageIndicators:AddToggle('MiscHitChams', {Text = 'Hit chams', Default = false, ColorPicker = {Idx = 'MiscHitChamsColor', Default = Color3.fromRGB(200, 30, 80), Title = 'Hit chams color'}})
 VisualSections.DamageIndicators:AddSlider('MiscHitChamsLifetime', {Text = 'Hit chams time (s)', Default = 1.3, Min = 1, Max = 5, Rounding = 1})
 VisualSections.DamageIndicators:AddToggle('MiscHitMarker', {Text = 'Hit marker', Default = false, ColorPicker = {Idx = 'MiscHitMarkerColor', Default = Color3.fromRGB(255, 255, 255), Title = 'Hit marker color'}})
@@ -6733,6 +6712,7 @@ VisualSections.Menu:AddToggle('MenuWatermark', {Text = 'Watermark', Default = tr
 VisualSections.Removals:AddToggle('RemovalsNoSmoke', {Text = 'No smoke', Default = false, Callback = function() setupNoSmoke() end})
 VisualSections.Removals:AddToggle('RemovalsNoFlash', {Text = 'No flash', Default = false, Callback = function() updateNoFlash() end})
 VisualSections.Removals:AddToggle('RemovalsNoScope', {Text = 'No scope', Default = false, Callback = function() updateNoScope() end})
+VisualSections.Removals:AddToggle('RemovalsNoWeaponAnim', {Text = 'Remove Weapon animation', Default = false})
 
 VisualSections.ThirdPerson:AddToggle('ThirdPersonEnable', {Text = 'Enable', Default = false, KeyPicker = {Idx = 'ThirdPersonKeybind', Default = 'None', Mode = 'Toggle', Text = 'Third person'}})
 VisualSections.ThirdPerson:AddSlider('ThirdPersonDistance', {Text = 'Distance', Default = 5, Min = 1, Max = 100, Rounding = 0})
@@ -7410,24 +7390,26 @@ pcall(function()
             end
 
             if name == "ReplicateShot" then
-                pcall(function()
-                    if Toggles.PeekAssistEnable and Toggles.PeekAssistEnable.Value then
-                        peekAssistOnShot()
-                    end
-                end)
-                local autoFireOn = Toggles.RagebotAutoFire and Toggles.RagebotAutoFire.Value
-                if not autoFireOn and not HitpartSilent.injecting and RuntimePack.silentActive and RuntimePack.canCombatFire() then
-                    local silentTarget = getgenv().PSilentTarget
-                    if silentTarget and silentTarget.Parent then
-                        local targetChar = silentTarget:FindFirstAncestorOfClass("Model") or silentTarget.Parent
-                        if not hasShield(targetChar) then
-                            HitpartSilent.fire(silentTarget, getgenv().PSilentAimPoint)
-                        end
-                    end
+                if Toggles.PeekAssistEnable and Toggles.PeekAssistEnable.Value then
+                    pcall(peekAssistOnShot)
                 end
                 return _oldNamecall(self, ...)
             end
 
+            return _oldNamecall(self, ...)
+        end
+
+        if method == "Play" then
+            if Toggles.RemovalsNoWeaponAnim and Toggles.RemovalsNoWeaponAnim.Value then
+                if typeof(self) == "Instance" and self.ClassName == "AnimationTrack" then
+                    local anim = self.Animation
+                    local n = anim and string.lower(anim.Name) or ""
+                    if n == "fire" or n == "fire2" or n == "fire3"
+                        or n == "aimfire" or n == "fastfire" or n == "fire_juggernaut" then
+                        return
+                    end
+                end
+            end
             return _oldNamecall(self, ...)
         end
 
@@ -7748,7 +7730,6 @@ unloadValenok = function()
     Shared.AutoCrouchState.Conn = nil
     Shared.FakeDuckState.Conn = nil
     Shared.BhopState.Conn = nil
-    Shared.LegitBhopState.Conn = nil
     Shared.NoclipState.Conn = nil
     Shared.FlyState.Conn = nil
     pcall(Shared.restoreNoclipParts)
@@ -7871,7 +7852,9 @@ unloadValenok = function()
     table.clear(CharIgnorePartsCache)
     table.clear(IgnoreRootsCache)
     if ModeCache then ModeCache.t, ModeCache.value = 0, false end
-    if TeamIgnoreCache then TeamIgnoreCache.t, TeamIgnoreCache.value = 0, false end
+    RuntimePack.clientScript = nil
+    RuntimePack.clientEnv = nil
+    RuntimePack.rayIgnore = nil
     if Shared.NoclipState then
         Shared.NoclipState.Saved = {}
         Shared.NoclipState.Parts = {}
@@ -8055,8 +8038,8 @@ end
             Shared.removeDrawingSet(player)
             Shared.removePlayerChams(player)
             Shared.removeHighlight(player)
-            invalidateEspPlayerCache(player)
             if player.Character then invalidateCharIgnoreParts(player.Character) end
+            onCombatCharacterChanged(player, nil)
         end)
     end)
 
@@ -8066,22 +8049,19 @@ end
                 Shared.NoclipState.Saved = {}
                 Shared.clearNoclipRuntime()
             end
-            invalidateEspPlayerCache(LocalPlayer)
-            invalidateCharIgnoreParts(character)
+            onCombatCharacterChanged(LocalPlayer, character)
         end)
     end)
 
     EspRuntime.Connections.PlayerCharAdded = Players.PlayerAdded:Connect(function(player)
         EspRuntime.Connections["CharAdded_" .. player.UserId] = player.CharacterAdded:Connect(function(character)
-            invalidateEspPlayerCache(player)
-            invalidateCharIgnoreParts(character)
+            onCombatCharacterChanged(player, character)
         end)
     end)
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= LocalPlayer then
             EspRuntime.Connections["CharAdded_" .. player.UserId] = player.CharacterAdded:Connect(function(character)
-                invalidateEspPlayerCache(player)
-                invalidateCharIgnoreParts(character)
+                onCombatCharacterChanged(player, character)
             end)
         end
     end
@@ -8142,14 +8122,16 @@ local function updateRagebot()
         local menuOpen = Library and Library.IsMenuVisible and Library:IsMenuVisible()
         local autoFire = Toggles.RagebotAutoFire and Toggles.RagebotAutoFire.Value and not menuOpen
 
-        if autoFire and silentTarget and silentTarget.Parent then
+        if autoFire and silentTarget and silentTarget.Parent and typeof(silentPoint) == "Vector3" then
             local targetChar = silentTarget:FindFirstAncestorOfClass("Model") or silentTarget.Parent
             if not hasShield(targetChar) then
                 local rate = HitpartSilent.getFireRate and HitpartSilent.getFireRate() or 0.1
                 if now - HitpartSilent.lastFire >= rate then
-                    fireWeapShot()
-                    if HitpartSilent.isHitpartMethod and HitpartSilent.isHitpartMethod() then
-                        HitpartSilent.fire(silentTarget, silentPoint)
+                    if fireWeapShot() then
+                        HitpartSilent.lastFire = now
+                        if HitpartSilent.isHitpartMethod and HitpartSilent.isHitpartMethod() then
+                            HitpartSilent.fire(silentTarget, silentPoint, true)
+                        end
                     end
                 end
             end
@@ -8190,7 +8172,7 @@ local function runMainUpdate(stepDt)
     Shared.updateFovCircle()
 
     if isAlive then
-        updateAimBot(stepDt)
+        AimbotRuntime.update(stepDt)
     end
 
     updateCrosshair()
