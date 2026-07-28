@@ -5,8 +5,10 @@ end
 local CONSTANTS = {
     GITHUB_LIB_URL = "https://raw.githubusercontent.com/sixodicor-byte/1337/refs/heads/main/NewLib.lua",
     DISCORD_URL = "https://discord.gg/8GRGXy742u",
+    BETA_SCRIPT = "https://raw.githubusercontent.com/sixodicor-byte/1337/refs/heads/main/Beta_Main.lua",
     MAIN_SCRIPT = "https://raw.githubusercontent.com/sixodicor-byte/1337/refs/heads/main/Main_Script.lua",
     VALID_KEY = "7K9-F2W-M8B",
+    BETA_KEY = "8SR-N3S-WWE",
     KEY_FILE = "Key/key.json",
 }
 
@@ -51,8 +53,18 @@ local function safeSaveKey(key)
 end
 
 local savedKey = safeReadKey()
-if savedKey ~= CONSTANTS.VALID_KEY then
+if savedKey ~= CONSTANTS.VALID_KEY and savedKey ~= CONSTANTS.BETA_KEY then
     savedKey = ""
+end
+
+local function getScriptUrlForKey(key)
+    if key == CONSTANTS.BETA_KEY then
+        return CONSTANTS.BETA_SCRIPT, "Beta"
+    end
+    if key == CONSTANTS.VALID_KEY then
+        return CONSTANTS.MAIN_SCRIPT, "Main"
+    end
+    return nil, nil
 end
 
 pcall(function()
@@ -132,11 +144,12 @@ KeyGroupbox:AddButton({
         end
 
         local trimmed = tostring(enteredKey):gsub("^%s+", ""):gsub("%s+$", "")
+        local scriptUrl, scriptName = getScriptUrlForKey(trimmed)
 
-        if trimmed == CONSTANTS.VALID_KEY then
+        if scriptUrl then
             isLoading = true
-            safeSaveKey(CONSTANTS.VALID_KEY)
-            statusLabel.Text = 'Status: Key verified! Loading...'
+            safeSaveKey(trimmed)
+            statusLabel.Text = 'Status: Key verified! Loading ' .. scriptName .. '...'
 
             -- Полностью и корректно выгружаем интерфейс кей-системы
             if Library then
@@ -147,12 +160,12 @@ KeyGroupbox:AddButton({
 
             task.wait(0.5)
 
-            -- Безопасный запуск основного скрипта
+            -- Безопасный запуск скрипта по ключу
             local success, err = pcall(function()
-                local source = game:HttpGet(CONSTANTS.MAIN_SCRIPT)
+                local source = game:HttpGet(scriptUrl)
                 local loader = loadstring(source)
                 if type(loader) ~= "function" then
-                    error("Main script did not return executable code")
+                    error(scriptName .. " script did not return executable code")
                 end
                 loader()
             end)
