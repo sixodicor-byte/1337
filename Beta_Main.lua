@@ -1047,7 +1047,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         Text = 'Life time', Default = 4, Min = 1, Max = 15, Rounding = 0, Suffix = 's',
     })
     KillEffect:AddSlider('KillEffect_Amount', {
-        Text = 'Amount', Default = 50, Min = 10, Max = 300, Rounding = 0,
+        Text = 'Amount', Default = 50, Min = 10, Max = 500, Rounding = 0,
     })
     KillEffect:AddDropdown('KillEffect_Mode', {
         Text = 'Particle mode', Values = { 'Statik', 'Dynamic' }, Default = 'Dynamic',
