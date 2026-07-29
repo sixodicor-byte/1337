@@ -708,6 +708,16 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             local model, skin = modelOption and modelOption.Value, skinOption and skinOption.Value
             if model and skin then saved[model] = skin end
         end
+        local function RandomizeSkins(items, skinMap, saved)
+            for _, item in ipairs(items) do
+                local values = skinMap[item]
+                if values and #values > 1 then
+                    saved[item] = values[math.random(2, #values)]
+                elseif values and values[1] then
+                    saved[item] = values[1]
+                end
+            end
+        end
 
         local KnifeBox = SkinTab:AddLeftGroupbox('Knife changer')
         KnifeBox:AddToggle('Skin_Knife_Enable', { Text = 'Enable', Default = false }):OnChanged(function()
@@ -720,6 +730,10 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         KnifeBox:AddDropdown('Skin_Knife_Skin', { Text = 'Skin', Values = KnifeSkins[KnifeNames[1]] or { 'Inventory' }, Default = 'Inventory' }):OnChanged(function()
             SavePair(Options.Skin_Knife_Knife, Options.Skin_Knife_Skin, State.knifeSkins)
         end)
+        KnifeBox:AddButton('Random skin', function()
+            RandomizeSkins(KnifeNames, KnifeSkins, State.knifeSkins)
+            SyncSkin(Options.Skin_Knife_Knife, Options.Skin_Knife_Skin, KnifeSkins, State.knifeSkins, 'Inventory')
+        end)
 
         local WeaponBox = SkinTab:AddRightGroupbox('Weapon changer')
         WeaponBox:AddToggle('Skin_Weapon_Enable', { Text = 'Enable', Default = false })
@@ -729,6 +743,10 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         WeaponBox:AddDropdown('Skin_Weapon_Skin', { Text = 'Skin', Values = WeaponSkins[AllWeapons[1]] or { 'Inventory' }, Default = 'Inventory' }):OnChanged(function()
             SavePair(Options.Skin_Weapon_Weapon, Options.Skin_Weapon_Skin, State.weaponSkins)
         end)
+        WeaponBox:AddButton('Random skin', function()
+            RandomizeSkins(AllWeapons, WeaponSkins, State.weaponSkins)
+            SyncSkin(Options.Skin_Weapon_Weapon, Options.Skin_Weapon_Skin, WeaponSkins, State.weaponSkins, 'Inventory')
+        end)
 
         local GloveBox = SkinTab:AddLeftGroupbox('Glove changer')
         GloveBox:AddToggle('Skin_Glove_Enable', { Text = 'Enable', Default = false })
@@ -737,6 +755,10 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         end)
         GloveBox:AddDropdown('Skin_Glove_Skin', { Text = 'Skin', Values = GloveSkins[AllGloves[1]] or { 'Default' }, Default = 'Default' }):OnChanged(function()
             SavePair(Options.Skin_Glove_Glove, Options.Skin_Glove_Skin, State.gloveSkins)
+        end)
+        GloveBox:AddButton('Random skin', function()
+            RandomizeSkins(AllGloves, GloveSkins, State.gloveSkins)
+            SyncSkin(Options.Skin_Glove_Glove, Options.Skin_Glove_Skin, GloveSkins, State.gloveSkins, 'Default')
         end)
 
         function SkinChanger.RefreshConfig()
@@ -758,7 +780,8 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
     local Players = VisualTab:AddLeftGroupbox('Players')
     local Removals = VisualTab:AddRightGroupbox('Removals')
     local Misc = VisualTab:AddRightGroupbox('Misc')
-    local ViewModel = VisualTab:AddRightGroupbox('View Model')
+    local SelfChams = VisualTab:AddRightGroupbox('Self chams')
+    local ViewModel = VisualTab:AddRightGroupbox('View model')
     local HitLog = VisualTab:AddRightGroupbox('Hit Sound')
     local HitLogDisplay = VisualTab:AddRightGroupbox('Hit Log')
     
@@ -942,6 +965,32 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                 if not HookActive then
                     return oldNamecall(self, ...)
                 end
+                local method = getnamecallmethod()
+                if (method == 'SetPrimaryPartCFrame' or method == 'PivotTo' or method == 'pivotTo')
+                    and Toggles.ViewModel_Offset_Enable.Value
+                    and self.Name ~= 'HumanoidRootPart' then
+                    local node, isArms = self, false
+                    local camera = workspace.CurrentCamera
+                    while node do
+                        if node.Name == 'Arms' and node.Parent == camera then
+                            isArms = true
+                            break
+                        end
+                        node = node.Parent
+                    end
+                    if isArms then
+                        local args = table.pack(...)
+                        if typeof(args[1]) == 'CFrame' then
+                            local offset = CFrame.new(
+                                Options.ViewModel_Offset_X.Value / 10,
+                                Options.ViewModel_Offset_Y.Value / 10,
+                                -Options.ViewModel_Offset_Z.Value / 10
+                            ) * CFrame.Angles(0, 0, math.rad(Options.ViewModel_Offset_Roll.Value))
+                            args[1] = args[1] * offset
+                            return oldNamecall(self, unpack(args, 1, args.n))
+                        end
+                    end
+                end
                 if not Toggles.HitLog_Enable.Value
                     and not Toggles.HitLog_DisplayEnable.Value
                     and not HandleRageHitParl
@@ -949,7 +998,6 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                     return oldNamecall(self, ...)
                 end
 
-                local method = getnamecallmethod()
                 if method ~= 'FireServer' and method ~= 'FireUnreliable' then
                     return oldNamecall(self, ...)
                 end
@@ -1004,7 +1052,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         end
     end
 
-    ViewModel:AddToggle('ViewModel_WeaponChams', {
+    SelfChams:AddToggle('ViewModel_WeaponChams', {
         Text = 'Weapon Chams',
         Default = false,
     }):AddColorPicker('ViewModel_WeaponColor', {
@@ -1012,13 +1060,13 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         Transparency = 0,
     })
     
-    ViewModel:AddDropdown('ViewModel_WeaponMaterial', {
+    SelfChams:AddDropdown('ViewModel_WeaponMaterial', {
         Text = 'Weapon Material',
         Values = { 'SmoothPlastic', 'ForceField', 'Neon', 'Glass' },
         Default = 'Neon',
     })
     
-    ViewModel:AddSlider('ViewModel_WeaponTransparency', {
+    SelfChams:AddSlider('ViewModel_WeaponTransparency', {
         Text = 'Weapon Transparency',
         Default = 0,
         Min = 0,
@@ -1027,7 +1075,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         Suffix = '%',
     })
     
-    ViewModel:AddToggle('ViewModel_ArmChams', {
+    SelfChams:AddToggle('ViewModel_ArmChams', {
         Text = 'Arm Chams',
         Default = false,
     }):AddColorPicker('ViewModel_ArmColor', {
@@ -1035,13 +1083,13 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         Transparency = 0,
     })
     
-    ViewModel:AddDropdown('ViewModel_ArmMaterial', {
+    SelfChams:AddDropdown('ViewModel_ArmMaterial', {
         Text = 'Arm Material',
         Values = { 'SmoothPlastic', 'ForceField', 'Neon', 'Glass' },
         Default = 'ForceField',
     })
     
-    ViewModel:AddSlider('ViewModel_ArmTransparency', {
+    SelfChams:AddSlider('ViewModel_ArmTransparency', {
         Text = 'Arm Transparency',
         Default = 0,
         Min = 0,
@@ -1050,9 +1098,30 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         Suffix = '%',
     })
     
-    ViewModel:AddToggle('ViewModel_RemoveSleeves', { Text = 'Remove Sleeves', Default = false })
-    ViewModel:AddToggle('ViewModel_RemoveGloves', { Text = 'Remove Gloves', Default = false })
-    
+    SelfChams:AddToggle('ViewModel_RemoveSleeves', { Text = 'Remove Sleeves', Default = false })
+    SelfChams:AddToggle('ViewModel_RemoveGloves', { Text = 'Remove Gloves', Default = false })
+
+    ViewModel:AddToggle('ViewModel_Offset_Enable', {
+        Text = 'Viewmodel offset', Default = false,
+        Tooltip = 'Включает изменение позиции рук и оружия.',
+    })
+    ViewModel:AddSlider('ViewModel_Offset_X', {
+        Text = 'X', Default = 0, Min = -25, Max = 25, Rounding = 1,
+        Tooltip = 'Двигает руки влево или вправо.',
+    })
+    ViewModel:AddSlider('ViewModel_Offset_Y', {
+        Text = 'Y', Default = 0, Min = -25, Max = 25, Rounding = 1,
+        Tooltip = 'Двигает руки вниз или вверх.',
+    })
+    ViewModel:AddSlider('ViewModel_Offset_Z', {
+        Text = 'Z', Default = 0, Min = -25, Max = 25, Rounding = 1,
+        Tooltip = 'Двигает руки ближе или дальше от камеры.',
+    })
+    ViewModel:AddSlider('ViewModel_Offset_Roll', {
+        Text = 'Roll', Default = 0, Min = 0, Max = 360, Rounding = 1, Suffix = '°',
+        Tooltip = 'Наклоняет руки и оружие вокруг экрана.',
+    })
+
     Removals:AddToggle('Removals_NoSmoke', { Text = 'Remove Smoke', Default = false })
     Removals:AddToggle('Removals_NoFlash', { Text = 'Remove Flash', Default = false })
     Removals:AddToggle('Removals_NoScope', { Text = 'Remove Scope', Default = false })
@@ -2701,9 +2770,10 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             lastScan = 0,
             scanBackoff = 0.5,
             scanning = false,
-            gcTried = false,
+            lastGcScan = 0,
             clientScript = nil,
             clientEnv = nil,
+            originalAmmo = nil,
             heartbeat = nil,
             charConn = nil,
             oldNamecall = nil,
@@ -2783,11 +2853,15 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                 end
             end
 
-            if getgc and not State.gcTried then
-                State.gcTried = true
-                for _, obj in ipairs(getgc(true)) do
-                    if isAmmoTable(obj) then
-                        return obj
+            local now = tick()
+            if getgc and now - State.lastGcScan >= 5 then
+                State.lastGcScan = now
+                local ok, objects = pcall(getgc, true)
+                if ok and type(objects) == 'table' then
+                    for _, obj in ipairs(objects) do
+                        if isAmmoTable(obj) then
+                            return obj
+                        end
                     end
                 end
             end
@@ -2826,6 +2900,16 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                 end
             end
             if not t then
+                return
+            end
+
+            if type(State.originalAmmo) == 'table' then
+                for key, value in pairs(State.originalAmmo) do
+                    if type(value) == 'number' then
+                        t[key] = value
+                    end
+                end
+                State.originalAmmo = nil
                 return
             end
 
@@ -2879,7 +2963,19 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                 return
             end
 
-            local v = 99999
+            if not State.originalAmmo then
+                State.originalAmmo = {}
+                local keys = { 'ammocount', 'ammocount2', 'ammocount3', 'ammocount4', 'primarystored', 'secondarystored', 'equipmentstored', 'equipment2stored' }
+                for i = 1, #keys do
+                    local key = keys[i]
+                    local value = rawget(t, key)
+                    if type(value) == 'number' then
+                        State.originalAmmo[key] = value
+                    end
+                end
+            end
+
+            local v = 9999999
             t.ammocount = v
             t.ammocount2 = v
             t.ammocount3 = v
@@ -2967,7 +3063,8 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         Toggles.RageExploit_InfAmmo:OnChanged(function(enabled)
             if enabled then
                 State.ammoTable = nil
-                State.gcTried = false
+                State.lastGcScan = 0
+                State.originalAmmo = nil
                 State.scanBackoff = 0.5
                 requestScan(true)
                 task.defer(applyAmmo)
@@ -2980,7 +3077,8 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
 
         State.charConn = LocalPlayer.CharacterAdded:Connect(function()
             State.ammoTable = nil
-            State.gcTried = false
+            State.lastGcScan = 0
+            State.originalAmmo = nil
             State.clientScript = nil
             State.clientEnv = nil
             State.scanBackoff = 1
@@ -3002,7 +3100,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             if now < nextAmmoApply then
                 return
             end
-            nextAmmoApply = now + 30
+            nextAmmoApply = now + 0.05
             applyAmmo()
         end)
         Library:GiveSignal(State.heartbeat)
@@ -4081,79 +4179,85 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             local gunName = equipped and type(equipped.Value) == 'string' and equipped.Value or (gun and gun.Name)
             local weapons = gunName and ReplicatedStorage:FindFirstChild('Weapons')
             local weapon = weapons and weapons:FindFirstChild(gunName)
+            local copyFrom = weapon and weapon:FindFirstChild('CopyFrom')
+            if copyFrom then
+                local reference = copyFrom.Value
+                if typeof(reference) == 'Instance' then
+                    weapon = reference
+                elseif type(reference) == 'string' and reference ~= '' and weapons then
+                    weapon = weapons:FindFirstChild(reference) or weapon
+                end
+            end
             local penetration = weapon and weapon:FindFirstChild('Penetration')
             return penetration and type(penetration.Value) == 'number' and math.max(penetration.Value, 0) * 0.01 or 0
         end
 
         local function GetTriggerWallFactor(part)
-            local modifier = part:FindFirstChild('PartModifier')
-            if modifier and type(modifier.Value) == 'number' then
-                return math.max(modifier.Value, 0), true
-            end
-
+            local factor = 1
             local material = part.Material
-            if part.Name == 'Grate' or material == Enum.Material.Wood or material == Enum.Material.WoodPlanks then
-                return 0.1, false
-            end
             if material == Enum.Material.DiamondPlate then
-                return 3, false
+                factor = 3
             end
             if material == Enum.Material.CorrodedMetal
                 or material == Enum.Material.Metal
                 or material == Enum.Material.Concrete
                 or material == Enum.Material.Brick
             then
-                return 2, false
+                factor = 2
             end
-            return 1, false
+            if part.Name == 'Grate' or material == Enum.Material.Wood or material == Enum.Material.WoodPlanks
+                or (part.Parent and part.Parent:FindFirstChildOfClass('Humanoid'))
+            then
+                factor = 0.1
+            end
+            local rayIgnore = GetRayIgnoreRoot()
+            local debris = GetDebrisRoot()
+            if part.Transparency == 1 or part.CanCollide == false or part.Name == 'Glass' or part.Name == 'Cardboard'
+                or (rayIgnore and part:IsDescendantOf(rayIgnore))
+                or (debris and part:IsDescendantOf(debris))
+                or (part.Parent and part.Parent.Name == 'Hitboxes')
+            then
+                factor = 0
+            end
+            local modifier = part:FindFirstChild('PartModifier')
+            if modifier and type(modifier.Value) == 'number' then
+                return math.max(modifier.Value, 0), true
+            end
+            return factor, false
         end
 
+        local TriggerPenetrationParams = RaycastParams.new()
+        TriggerPenetrationParams.FilterType = Enum.RaycastFilterType.Include
+        TriggerPenetrationParams.IgnoreWater = true
+        local TriggerPenetrationInclude = {}
         local function GetTriggerWallThickness(part, hitPosition, direction)
-            local localHit = part.CFrame:PointToObjectSpace(hitPosition)
-            local localDirection = part.CFrame:VectorToObjectSpace(direction.Unit)
-            local half = part.Size * 0.5
-            local thickness = math.huge
-
-            local function updateExit(position, travel, extent)
-                if math.abs(travel) <= 1e-8 then
-                    return
-                end
-                local t1 = (-extent - position) / travel
-                local t2 = (extent - position) / travel
-                local exitDistance = math.max(t1, t2)
-                if exitDistance > 0 and exitDistance < thickness then
-                    thickness = exitDistance
-                end
-            end
-
-            updateExit(localHit.X, localDirection.X, half.X)
-            updateExit(localHit.Y, localDirection.Y, half.Y)
-            updateExit(localHit.Z, localDirection.Z, half.Z)
-
-            return math.clamp(thickness, 0.01, 1000)
+            TriggerPenetrationInclude[1] = part
+            TriggerPenetrationParams.FilterDescendantsInstances = TriggerPenetrationInclude
+            local probe = direction.Unit * math.max(part.Size.Magnitude * 2, 2)
+            local result = workspace:Raycast(hitPosition + probe, probe * -2, TriggerPenetrationParams)
+            TriggerPenetrationInclude[1] = nil
+            if result then return (result.Position - hitPosition).Magnitude end
+            return probe.Magnitude
         end
 
         local function CanTriggerPenetrate(part, hitPosition, direction, used, wallCount, budget)
             if part.Name == 'nowallbang' then
                 return false, used, wallCount
             end
-            if part.Transparency >= 1 or not part.CanCollide or part.Name == 'Glass' or part.Name == 'Cardboard' then
-                return true, used, wallCount
-            end
-
-            local factor, hasModifier = GetTriggerWallFactor(part)
-            local autoWall = Toggles.Triggerbot_AutoWall.Value
-            if not autoWall and (hasModifier or factor ~= 0.1) then
-                return false, used, wallCount
-            end
+            local factor = GetTriggerWallFactor(part)
             if factor <= 0 then
                 return true, used, wallCount
+            end
+            if not Toggles.Triggerbot_AutoWall.Value then
+                return false, used, wallCount
             end
             if wallCount >= 4 then
                 return false, used, wallCount
             end
-
-            used = used + GetTriggerWallThickness(part, hitPosition, direction) * factor
+            if budget <= 0 then
+                return false, used, wallCount
+            end
+            used = math.min(budget, used + GetTriggerWallThickness(part, hitPosition, direction) * factor)
             if used >= budget then
                 return false, used, wallCount
             end
@@ -5021,15 +5125,30 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             Transparency = 0,
             Title = 'Outline',
         })
+
+    Players:AddToggle('ESP_HandChams', { Text = 'Hand chams', Default = false })
+        :AddColorPicker('ESP_HandChams_Color', {
+            Default = Color3.fromRGB(0, 170, 255),
+            Transparency = 0.35,
+            Title = 'Hands',
+        })
     
     do
         local Highlights = {}
+        local HandHighlights = {}
         local VisCache = {}
         local ChamsFolder
         local NextUpdate = 0
         local RayParams = RaycastParams.new()
         local RaycastIgnore = {}
         RayParams.FilterType = Enum.RaycastFilterType.Exclude
+        local HandHitboxNames = {
+            'LeftUpperArm', 'LeftLowerArm', 'LeftHand',
+            'RightUpperArm', 'RightLowerArm', 'RightHand',
+            'Left Arm', 'Right Arm', 'LeftHandHB', 'RightHandHB',
+            'LeftArmHB', 'RightArmHB', 'LeftUpperArmHB', 'LeftLowerArmHB',
+            'RightUpperArmHB', 'RightLowerArmHB',
+        }
     
         local function GetChamsFolder()
             if ChamsFolder and ChamsFolder.Parent then return ChamsFolder end
@@ -5047,6 +5166,11 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                 end)
                 Highlights[player] = nil
             end
+            local hands = HandHighlights[player]
+            if hands then
+                for _, handHighlight in pairs(hands) do pcall(function() handHighlight:Destroy() end) end
+                HandHighlights[player] = nil
+            end
             VisCache[player] = nil
         end
     
@@ -5061,6 +5185,13 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             if hl then
                 hl.Enabled = false
                 hl.Adornee = nil
+            end
+            local hands = HandHighlights[player]
+            if hands then
+                for _, handHighlight in pairs(hands) do
+                    handHighlight.Enabled = false
+                    handHighlight.Adornee = nil
+                end
             end
             VisCache[player] = nil
         end
@@ -5122,7 +5253,50 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
     
             return color, transparency
         end
-    
+
+        local function HideHandChams(player)
+            local hands = HandHighlights[player]
+            if not hands then return end
+            for _, handHighlight in pairs(hands) do
+                handHighlight.Enabled = false
+                handHighlight.Adornee = nil
+            end
+        end
+
+        local function UpdateHandChams(player, character, color, transparency)
+            local hands = HandHighlights[player]
+            if not hands then
+                hands = {}
+                HandHighlights[player] = hands
+            end
+            local seen = {}
+            for _, name in ipairs(HandHitboxNames) do
+                local part = character:FindFirstChild(name)
+                if part and part:IsA('BasePart') then
+                    seen[name] = true
+                    local handHighlight = hands[name]
+                    if not handHighlight or not handHighlight.Parent then
+                        handHighlight = Instance.new('Highlight')
+                        handHighlight.Name = '__ValenokHandChams'
+                        handHighlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+                        handHighlight.Parent = GetChamsFolder()
+                        hands[name] = handHighlight
+                    end
+                    handHighlight.Enabled = true
+                    handHighlight.Adornee = part
+                    handHighlight.FillColor = color
+                    handHighlight.FillTransparency = transparency
+                    handHighlight.OutlineTransparency = 1
+                end
+            end
+            for name, handHighlight in pairs(hands) do
+                if not seen[name] then
+                    handHighlight.Enabled = false
+                    handHighlight.Adornee = nil
+                end
+            end
+        end
+
         Library:GiveSignal(RunService.RenderStepped:Connect(function()
             local now = os.clock()
             if now < NextUpdate then
@@ -5132,8 +5306,9 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
     
             local chamsOn = Toggles.ESP_Chams.Value
             local outlineOn = Toggles.ESP_ChamsOutline.Value
-    
-            if not Toggles.ESP_Enable.Value or (not chamsOn and not outlineOn) then
+            local handChamsOn = Toggles.ESP_HandChams.Value
+
+            if not Toggles.ESP_Enable.Value or (not chamsOn and not outlineOn and not handChamsOn) then
                 HideAllChams()
                 return
             end
@@ -5146,6 +5321,8 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
     
             local outlineColor = Options.ESP_Chams_Outline.Value
             local outlineTransparency = Options.ESP_Chams_Outline.Transparency
+            local handColor = Options.ESP_HandChams_Color.Value
+            local handTransparency = Options.ESP_HandChams_Color.Transparency
             for _, player in ipairs(PlayerSnapshot) do
                 if player == LocalPlayer or IsTeammate(player) then
                     HideChams(player)
@@ -5182,7 +5359,12 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                 hl.OutlineColor = outlineColor
                 hl.FillTransparency = chamsOn and fillTransparency or 1
                 hl.OutlineTransparency = outlineOn and outlineTransparency or 1
-    
+                if handChamsOn then
+                    UpdateHandChams(player, character, handColor, handTransparency)
+                else
+                    HideHandChams(player)
+                end
+
             end
         end))
     
@@ -5475,9 +5657,19 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             Rounding = 0,
         })
 
+        local function IsSpectating()
+            local status = LocalPlayer:FindFirstChild('Status')
+            local team = status and status:FindFirstChild('Team')
+            local alive = status and status:FindFirstChild('Alive')
+            return (team and tostring(team.Value) == 'Spectator') or (alive and alive.Value == false)
+        end
+
         local function ApplyFov()
             local cam = workspace.CurrentCamera
             if not cam then
+                return
+            end
+            if IsSpectating() then
                 return
             end
             if Toggles.FovChanger_Enable.Value then
@@ -5495,9 +5687,9 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         end)
 
         Library:GiveSignal(RunService.Heartbeat:Connect(function()
-            if Toggles.FovChanger_Enable.Value then
+            if Toggles.FovChanger_Enable.Value and not IsSpectating() then
                 local cam = workspace.CurrentCamera
-                if cam then
+                if cam and cam.FieldOfView ~= Options.FovChanger_Fov.Value then
                     cam.FieldOfView = Options.FovChanger_Fov.Value
                 end
             end
@@ -5505,7 +5697,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
 
         Library:GiveSignal(workspace:GetPropertyChangedSignal('CurrentCamera'):Connect(function()
             local cam = workspace.CurrentCamera
-            if cam and not Toggles.FovChanger_Enable.Value then
+            if cam and not Toggles.FovChanger_Enable.Value and not IsSpectating() then
                 SavedFov = cam.FieldOfView
             end
             ApplyFov()
@@ -5513,7 +5705,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
 
         AddUnload(function()
             local cam = workspace.CurrentCamera
-            if cam then
+            if cam and not IsSpectating() then
                 cam.FieldOfView = SavedFov
             end
         end)
