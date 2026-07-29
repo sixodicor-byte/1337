@@ -107,6 +107,20 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
     end
     
     local function optimizeInstance(instance)
+        local parent = instance.Parent
+        if parent then
+            local root = instance
+            while root.Parent and root.Parent ~= Workspace do
+                root = root.Parent
+            end
+            if root.Name == 'Debris' then
+                return
+            end
+            if root:FindFirstChildOfClass('Humanoid') then
+                return
+            end
+        end
+
         local className = instance.ClassName
         if AlwaysDisabledClasses[className] then
             disable(instance)
@@ -279,20 +293,95 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
     local HandleRageHitParl
     local PlayHitSound
     local HitLogCleanup
-    local BulletTracerCleanup
+    local NamecallCleanup
     local SharedNamecallState
     local ScriptEnvironment
-    local CachedRayIgnoreRoot
+    local GameRefs = {
+        Events = nil,
+        Weapons = nil,
+        Debris = nil,
+        RayIgnore = nil,
+        Map = nil,
+        MapClips = nil,
+        MapSpawnPoints = nil,
+    }
+
+    local function GetOnceRef(key, finder)
+        local cached = GameRefs[key]
+        if cached ~= nil then
+            if typeof(cached) == 'Instance' and cached.Parent then
+                return cached
+            end
+            return nil
+        end
+        local found = finder()
+        if found then
+            GameRefs[key] = found
+            return found
+        end
+        return nil
+    end
 
     local function GetRayIgnoreRoot()
-        if CachedRayIgnoreRoot
-            and CachedRayIgnoreRoot.Parent == workspace
-            and CachedRayIgnoreRoot.Name == 'Ray_Ignore'
-        then
-            return CachedRayIgnoreRoot
+        return GetOnceRef('RayIgnore', function()
+            return workspace:FindFirstChild('Ray_Ignore')
+        end)
+    end
+
+    local function GetEventsFolder()
+        return GetOnceRef('Events', function()
+            return ReplicatedStorage:FindFirstChild('Events')
+        end)
+    end
+
+    local function GetWeaponsFolder()
+        return GetOnceRef('Weapons', function()
+            return ReplicatedStorage:FindFirstChild('Weapons')
+        end)
+    end
+
+    local function GetDebrisRoot()
+        return GetOnceRef('Debris', function()
+            return workspace:FindFirstChild('Debris')
+        end)
+    end
+
+    local function GetMapRoot()
+        return GetOnceRef('Map', function()
+            return workspace:FindFirstChild('Map')
+        end)
+    end
+
+    local function GetMapClips()
+        local cached = GameRefs.MapClips
+        if cached ~= nil then
+            return typeof(cached) == 'Instance' and cached.Parent and cached or nil
         end
-        CachedRayIgnoreRoot = workspace:FindFirstChild('Ray_Ignore')
-        return CachedRayIgnoreRoot
+        local map = GetMapRoot()
+        if not map then
+            return nil
+        end
+        local clips = map:FindFirstChild('Clips')
+        if clips then
+            GameRefs.MapClips = clips
+        end
+        return clips
+    end
+
+    local function GetMapSpawnPoints()
+        local cached = GameRefs.MapSpawnPoints
+        if cached ~= nil then
+            return typeof(cached) == 'Instance' and cached.Parent and cached or nil
+        end
+        local map = GetMapRoot()
+        if not map then
+            return nil
+        end
+        local spawnPoints = map:FindFirstChild('SpawnPoints')
+        if spawnPoints then
+            GameRefs.MapSpawnPoints = spawnPoints
+        end
+        return spawnPoints
     end
     
     do
@@ -339,63 +428,339 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         Center = true,
         AutoShow = true,
     })
-    
     local RageTab = Window:AddTab('Rage')
     local LegitTab = Window:AddTab('Legit')
     
     local VisualTab = Window:AddTab('Visual')
+    local SkinTab = Window:AddTab('Skin')
+    local SkinCleanup
+
+    local SkinChanger = {}
+    do
+        local Viewmodels = ReplicatedStorage:FindFirstChild('Viewmodels')
+        local Skins = ReplicatedStorage:FindFirstChild('Skins')
+        local Gloves = ReplicatedStorage:FindFirstChild('Gloves')
+        local GloveModels = Gloves and Gloves:FindFirstChild('Models')
+        local ExtraModels
+        pcall(function() ExtraModels = game:GetObjects('rbxassetid://7285197035')[1] end)
+
+        local function CloneViewmodel(name)
+            local viewmodel = Viewmodels and Viewmodels:FindFirstChild(name)
+            return viewmodel and viewmodel:Clone() or nil
+        end
+
+        local State = {
+            knifeSkins = {}, weaponSkins = {}, gloveSkins = {},
+            currentKnife = nil, swapping = false, armsConnection = nil,
+            skinConnection = nil, ancestryConnection = nil, cameraConnection = nil,
+            originalCT = CloneViewmodel('v_CT Knife'), originalT = CloneViewmodel('v_T Knife'),
+        }
+        local KnifeNames = {
+            'CT Knife', 'T Knife', 'Banana', 'Bayonet', 'Bearded Axe', 'Butterfly Knife', 'Cleaver',
+            'Crowbar', 'Falchion Knife', 'Flip Knife', 'Gut Knife', 'Huntsman Knife', 'Karambit',
+            'M9 Bayonet', 'Sickle', 'Falchion Classic', 'Sickle Classic',
+        }
+        local function AddUnique(list, value)
+            if not table.find(list, value) then list[#list + 1] = value end
+        end
+        if ExtraModels and ExtraModels:FindFirstChild('Knives') then
+            for _, model in ipairs(ExtraModels.Knives:GetChildren()) do AddUnique(KnifeNames, model.Name) end
+        end
+
+        local function KnifeShort(name)
+            return name:gsub(' Knife', ''):gsub(' Classic', '')
+        end
+        local function KnifeMatches(folderName, knifeName)
+            local folder, short, full = string.lower(folderName), string.lower(KnifeShort(knifeName)), string.lower(knifeName)
+            return folder == short or folder == full or string.sub(folder, 1, #short + 1) == short .. ' '
+        end
+        local function FindKnifeFolder(knifeName)
+            if not Skins then return nil end
+            local direct = Skins:FindFirstChild(knifeName) or Skins:FindFirstChild(KnifeShort(knifeName))
+            if direct then return direct end
+            for _, folder in ipairs(Skins:GetChildren()) do
+                if KnifeMatches(folder.Name, knifeName) then return folder end
+            end
+        end
+        local function ChildNames(folder, fallback)
+            local values = { fallback }
+            if folder then
+                for _, child in ipairs(folder:GetChildren()) do AddUnique(values, child.Name) end
+            end
+            return values
+        end
+
+        local AllWeapons, WeaponSkins, KnifeSkins = {}, {}, {}
+        if Skins then
+            for _, folder in ipairs(Skins:GetChildren()) do
+                local knife = false
+                for _, name in ipairs(KnifeNames) do
+                    if KnifeMatches(folder.Name, name) then knife = true break end
+                end
+                if not knife then AllWeapons[#AllWeapons + 1] = folder.Name end
+            end
+            table.sort(AllWeapons)
+            for _, weapon in ipairs(AllWeapons) do WeaponSkins[weapon] = ChildNames(Skins:FindFirstChild(weapon), 'Inventory') end
+            for _, knife in ipairs(KnifeNames) do KnifeSkins[knife] = ChildNames(FindKnifeFolder(knife), 'Inventory') end
+        end
+
+        local AllGloves, GloveSkins = {}, {}
+        if Gloves then
+            for _, folder in ipairs(Gloves:GetChildren()) do
+                if folder:IsA('Folder') and folder ~= GloveModels and folder.Name ~= 'Models' and folder.Name ~= 'Racer' then
+                    AllGloves[#AllGloves + 1] = folder.Name
+                end
+            end
+            table.sort(AllGloves)
+            for _, glove in ipairs(AllGloves) do GloveSkins[glove] = ChildNames(Gloves:FindFirstChild(glove), 'Default') end
+        end
+
+        local function CopyMap(source)
+            local result = {}
+            if type(source) == 'table' then
+                for model, skin in pairs(source) do
+                    if type(model) == 'string' and type(skin) == 'string' then result[model] = skin end
+                end
+            end
+            return result
+        end
+        function SkinChanger.ExportConfig()
+            return { knife = CopyMap(State.knifeSkins), weapon = CopyMap(State.weaponSkins), glove = CopyMap(State.gloveSkins) }
+        end
+        function SkinChanger.ImportConfig(data)
+            if type(data) ~= 'table' then return end
+            State.knifeSkins, State.weaponSkins, State.gloveSkins = CopyMap(data.knife), CopyMap(data.weapon), CopyMap(data.glove)
+        end
+
+        local function RestoreKnives()
+            if not Viewmodels then return end
+            local ct, tt = Viewmodels:FindFirstChild('v_CT Knife'), Viewmodels:FindFirstChild('v_T Knife')
+            if ct then ct:Destroy() end
+            if tt then tt:Destroy() end
+            if State.originalCT then State.originalCT:Clone().Parent = Viewmodels end
+            if State.originalT then State.originalT:Clone().Parent = Viewmodels end
+        end
+        local function SwapKnife(knifeName)
+            if not Viewmodels or State.swapping or State.currentKnife == knifeName then return end
+            State.swapping = true
+            RestoreKnives()
+            if knifeName ~= 'CT Knife' and knifeName ~= 'T Knife' then
+                local source = Viewmodels:FindFirstChild('v_' .. knifeName)
+                    or (ExtraModels and ExtraModels:FindFirstChild('Knives') and ExtraModels.Knives:FindFirstChild(knifeName))
+                if source then
+                    local ct, tt = Viewmodels:FindFirstChild('v_CT Knife'), Viewmodels:FindFirstChild('v_T Knife')
+                    if ct then ct:Destroy() end
+                    if tt then tt:Destroy() end
+                    local first, second = source:Clone(), source:Clone()
+                    first.Name, second.Name, first.Parent, second.Parent = 'v_CT Knife', 'v_T Knife', Viewmodels, Viewmodels
+                end
+            end
+            State.currentKnife, State.swapping = knifeName, false
+        end
+
+        local TextureCache = setmetatable({}, { __mode = 'k' })
+        local function UsefulTexture(texture)
+            return texture and texture ~= '' and texture ~= 'rbxassetid://0'
+        end
+        local function GetTexture(data)
+            if data:IsA('StringValue') then return data.Value end
+            if data:IsA('MeshPart') then return data.TextureID end
+            if data:IsA('Decal') or data:IsA('Texture') then return data.Texture end
+            if data:IsA('SurfaceAppearance') then return data end
+        end
+        local function TextureIndex(skinData)
+            local cached = TextureCache[skinData]
+            if cached then return cached end
+            local index, worldModel = { byName = {}, handle = nil }, skinData:FindFirstChild('WorldModel')
+            local function AddTexture(data)
+                local texture, name = GetTexture(data), data.Name:gsub('^#%s*', '')
+                if not UsefulTexture(texture) then return end
+                if not index.byName[name] then index.byName[name] = texture end
+                if name == 'Handle' and not index.handle then index.handle = texture end
+            end
+            for _, data in ipairs(skinData:GetDescendants()) do
+                if not (worldModel and data:IsDescendantOf(worldModel)) then AddTexture(data) end
+            end
+            if worldModel then for _, data in ipairs(worldModel:GetDescendants()) do AddTexture(data) end end
+            TextureCache[skinData] = index
+            return index
+        end
+        local function FindTexture(index, part)
+            local name, direct = part.Name, index.byName[part.Name]
+            if UsefulTexture(direct) then return direct end
+            if name == 'Main' and UsefulTexture(index.byName.Part1 or index.byName.Part) then return index.byName.Part1 or index.byName.Part end
+            for candidate, texture in pairs(index.byName) do
+                local suffix = string.sub(candidate, #name + 1)
+                if string.sub(candidate, 1, #name) == name and (suffix == '' or string.match(suffix, '^%d+$')) and UsefulTexture(texture) then return texture end
+            end
+            if (name == 'Blade' or name == 'Main') and UsefulTexture(index.handle) then return index.handle end
+        end
+        local function ApplyPart(part, skinData)
+            if not part:IsA('BasePart') or part.Transparency == 1 then return end
+            local texture = FindTexture(TextureIndex(skinData), part)
+            if not texture then return end
+            if typeof(texture) == 'Instance' and texture:IsA('SurfaceAppearance') then
+                local old = part:FindFirstChildWhichIsA('SurfaceAppearance')
+                if old then old:Destroy() end
+                texture:Clone().Parent = part
+            elseif part:IsA('MeshPart') then
+                part.TextureID = texture
+            elseif part:FindFirstChild('Mesh') then
+                part.Mesh.TextureId = texture
+            end
+        end
+        local function DisconnectSkin()
+            if State.skinConnection then State.skinConnection:Disconnect(); State.skinConnection = nil end
+            if State.ancestryConnection then State.ancestryConnection:Disconnect(); State.ancestryConnection = nil end
+            table.clear(TextureCache)
+        end
+        local function ApplySkin(arms, itemName, skinName)
+            if not Skins or not skinName or skinName == 'Inventory' or not arms.Parent then return end
+            if (itemName == 'CT Knife' or itemName == 'T Knife') and not Skins:FindFirstChild(itemName) then itemName = 'M9 Bayonet' end
+            local folder = Skins:FindFirstChild(itemName)
+            local skinData = folder and folder:FindFirstChild(skinName)
+            if not skinData or skinData:FindFirstChild('Animated') then return end
+            DisconnectSkin()
+            for _, part in ipairs(arms:GetDescendants()) do ApplyPart(part, skinData) end
+            State.skinConnection = arms.DescendantAdded:Connect(function(part)
+                task.defer(function() if part.Parent then ApplyPart(part, skinData) end end)
+            end)
+            State.ancestryConnection = arms.AncestryChanged:Connect(function(_, parent)
+                if not parent then DisconnectSkin() end
+            end)
+        end
+        local function ApplyGloves(arms)
+            if not Toggles.Skin_Glove_Enable.Value or not GloveModels then return end
+            local glove, skin = Options.Skin_Glove_Glove.Value, Options.Skin_Glove_Skin.Value
+            local models = glove and GloveModels:FindFirstChild(glove)
+            local textureData = glove and Gloves:FindFirstChild(glove) and Gloves[glove]:FindFirstChild(skin)
+            local texture = textureData and textureData:FindFirstChild('Textures') and textureData.Textures.TextureId
+            if not models or not UsefulTexture(texture) then return end
+            local armModel
+            for _, model in ipairs(arms:GetChildren()) do
+                if model:IsA('Model') and (model:FindFirstChild('Right Arm') or model:FindFirstChild('Left Arm')) then armModel = model break end
+            end
+            if not armModel then return end
+            for _, data in ipairs({ { 'Right Arm', 'RGlove' }, { 'Left Arm', 'LGlove' } }) do
+                local arm, old, source = armModel:FindFirstChild(data[1]), nil, models:FindFirstChild(data[2])
+                if arm and source then
+                    old = arm:FindFirstChild('Glove') or arm:FindFirstChild(data[2])
+                    if old then old:Destroy() end
+                    local clone = source:Clone()
+                    if clone:FindFirstChild('Mesh') then
+                        clone.Mesh.TextureId = texture
+                    elseif clone:IsA('MeshPart') then
+                        clone.TextureID = texture
+                    end
+                    clone.Transparency, clone.Parent = 0, arm
+                    if clone:FindFirstChild('Welded') then clone.Welded.Part0 = arm end
+                end
+            end
+        end
+        local function GetClientGun()
+            local gui = LocalPlayer:FindFirstChild('PlayerGui')
+            local client = gui and gui:FindFirstChild('Client')
+            if not client or type(getsenv) ~= 'function' then return nil end
+            local ok, environment = pcall(getsenv, client)
+            local gun = ok and environment and rawget(environment, 'gun')
+            return typeof(gun) == 'Instance' and gun or nil
+        end
+        local function SetupArmsWatcher()
+            if State.armsConnection then State.armsConnection:Disconnect() end
+            local camera = workspace.CurrentCamera
+            if not camera then return end
+            State.armsConnection = camera.ChildAdded:Connect(function(arms)
+                if arms.Name ~= 'Arms' then return end
+                task.defer(function()
+                    RunService.RenderStepped:Wait()
+                    if not arms.Parent then return end
+                    local gun = GetClientGun()
+                    if not gun then return end
+                    local name = gun.Name
+                    if string.find(name, 'Grenade', 1, true) or string.find(name, 'Flashbang', 1, true) or string.find(name, 'Smoke', 1, true)
+                        or string.find(name, 'Decoy', 1, true) or string.find(name, 'Molotov', 1, true) or string.find(name, 'Incendiary', 1, true) or name == 'C4' then return end
+                    ApplyGloves(arms)
+                    if Toggles.Skin_Knife_Enable.Value and gun:FindFirstChild('Melee') then
+                        local knife = Options.Skin_Knife_Knife.Value
+                        if State.currentKnife ~= knife then SwapKnife(knife); return end
+                        ApplySkin(arms, knife, State.knifeSkins[knife] or 'Inventory')
+                    elseif Toggles.Skin_Weapon_Enable.Value and not gun:FindFirstChild('Melee') then
+                        ApplySkin(arms, name, State.weaponSkins[name] or 'Inventory')
+                    end
+                end)
+            end)
+        end
+
+        local function SetDropdown(option, values, value)
+            if not option then return end
+            option:SetValues(values)
+            option:SetValue(value)
+        end
+        local function SyncSkin(modelOption, skinOption, skinMap, saved, fallback)
+            local model = modelOption and modelOption.Value
+            if not model or not skinOption then return end
+            local values = skinMap[model] or { fallback }
+            local selected = saved[model]
+            if not table.find(values, selected) then selected = values[1] or fallback end
+            SetDropdown(skinOption, values, selected)
+        end
+        local function SavePair(modelOption, skinOption, saved)
+            local model, skin = modelOption and modelOption.Value, skinOption and skinOption.Value
+            if model and skin then saved[model] = skin end
+        end
+
+        local KnifeBox = SkinTab:AddLeftGroupbox('Knife changer')
+        KnifeBox:AddToggle('Skin_Knife_Enable', { Text = 'Enable', Default = false }):OnChanged(function()
+            if Toggles.Skin_Knife_Enable.Value then SwapKnife(Options.Skin_Knife_Knife.Value) else RestoreKnives(); State.currentKnife = nil end
+        end)
+        KnifeBox:AddDropdown('Skin_Knife_Knife', { Text = 'Knife', Values = KnifeNames, Default = KnifeNames[1] }):OnChanged(function()
+            SyncSkin(Options.Skin_Knife_Knife, Options.Skin_Knife_Skin, KnifeSkins, State.knifeSkins, 'Inventory')
+            if Toggles.Skin_Knife_Enable.Value then SwapKnife(Options.Skin_Knife_Knife.Value) end
+        end)
+        KnifeBox:AddDropdown('Skin_Knife_Skin', { Text = 'Skin', Values = KnifeSkins[KnifeNames[1]] or { 'Inventory' }, Default = 'Inventory' }):OnChanged(function()
+            SavePair(Options.Skin_Knife_Knife, Options.Skin_Knife_Skin, State.knifeSkins)
+        end)
+
+        local WeaponBox = SkinTab:AddRightGroupbox('Weapon changer')
+        WeaponBox:AddToggle('Skin_Weapon_Enable', { Text = 'Enable', Default = false })
+        WeaponBox:AddDropdown('Skin_Weapon_Weapon', { Text = 'Weapon', Values = #AllWeapons > 0 and AllWeapons or { 'None' }, Default = AllWeapons[1] or 'None' }):OnChanged(function()
+            SyncSkin(Options.Skin_Weapon_Weapon, Options.Skin_Weapon_Skin, WeaponSkins, State.weaponSkins, 'Inventory')
+        end)
+        WeaponBox:AddDropdown('Skin_Weapon_Skin', { Text = 'Skin', Values = WeaponSkins[AllWeapons[1]] or { 'Inventory' }, Default = 'Inventory' }):OnChanged(function()
+            SavePair(Options.Skin_Weapon_Weapon, Options.Skin_Weapon_Skin, State.weaponSkins)
+        end)
+
+        local GloveBox = SkinTab:AddLeftGroupbox('Glove changer')
+        GloveBox:AddToggle('Skin_Glove_Enable', { Text = 'Enable', Default = false })
+        GloveBox:AddDropdown('Skin_Glove_Glove', { Text = 'Glove', Values = #AllGloves > 0 and AllGloves or { 'None' }, Default = AllGloves[1] or 'None' }):OnChanged(function()
+            SyncSkin(Options.Skin_Glove_Glove, Options.Skin_Glove_Skin, GloveSkins, State.gloveSkins, 'Default')
+        end)
+        GloveBox:AddDropdown('Skin_Glove_Skin', { Text = 'Skin', Values = GloveSkins[AllGloves[1]] or { 'Default' }, Default = 'Default' }):OnChanged(function()
+            SavePair(Options.Skin_Glove_Glove, Options.Skin_Glove_Skin, State.gloveSkins)
+        end)
+
+        function SkinChanger.RefreshConfig()
+            SyncSkin(Options.Skin_Knife_Knife, Options.Skin_Knife_Skin, KnifeSkins, State.knifeSkins, 'Inventory')
+            SyncSkin(Options.Skin_Weapon_Weapon, Options.Skin_Weapon_Skin, WeaponSkins, State.weaponSkins, 'Inventory')
+            SyncSkin(Options.Skin_Glove_Glove, Options.Skin_Glove_Skin, GloveSkins, State.gloveSkins, 'Default')
+            if Toggles.Skin_Knife_Enable.Value then SwapKnife(Options.Skin_Knife_Knife.Value) end
+        end
+        SetupArmsWatcher()
+        State.cameraConnection = workspace:GetPropertyChangedSignal('CurrentCamera'):Connect(SetupArmsWatcher)
+        SkinCleanup = function()
+            if State.armsConnection then State.armsConnection:Disconnect() end
+            if State.cameraConnection then State.cameraConnection:Disconnect() end
+            DisconnectSkin()
+            RestoreKnives()
+        end
+    end
+
     local Players = VisualTab:AddLeftGroupbox('Players')
     local Removals = VisualTab:AddRightGroupbox('Removals')
     local Misc = VisualTab:AddRightGroupbox('Misc')
     local ViewModel = VisualTab:AddRightGroupbox('View Model')
-    local BulletTracer = VisualTab:AddRightGroupbox('Bullet Tracer')
     local HitLog = VisualTab:AddRightGroupbox('Hit Sound')
     local HitLogDisplay = VisualTab:AddRightGroupbox('Hit Log')
-    
-    BulletTracer:AddToggle('BulletTracer_Enable', {
-        Text = 'Enable',
-        Default = false,
-    }):AddColorPicker('BulletTracer_Color', {
-        Default = Color3.fromRGB(255, 80, 80),
-        Transparency = 0,
-    })
-    
-    BulletTracer:AddSlider('BulletTracer_Width', {
-        Text = 'Width',
-        Default = 1,
-        Min = 1,
-        Max = 5,
-        Rounding = 1,
-    })
-    
-    BulletTracer:AddDropdown('BulletTracer_Texture', {
-        Text = 'Texture',
-        Values = { 'Solid', 'Lightning', 'Laser', 'Twisted Energy', 'Arrow', 'Energy Ray', 'Matrix' },
-        Default = 'Solid',
-    })
-    
-    BulletTracer:AddSlider('BulletTracer_Lifetime', {
-        Text = 'Lifetime',
-        Default = 0.4,
-        Min = 0.05,
-        Max = 2,
-        Rounding = 2,
-        Suffix = 's',
-    })
-    
-    BulletTracer:AddToggle('BulletTracer_FaceCamera', { Text = 'Face camera', Default = false })
-    
-    local function SnapBulletTracerValue(option, min, max, step)
-        option:OnChanged(function(value)
-            local snapped = math.clamp(math.floor(value / step + 0.5) * step, min, max)
-            if math.abs(snapped - value) > 0.0001 then
-                option:SetValue(snapped)
-            end
-        end)
-    end
-    
-    SnapBulletTracerValue(Options.BulletTracer_Width, 1, 5, 0.1)
-    SnapBulletTracerValue(Options.BulletTracer_Lifetime, 0.05, 2, 0.05)
     
     HitLog:AddToggle('HitLog_Enable', { Text = 'Enable', Default = false })
     HitLog:AddDropdown('HitLog_Sound', {
@@ -569,180 +934,43 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
     end
     
     do
-        local TextureIds = {
-            Solid = '',
-            Lightning = 'rbxassetid://7216850022',
-            Laser = 'rbxassetid://7136858729',
-            ['Twisted Energy'] = 'rbxassetid://7071778278',
-            Arrow = 'rbxassetid://1274378728',
-            ['Energy Ray'] = 'rbxassetid://13832105797',
-            Matrix = 'rbxassetid://15097610754',
-        }
-        local Pool, PoolIndex = {}, 1
-        local PoolSize = 24
-        local TracerPartSize = Vector3.new(0.05, 0.05, 0.05)
-        local Folder
-        local UpdateConnection
         local HookActive = false
         local NamecallHandler
-        local TracerAlive = true
-    
-        local function GetFolder()
-            if Folder and Folder.Parent then return Folder end
-            Folder = Instance.new('Folder')
-            Folder.Name = 'ValenokBulletTracers'
-            Folder.Parent = workspace.Terrain or workspace
-            return Folder
-        end
-    
-        local function NewSlot()
-            local start = Instance.new('Part')
-            local finish = Instance.new('Part')
-            start.Name, finish.Name = 'TracerStart', 'TracerEnd'
-            start.Anchored, finish.Anchored = true, true
-            start.CanCollide, finish.CanCollide = false, false
-            start.CanQuery, finish.CanQuery = false, false
-            start.CanTouch, finish.CanTouch = false, false
-            start.Transparency, finish.Transparency = 1, 1
-            start.Size, finish.Size = TracerPartSize, TracerPartSize
-            start.Parent, finish.Parent = GetFolder(), GetFolder()
-    
-            local beam = Instance.new('Beam')
-            beam.Attachment0 = Instance.new('Attachment', start)
-            beam.Attachment1 = Instance.new('Attachment', finish)
-            beam.LightEmission, beam.LightInfluence = 1, 0
-            beam.Segments = 1
-            beam.Enabled = false
-            beam.Parent = start
-            return { start = start, finish = finish, beam = beam, expires = 0 }
-        end
-    
-        local function GetSlot()
-            local slot = Pool[PoolIndex]
-            PoolIndex = PoolIndex % PoolSize + 1
-            if not slot then
-                slot = NewSlot()
-                Pool[#Pool + 1] = slot
-            end
-            return slot
-        end
-    
-        local function StopUpdater()
-            if UpdateConnection then
-                UpdateConnection:Disconnect()
-                UpdateConnection = nil
-            end
-        end
-    
-        local function UpdatePool()
-            local now = os.clock()
-            local hasActiveTracer = false
-            for i = 1, #Pool do
-                local beam = Pool[i].beam
-                if beam.Enabled then
-                    if Pool[i].expires <= now then
-                        beam.Enabled = false
-                    else
-                        hasActiveTracer = true
-                    end
-                end
-            end
-            if not hasActiveTracer then
-                StopUpdater()
-            end
-        end
-    
-        local function EnsureUpdater()
-            if not UpdateConnection then
-                UpdateConnection = RunService.Heartbeat:Connect(UpdatePool)
-            end
-        end
-    
-        local function Clear()
-            StopUpdater()
-            for i = 1, #Pool do
-                Pool[i].beam.Enabled = false
-            end
-            if Folder then Folder:Destroy(); Folder = nil end
-            table.clear(Pool)
-            PoolIndex = 1
-        end
-    
-        local function Draw(startPosition, endPosition)
-            if not TracerAlive or not Toggles.BulletTracer_Enable.Value then return end
-            if (endPosition - startPosition).Magnitude < 0.15 then return end
-    
-            local slot = GetSlot()
-            local beam = slot.beam
-            local width = Options.BulletTracer_Width.Value
-            local texture = TextureIds[Options.BulletTracer_Texture.Value] or ''
-            slot.start.CFrame, slot.finish.CFrame = CFrame.new(startPosition), CFrame.new(endPosition)
-            beam.Color = ColorSequence.new(Options.BulletTracer_Color.Value)
-            beam.Width0, beam.Width1 = width, width * 0.35
-            beam.Texture = texture
-            beam.FaceCamera = Toggles.BulletTracer_FaceCamera.Value
-            beam.Transparency = NumberSequence.new(0.05)
-            beam.Enabled = true
-            slot.expires = os.clock() + Options.BulletTracer_Lifetime.Value
-            EnsureUpdater()
-        end
-    
-        local function GetPosition(value)
-            if typeof(value) == 'Vector3' then return value end
-            if typeof(value) == 'CFrame' then return value.Position end
-            if typeof(value) == 'Instance' and value:IsA('BasePart') then return value.Position end
-        end
-    
-        local function DrawFromValues(startValue, endValue)
-            if not TracerAlive then return end
-            local startPosition = GetPosition(startValue)
-            local endPosition = GetPosition(endValue)
-            if startPosition and endPosition then
-                Draw(startPosition, endPosition)
-            end
-        end
-    
+
         if type(hookmetamethod) == 'function' and type(getnamecallmethod) == 'function' then
             NamecallHandler = function(oldNamecall, self, ...)
                 if not HookActive then
                     return oldNamecall(self, ...)
                 end
-                if not Toggles.BulletTracer_Enable.Value
-                    and not Toggles.HitLog_Enable.Value
+                if not Toggles.HitLog_Enable.Value
                     and not Toggles.HitLog_DisplayEnable.Value
                     and not HandleRageHitParl
                 then
                     return oldNamecall(self, ...)
                 end
-    
+
                 local method = getnamecallmethod()
-                local isRemoteCall = method == 'FireServer' or method == 'FireUnreliable'
-                if not isRemoteCall then
+                if method ~= 'FireServer' and method ~= 'FireUnreliable' then
                     return oldNamecall(self, ...)
                 end
-    
-                local remoteName = self.Name
-                if remoteName == 'Trail' then
-                    if Toggles.BulletTracer_Enable.Value then
-                        local startValue, endValue = ...
-                        task.defer(DrawFromValues, startValue, endValue)
-                    end
-                elseif remoteName == 'HitParl' then
-                    if HandleHitParl
-                        and (Toggles.HitLog_Enable.Value or Toggles.HitLog_DisplayEnable.Value)
-                    then
-                        local hitPart = ...
-                        task.defer(HandleHitParl, hitPart)
-                    end
-                    if HandleRageHitParl then
-                        local args = table.pack(...)
-                        args = HandleRageHitParl(args)
-                        return oldNamecall(self, unpack(args, 1, args.n))
-                    end
+                if self.Name ~= 'HitParl' then
+                    return oldNamecall(self, ...)
+                end
+
+                if HandleHitParl
+                    and (Toggles.HitLog_Enable.Value or Toggles.HitLog_DisplayEnable.Value)
+                then
+                    local hitPart = ...
+                    task.defer(HandleHitParl, hitPart)
+                end
+                if HandleRageHitParl then
+                    local args = table.pack(...)
+                    args = HandleRageHitParl(args)
+                    return oldNamecall(self, unpack(args, 1, args.n))
                 end
                 return oldNamecall(self, ...)
             end
-    
+
             local state = SharedNamecallState
             state.handler = NamecallHandler
             if not state.oldNamecall then
@@ -754,7 +982,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                     end
                     return oldNamecall(self, ...)
                 end
-    
+
                 local wrapper = type(newcclosure) == 'function'
                     and newcclosure(NamecallDispatcher)
                     or NamecallDispatcher
@@ -767,21 +995,15 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             end
             HookActive = state.oldNamecall ~= nil
         end
-    
-        Toggles.BulletTracer_Enable:OnChanged(function()
-            if not Toggles.BulletTracer_Enable.Value then Clear() end
-        end)
-    
-        BulletTracerCleanup = function()
-            TracerAlive = false
+
+        NamecallCleanup = function()
             HookActive = false
             if SharedNamecallState.handler == NamecallHandler then
                 SharedNamecallState.handler = nil
             end
-            Clear()
         end
     end
-    
+
     ViewModel:AddToggle('ViewModel_WeaponChams', {
         Text = 'Weapon Chams',
         Default = false,
@@ -854,7 +1076,14 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
     local function AddUnload(fn)
         UnloadFns[#UnloadFns + 1] = fn
     end
-    
+
+    AddUnload(function()
+        if SkinCleanup then
+            SkinCleanup()
+            SkinCleanup = nil
+        end
+    end)
+
     local function ReloadCleanup()
         if type(Library.Unload) == 'function' then
             Library:Unload()
@@ -865,7 +1094,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
     AddUnload(function()
         unload()
         if HitLogCleanup then pcall(HitLogCleanup) end
-        if BulletTracerCleanup then pcall(BulletTracerCleanup) end
+        if NamecallCleanup then pcall(NamecallCleanup) end
     end)
     
     Library:OnUnload(function()
@@ -1244,7 +1473,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         end
 
         add(GetRayIgnoreRoot())
-        add(workspace:FindFirstChild('Debris'))
+        add(GetDebrisRoot())
         for i = 1, #PlayerSnapshot do
             local player = PlayerSnapshot[i]
             local character = player.Character
@@ -1315,15 +1544,33 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
 
     RageBot:AddToggle('RageBot_AutoPenetration', { Text = 'AutoPenetration', Default = true })
 
+    RageBot:AddDropdown('RageBot_PenMode', {
+        Text = 'Penetration mode',
+        Values = { 'Rage', 'Normal' },
+        Default = 'Rage',
+    })
+
     RageBot:AddSlider('RageBot_MaxWalls', {
-        Text = 'Max wall',
+        Text = 'Max wall (Rage)',
         Default = 3,
         Min = 1,
-        Max = 4,
+        Max = 15,
         Rounding = 0,
     })
 
-    local RageExploit = RageTab:AddLeftGroupbox('Exploit')
+    do
+        local function UpdatePenModeUI()
+            local isRage = Options.RageBot_PenMode.Value == 'Rage'
+            local rageWalls = Options.RageBot_MaxWalls
+            if type(rageWalls.SetVisible) == 'function' then
+                rageWalls:SetVisible(isRage)
+            end
+        end
+        Options.RageBot_PenMode:OnChanged(UpdatePenModeUI)
+        UpdatePenModeUI()
+    end
+
+    local RageExploit = RageTab:AddRightGroupbox('Exploit')
 
     RageExploit:AddToggle('RageExploit_KillAll', { Text = 'Kill all', Default = false })
         :AddKeyPicker('RageExploit_KillAllKey', {
@@ -1331,6 +1578,10 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             Mode = 'Hold',
             Text = 'Kill all',
         })
+
+    RageExploit:AddToggle('RageExploit_InfAmmo', { Text = 'Inf ammo', Default = false })
+    RageExploit:AddToggle('RageExploit_NoFallDamage', { Text = 'No fall damage', Default = false })
+    RageExploit:AddToggle('RageExploit_NoFireDamage', { Text = 'No fire damage', Default = false })
     
     do
         local RageHitboxOrder = { 'Head', 'Body', 'Arms', 'Legs' }
@@ -1353,17 +1604,14 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         RageRayParams.IgnoreWater = true
         local RageRayIgnore = {}
         local RageRayIgnoreCount = 0
-        local RagePenetrationParams = RaycastParams.new()
-        RagePenetrationParams.FilterType = Enum.RaycastFilterType.Include
-        RagePenetrationParams.IgnoreWater = true
-        local RagePenetrationInclude = {}
         local RageFrameState = { teamPlayers = {} }
         local RagePartCache = setmetatable({}, { __mode = 'k' })
+        local RageIgnorePartsCache = setmetatable({}, { __mode = 'k' })
         local RageSmokeRayParams = RaycastParams.new()
         RageSmokeRayParams.FilterType = Enum.RaycastFilterType.Include
         local RageSmokeInclude = {}
     
-        local RageTarget = { part = nil, point = nil, walls = math.huge }
+        local RageTarget = { part = nil, point = nil, walls = math.huge, damageMod = 1 }
         local RageSilentActive = false
         local RageInjecting = false
         local RageLastFire = 0
@@ -1378,7 +1626,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         local RageKillAllLastRun = 0
         local RageKillAllPosition = { X = 0 / 0, Y = 0 / 0, Z = 0 / 0 }
         local RageKillAllDirection = Vector3.new(0, 1, 0)
-    
+
         local function RageCamera()
             return workspace.CurrentCamera
         end
@@ -1476,11 +1724,18 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                 and not ReplicatedStorage:FindFirstChild('Cutscene')
         end
     
+        local function RageIsPenModeRage()
+            return (Options.RageBot_PenMode.Value or 'Rage') ~= 'Normal'
+        end
+
         local function RageMaxWalls()
             if not Toggles.RageBot_AutoPenetration.Value then
                 return 0
             end
-            return math.clamp(math.floor(tonumber(Options.RageBot_MaxWalls.Value) or 3), 0, 4)
+            if RageIsPenModeRage() then
+                return math.clamp(math.floor(tonumber(Options.RageBot_MaxWalls.Value) or 3), 0, 15)
+            end
+            return 4
         end
 
         local function RageGetPenetrationBudget()
@@ -1490,8 +1745,9 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             local character = LocalPlayer.Character
             local equipped = character and character:FindFirstChild('EquippedTool')
             local gun = character and character:FindFirstChild('Gun')
-            local gunName = equipped and type(equipped.Value) == 'string' and equipped.Value or (gun and gun.Name)
-            local weapons = gunName and ReplicatedStorage:FindFirstChild('Weapons')
+            local gunName = equipped and type(equipped.Value) == 'string' and equipped.Value ~= '' and equipped.Value
+                or (gun and gun.Name)
+            local weapons = gunName and GetWeaponsFolder()
             local gunData = weapons and weapons:FindFirstChild(gunName)
             local penetration = gunData and gunData:FindFirstChild('Penetration')
             return penetration and type(penetration.Value) == 'number' and math.max(penetration.Value, 0) * 0.01 or 0
@@ -1551,7 +1807,6 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             local frame = RageFrameState
             local cameraCFrame = camera.CFrame
             local selectedHitboxes = Options.RageBot_Hitbox.Value
-            local map = workspace:FindFirstChild('Map')
             local localStatus = LocalPlayer:FindFirstChild('Status')
     
             frame.camera = camera
@@ -1565,11 +1820,12 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             frame.localStatusTeam = localStatus and localStatus:FindFirstChild('Team')
             frame.teamCheck = Toggles.RageBot_TeamCheck.Value
             frame.maxWalls = RageMaxWalls()
-            frame.penetrationBudget = RageGetPenetrationBudget()
+            frame.penModeRage = RageIsPenModeRage()
+            frame.penetrationBudget = frame.penModeRage and 0 or RageGetPenetrationBudget()
             frame.rayIgnoreRoot = GetRayIgnoreRoot()
-            frame.debrisRoot = workspace:FindFirstChild('Debris')
-            frame.clipsRoot = map and map:FindFirstChild('Clips')
-            frame.spawnPointsRoot = map and map:FindFirstChild('SpawnPoints')
+            frame.debrisRoot = GetDebrisRoot()
+            frame.clipsRoot = GetMapClips()
+            frame.spawnPointsRoot = GetMapSpawnPoints()
             frame.hitboxHead = RageHitboxOn('Head', selectedHitboxes)
             frame.hitboxBody = RageHitboxOn('Body', selectedHitboxes)
             frame.hitboxArms = RageHitboxOn('Arms', selectedHitboxes)
@@ -1599,8 +1855,19 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                         if isTeammate or (humanoid and humanoid.Health <= 0) then
                             RageAddRayIgnore(character)
                         else
-                            for j = 1, #RageEnemyIgnoreNames do
-                                RageAddRayIgnore(character:FindFirstChild(RageEnemyIgnoreNames[j]))
+                            local ignoreParts = RageIgnorePartsCache[character]
+                            if not ignoreParts then
+                                ignoreParts = {}
+                                for j = 1, #RageEnemyIgnoreNames do
+                                    local part = character:FindFirstChild(RageEnemyIgnoreNames[j])
+                                    if part then
+                                        ignoreParts[#ignoreParts + 1] = part
+                                    end
+                                end
+                                RageIgnorePartsCache[character] = ignoreParts
+                            end
+                            for j = 1, #ignoreParts do
+                                RageAddRayIgnore(ignoreParts[j])
                             end
                         end
                     end
@@ -1628,6 +1895,9 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             frame.debrisRoot = nil
             frame.clipsRoot = nil
             frame.spawnPointsRoot = nil
+            if frame.teamPlayers then
+                table.clear(frame.teamPlayers)
+            end
         end
 
         local function RageGetPlayerFromHit(instance)
@@ -1687,40 +1957,72 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             return false
         end
 
-        local function RageGetPenetrationFactor(instance)
-            local modifier = instance:FindFirstChild('PartModifier')
-            if modifier and type(modifier.Value) == 'number' then
-                return math.max(modifier.Value, 0)
-            end
-            if instance.Name == 'nowallbang' then
-                return math.huge
+        local function RageGetPenetrationFactor(instance, frame)
+            if not instance then
+                return 1
             end
 
+            local factor = 1
             local material = instance.Material
-            if instance.Name == 'Grate' or material == Enum.Material.Wood or material == Enum.Material.WoodPlanks then
-                return 0.1
-            end
             if material == Enum.Material.DiamondPlate then
-                return 3
+                factor = 3
             end
             if material == Enum.Material.CorrodedMetal
                 or material == Enum.Material.Metal
                 or material == Enum.Material.Concrete
                 or material == Enum.Material.Brick
             then
-                return 2
+                factor = 2
             end
-            return 1
+
+            local parent = instance.Parent
+            if instance.Name == 'Grate'
+                or material == Enum.Material.Wood
+                or material == Enum.Material.WoodPlanks
+                or (parent and parent:FindFirstChildOfClass('Humanoid'))
+            then
+                factor = 0.1
+            end
+
+            if instance.Transparency == 1
+                or instance.CanCollide == false
+                or instance.Name == 'Glass'
+                or instance.Name == 'Cardboard'
+                or (frame.rayIgnoreRoot and instance:IsDescendantOf(frame.rayIgnoreRoot))
+                or (frame.debrisRoot and instance:IsDescendantOf(frame.debrisRoot))
+                or (parent and parent.Name == 'Hitboxes')
+            then
+                factor = 0
+            end
+
+            if instance.Name == 'nowallbang' then
+                factor = 100
+            end
+
+            local modifier = instance:FindFirstChild('PartModifier')
+            if modifier and type(modifier.Value) == 'number' then
+                factor = modifier.Value
+            end
+
+            return factor
         end
+
+        local RagePenetrationParams = RaycastParams.new()
+        RagePenetrationParams.FilterType = Enum.RaycastFilterType.Include
+        RagePenetrationParams.IgnoreWater = true
+        local RagePenetrationInclude = {}
 
         local function RageGetPenetrationThickness(instance, hitPosition, direction)
             RagePenetrationInclude[1] = instance
             RagePenetrationParams.FilterDescendantsInstances = RagePenetrationInclude
             local result = workspace:Raycast(hitPosition + direction, direction * -2, RagePenetrationParams)
             RagePenetrationInclude[1] = nil
-            return result and (result.Position - hitPosition).Magnitude or 1
+            if result then
+                return (result.Position - hitPosition).Magnitude
+            end
+            return ((hitPosition + direction) + direction * -2 - hitPosition).Magnitude
         end
-    
+
         local function RageFinishWallRay(frame)
             RageClearRayIgnore(frame.baseIgnoreCount)
             RageRayParams.FilterDescendantsInstances = RageRayIgnore
@@ -1730,12 +2032,14 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             local originPosition = frame.origin
             local delta = targetPosition - originPosition
             if delta.Magnitude < 0.001 then
-                return 0
+                return 0, 1
             end
     
             local maxWalls = frame.maxWalls
+            local penModeRage = frame.penModeRage
             local penetrationBudget = frame.penetrationBudget or 0
             local penetrationUsed = 0
+            local damageMod = 1
             local direction = delta.Unit
             local wallCount = 0
             local origin = originPosition
@@ -1756,22 +2060,37 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                     break
                 end
 
-                if parent and parent:FindFirstChildOfClass('Humanoid') then
-                    if targetCharacter and parent == targetCharacter then
-                        break
+                if penModeRage then
+                    if parent and parent:FindFirstChildOfClass('Humanoid') then
+                        if targetCharacter and parent == targetCharacter then
+                            break
+                        end
+                    elseif not RageShouldPierce(instance, frame) then
+                        wallCount = wallCount + 1
+                        if wallCount > maxWalls then
+                            break
+                        end
                     end
-                elseif not RageShouldPierce(instance, frame) then
-                    wallCount = wallCount + 1
-                    if wallCount > maxWalls then
-                        break
-                    end
+                else
+                    local factor = RageGetPenetrationFactor(instance, frame)
+                    if factor > 0 then
+                        wallCount = wallCount + 1
+                        if wallCount > maxWalls then
+                            wallCount = maxWalls + 1
+                            break
+                        end
 
-                    local factor = RageGetPenetrationFactor(instance)
-                    local thickness = RageGetPenetrationThickness(instance, result.Position, direction)
-                    penetrationUsed = penetrationUsed + thickness * factor
-                    if penetrationUsed >= penetrationBudget then
-                        wallCount = maxWalls + 1
-                        break
+                        local thickness = RageGetPenetrationThickness(instance, result.Position, direction)
+                        penetrationUsed = math.min(penetrationBudget, penetrationUsed + thickness * factor)
+                        if penetrationBudget <= 0 then
+                            wallCount = maxWalls + 1
+                            break
+                        end
+                        damageMod = 1 - penetrationUsed / penetrationBudget
+                        if penetrationUsed >= penetrationBudget or damageMod <= 0 then
+                            wallCount = maxWalls + 1
+                            break
+                        end
                     end
                 end
     
@@ -1781,7 +2100,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             end
     
             RageFinishWallRay(frame)
-            return wallCount
+            return wallCount, penModeRage and 1 or math.clamp(damageMod, 0, 1)
         end
     
         local function RageGetAimDot(position, origin, lookVector)
@@ -1816,26 +2135,6 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                 or group == 'Arms' and frame.hitboxArms
                 or group == 'Legs' and frame.hitboxLegs
         end
-
-        local function RageGetBestPossibleDot(frame, character)
-            local bestDot = -math.huge
-            for i = 1, #RageHitboxOrder do
-                local group = RageHitboxOrder[i]
-                if RageIsHitboxEnabled(frame, group) then
-                    local names = HITBOX_PARTS[group]
-                    for j = 1, #names do
-                        local part = RageGetCachedPart(character, names[j])
-                        if part and part:IsA('BasePart') then
-                            local dot = RageGetAimDot(part.Position, frame.origin, frame.lookVector)
-                            if dot and dot >= frame.minimumDot and dot > bestDot then
-                                bestDot = dot
-                            end
-                        end
-                    end
-                end
-            end
-            return bestDot
-        end
     
         local function RagePickHitbox(frame, character)
             for i = 1, #RageHitboxOrder do
@@ -1862,13 +2161,13 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
 
                 -- One wall raycast path per hitbox group; AutoFire/HitParl reuse RageTarget.walls.
                 if bestPart then
-                    local walls = RageGetWallCount(frame, bestPoint, character)
+                    local walls, damageMod = RageGetWallCount(frame, bestPoint, character)
                     if walls <= frame.maxWalls then
-                        return bestPart, bestPoint, walls, bestDot
+                        return bestPart, bestPoint, walls, bestDot, damageMod
                     end
                 end
             end
-            return nil, nil, math.huge, nil
+            return nil, nil, math.huge, nil, 1
         end
     
         local function RageScanTargets(frame)
@@ -1886,19 +2185,16 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                 if not character or not humanoid or humanoid.Health <= 0 or not root or RageHasShield(character) then
                     continue
                 end
-
-                if RageGetBestPossibleDot(frame, character) <= bestDot then
-                    continue
-                end
     
-                local part, point, walls, dot = RagePickHitbox(frame, character)
+                local part, point, walls, dot, damageMod = RagePickHitbox(frame, character)
                 if not part or not point or walls > frame.maxWalls then
                     continue
                 end
     
                 if dot and dot >= frame.minimumDot and dot > bestDot then
                     bestDot = dot
-                    RageTarget.part, RageTarget.point, RageTarget.walls = part, point, walls
+                    RageTarget.part, RageTarget.point, RageTarget.walls, RageTarget.damageMod =
+                        part, point, walls, damageMod or 1
                 end
             end
         end
@@ -1912,7 +2208,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             end
     
             local gunName = type(equipped.Value) == 'string' and equipped.Value ~= '' and equipped.Value or gun.Name
-            local weapons = ReplicatedStorage:FindFirstChild('Weapons')
+            local weapons = GetWeaponsFolder()
             local gunData = weapons and weapons:FindFirstChild(gunName)
             local fireRate = gunData and gunData:FindFirstChild('FireRate')
             local rate = fireRate and fireRate:IsA('NumberValue') and fireRate.Value > 0 and fireRate.Value or 0.1
@@ -1984,7 +2280,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             local fireGun = args[5]
             if typeof(fireGun) == 'Instance' and fireGun:FindFirstChild('Melee') then
                 local meleeRange = 64
-                local weapons = ReplicatedStorage:FindFirstChild('Weapons')
+                local weapons = GetWeaponsFolder()
                 local weapon = weapons and type(args[3]) == 'string' and weapons:FindFirstChild(args[3])
                 local range = weapon and weapon:FindFirstChild('Range')
                 if range and type(range.Value) == 'number' then
@@ -2002,6 +2298,10 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             args[2] = { X = 0 / 0, Y = 0 / 0, Z = 0 / 0 }
             if type(args[4]) ~= 'number' or args[4] <= 0 then
                 args[4] = 4096
+            end
+            if not RageIsPenModeRage() then
+                local damageMod = RageTarget.damageMod
+                args[7] = type(damageMod) == 'number' and math.clamp(damageMod, 0, 1) or 1
             end
             args[9] = walls > 0
     
@@ -2041,7 +2341,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                 return false
             end
     
-            events = events or ReplicatedStorage:FindFirstChild('Events')
+            events = events or GetEventsFolder()
             local hitParl = events and events:FindFirstChild('HitParl')
             if not hitParl then
                 return false
@@ -2082,6 +2382,11 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                 return false
             end
     
+            local damageMod = 1
+            if not RageIsPenModeRage() then
+                damageMod = type(RageTarget.damageMod) == 'number' and math.clamp(RageTarget.damageMod, 0, 1) or 1
+            end
+
             local flashed, noScope, smoke, airborne = RageShotFlags(gunData, cameraPosition, hitPosition)
             if smoke then
                 return false
@@ -2100,7 +2405,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                     range,
                     characterGun,
                     nil,
-                    1,
+                    damageMod,
                     range == 48,
                     walls > 0,
                     cameraPosition,
@@ -2120,7 +2425,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         end
     
         local function RageFireWeapon(events)
-            events = events or ReplicatedStorage:FindFirstChild('Events')
+            events = events or GetEventsFolder()
             local weapon = events and events:FindFirstChild('weap')
             if not weapon then
                 return false
@@ -2138,7 +2443,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             if RageKillAllRemote and RageKillAllRemote.Parent then
                 return RageKillAllRemote
             end
-            local events = ReplicatedStorage:FindFirstChild('Events')
+            local events = GetEventsFolder()
             local remote = events and events:FindFirstChild('HitParl')
             RageKillAllRemote = remote and remote:IsA('RemoteEvent') and remote or nil
             return RageKillAllRemote
@@ -2162,7 +2467,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             if not remote or not camera then return end
 
             local gunName = 'AWP'
-            local weapons = ReplicatedStorage:FindFirstChild('Weapons')
+            local weapons = GetWeaponsFolder()
             local gunReference = weapons and weapons:FindFirstChild(gunName) or gun
             local cameraPosition = camera.CFrame.Position
             local serverTime = workspace:GetServerTimeNow()
@@ -2206,8 +2511,17 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             RageInjecting = false
         end
     
+        local RageNextUpdate = 0
+        local RAGE_UPDATE_INTERVAL = 1 / 144
+
         local function RageUpdate()
-            RageTarget.part, RageTarget.point, RageTarget.walls = nil, nil, math.huge
+            local now = os.clock()
+            if now < RageNextUpdate then
+                return
+            end
+            RageNextUpdate = now + RAGE_UPDATE_INTERVAL
+
+            RageTarget.part, RageTarget.point, RageTarget.walls, RageTarget.damageMod = nil, nil, math.huge, 1
             RageSilentActive = RageIsActive() and RageCanFire()
             HandleRageHitParl = RageSilentActive and RageApplyHitParl or nil
             RageUpdateKillAll()
@@ -2247,7 +2561,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                 return
             end
     
-            local events = ReplicatedStorage:FindFirstChild('Events')
+            local events = GetEventsFolder()
             if RageFireWeapon(events) then
                 RageLastFire = now
                 RageFireHit(target, point, gunName, characterGun, gunData, events)
@@ -2306,6 +2620,27 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             RageFovCircle.Visible = true
         end
     
+        Library:GiveSignal(PlayersService.PlayerRemoving:Connect(function(player)
+            local character = player.Character
+            if character then
+                RagePartCache[character] = nil
+                RageIgnorePartsCache[character] = nil
+            end
+            RageFrameState.teamPlayers[player] = nil
+        end))
+
+        local function RageBindCharacterCache(player)
+            Library:GiveSignal(player.CharacterRemoving:Connect(function(character)
+                RagePartCache[character] = nil
+                RageIgnorePartsCache[character] = nil
+            end))
+        end
+
+        for i = 1, #PlayerSnapshot do
+            RageBindCharacterCache(PlayerSnapshot[i])
+        end
+        Library:GiveSignal(PlayersService.PlayerAdded:Connect(RageBindCharacterCache))
+
         RageHeartbeat = RunService.Heartbeat:Connect(RageUpdate)
         RageFovConnection = RunService.RenderStepped:Connect(function()
             if not Toggles.RageBot_Enable.Value or not Toggles.RageBot_ShowFov.Value then
@@ -2319,7 +2654,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             if now < RageNextFovUpdate then
                 return
             end
-            RageNextFovUpdate = now + 1 / 30
+            RageNextFovUpdate = now + 1 / 60
             local camera = RageCamera()
             if camera then
                 RageUpdateFov(camera)
@@ -2333,10 +2668,12 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         AddUnload(function()
             HandleRageHitParl = nil
             RageSilentActive = false
-            RageTarget.part, RageTarget.point, RageTarget.walls = nil, nil, math.huge
+            RageInjecting = false
+            RageTarget.part, RageTarget.point, RageTarget.walls, RageTarget.damageMod = nil, nil, math.huge, 1
             RageClearRayIgnore(0)
             RageClearFrameState()
             RageSmokeInclude[1] = nil
+
             if RageHeartbeat then
                 RageHeartbeat:Disconnect()
                 RageHeartbeat = nil
@@ -2345,6 +2682,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                 RageFovConnection:Disconnect()
                 RageFovConnection = nil
             end
+
             if RageFovCircle then
                 RageFovCircle.Visible = false
                 pcall(function()
@@ -2355,7 +2693,339 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             end
         end)
     end
-    
+
+    -- Inf ammo (from InfAmmo.lua — blocks ParticleRemote kick on ammocount > 150)
+    do
+        local State = {
+            ammoTable = nil,
+            lastScan = 0,
+            scanBackoff = 0.5,
+            scanning = false,
+            gcTried = false,
+            clientScript = nil,
+            clientEnv = nil,
+            heartbeat = nil,
+            charConn = nil,
+            oldNamecall = nil,
+            hooked = false,
+        }
+
+        local function isAmmoTable(obj)
+            if type(obj) ~= 'table' then
+                return false
+            end
+            local a1 = rawget(obj, 'ammocount')
+            local a2 = rawget(obj, 'ammocount2')
+            local a3 = rawget(obj, 'ammocount3')
+            local a4 = rawget(obj, 'ammocount4')
+            return type(a1) == 'number'
+                and type(a2) == 'number'
+                and type(a3) == 'number'
+                and type(a4) == 'number'
+                and rawget(obj, 'DISABLED') ~= nil
+                and rawget(obj, 'reloading') ~= nil
+        end
+
+        local function getClientEnv()
+            local pg = LocalPlayer:FindFirstChild('PlayerGui')
+            local cg = pg and pg:FindFirstChild('Client')
+            if not cg then
+                State.clientScript = nil
+                State.clientEnv = nil
+                return nil
+            end
+            if State.clientScript == cg and State.clientEnv ~= nil then
+                return State.clientEnv
+            end
+            State.clientScript = cg
+            if type(getsenv) ~= 'function' then
+                State.clientEnv = nil
+                return nil
+            end
+            local ok, env = pcall(getsenv, cg)
+            State.clientEnv = ok and env or nil
+            return State.clientEnv
+        end
+
+        local function findAmmoTable()
+            local client = getClientEnv()
+            if type(client) == 'table' then
+                if isAmmoTable(client) then
+                    return client
+                end
+                for _, obj in pairs(client) do
+                    if isAmmoTable(obj) then
+                        return obj
+                    end
+                end
+                if debug and type(debug.getupvalue) == 'function' then
+                    local names = { 'usethatgun', 'loadammo', 'isgrenade', 'updatesilencer', 'resetguns', 'countammo' }
+                    for i = 1, #names do
+                        local fn = rawget(client, names[i])
+                        if type(fn) == 'function' then
+                            local ok, found = pcall(function()
+                                for ui = 1, 64 do
+                                    local name, val = debug.getupvalue(fn, ui)
+                                    if name == nil and val == nil then
+                                        break
+                                    end
+                                    if isAmmoTable(val) then
+                                        return val
+                                    end
+                                end
+                                return nil
+                            end)
+                            if ok and found then
+                                return found
+                            end
+                        end
+                    end
+                end
+            end
+
+            if getgc and not State.gcTried then
+                State.gcTried = true
+                for _, obj in ipairs(getgc(true)) do
+                    if isAmmoTable(obj) then
+                        return obj
+                    end
+                end
+            end
+
+            return nil
+        end
+
+        local function requestScan(force)
+            if State.scanning then
+                return
+            end
+            local now = tick()
+            if not force and now - State.lastScan < State.scanBackoff then
+                return
+            end
+            State.lastScan = now
+            State.scanning = true
+            task.spawn(function()
+                local ok, result = pcall(findAmmoTable)
+                State.scanning = false
+                if ok and result then
+                    State.ammoTable = result
+                    State.scanBackoff = 2
+                else
+                    State.scanBackoff = math.min((State.scanBackoff or 0.5) * 2, 30)
+                end
+            end)
+        end
+
+        local function restoreAmmoSafe()
+            local t = State.ammoTable
+            if not isAmmoTable(t) then
+                t = findAmmoTable()
+                if t then
+                    State.ammoTable = t
+                end
+            end
+            if not t then
+                return
+            end
+
+            local weapons = ReplicatedStorage:FindFirstChild('Weapons')
+            local client = getClientEnv()
+            local function ammoOf(name, fallback)
+                if weapons and type(name) == 'string' and name ~= '' and name ~= 'none' then
+                    local folder = weapons:FindFirstChild(name)
+                    local ammo = folder and folder:FindFirstChild('Ammo')
+                    if ammo and type(ammo.Value) == 'number' and ammo.Value > 0 and ammo.Value <= 150 then
+                        return math.floor(ammo.Value)
+                    end
+                end
+                return fallback
+            end
+
+            local a1 = ammoOf(client and (client.realgun or client.primary), 30)
+            local a2 = ammoOf(client and client.secondary, 12)
+
+            local function fixMag(key, fallback)
+                local value = rawget(t, key)
+                if type(value) == 'number' and (value > 150 or value ~= value or value == math.huge) then
+                    t[key] = fallback
+                end
+            end
+            local function fixStored(key, fallback)
+                local value = rawget(t, key)
+                if type(value) == 'number' and (value > 999 or value ~= value or value == math.huge) then
+                    t[key] = fallback
+                end
+            end
+
+            fixMag('ammocount', a1)
+            fixMag('ammocount2', a2)
+            fixMag('ammocount3', 1)
+            fixMag('ammocount4', 1)
+            fixStored('primarystored', a1 * 2)
+            fixStored('secondarystored', a2 * 2)
+            fixStored('equipmentstored', 1)
+            fixStored('equipment2stored', 1)
+        end
+
+        local function applyAmmo()
+            if not Toggles.RageExploit_InfAmmo.Value then
+                return
+            end
+            local t = State.ammoTable
+            if not isAmmoTable(t) then
+                State.ammoTable = nil
+                requestScan(false)
+                return
+            end
+
+            local v = 99999
+            t.ammocount = v
+            t.ammocount2 = v
+            t.ammocount3 = v
+            t.ammocount4 = v
+            if rawget(t, 'primarystored') ~= nil then
+                t.primarystored = v
+            end
+            if rawget(t, 'secondarystored') ~= nil then
+                t.secondarystored = v
+            end
+            if rawget(t, 'equipmentstored') ~= nil then
+                t.equipmentstored = v
+            end
+            if rawget(t, 'equipment2stored') ~= nil then
+                t.equipment2stored = v
+            end
+        end
+
+        local function isKickPacket(args)
+            local first = args[1]
+            if type(first) ~= 'table' then
+                return false
+            end
+            local a, b = first[1], first[2]
+            if a == 'kick' then
+                return true
+            end
+            if type(a) == 'string' and string.lower(a) == 'kick' then
+                return true
+            end
+            if b == 'error 2' or b == 'error2' then
+                return true
+            end
+            return false
+        end
+
+        local function installKickBlock()
+            if State.hooked then
+                return
+            end
+            if type(hookmetamethod) ~= 'function' or type(getnamecallmethod) ~= 'function' then
+                return
+            end
+
+            local events = GetEventsFolder()
+            local particleRemote = events and events:FindFirstChild('ParticleRemote')
+
+            local old
+            local handler = function(self, ...)
+                local method = getnamecallmethod()
+                if method ~= 'FireServer' and method ~= 'FireUnreliable' then
+                    return old(self, ...)
+                end
+
+                local name = typeof(self) == 'Instance' and self.Name or nil
+                if name ~= 'ParticleRemote' and name ~= 'FallDamage' and name ~= 'ohnoflames' then
+                    return old(self, ...)
+                end
+
+                if name == 'FallDamage' and Toggles.RageExploit_NoFallDamage.Value then
+                    return
+                end
+                if name == 'ohnoflames' and Toggles.RageExploit_NoFireDamage.Value then
+                    return
+                end
+                if Toggles.RageExploit_InfAmmo.Value then
+                    local isParticle = self == particleRemote or name == 'ParticleRemote'
+                    if isParticle then
+                        local args = { ... }
+                        if isKickPacket(args) then
+                            return
+                        end
+                    end
+                end
+                return old(self, ...)
+            end
+            old = hookmetamethod(game, '__namecall', (newcclosure and newcclosure(handler)) or handler)
+
+            State.oldNamecall = old
+            State.hooked = true
+        end
+
+        installKickBlock()
+
+        Toggles.RageExploit_InfAmmo:OnChanged(function(enabled)
+            if enabled then
+                State.ammoTable = nil
+                State.gcTried = false
+                State.scanBackoff = 0.5
+                requestScan(true)
+                task.defer(applyAmmo)
+            else
+                -- Restore normal ammo first while kick-block still active.
+                pcall(restoreAmmoSafe)
+                State.ammoTable = nil
+            end
+        end)
+
+        State.charConn = LocalPlayer.CharacterAdded:Connect(function()
+            State.ammoTable = nil
+            State.gcTried = false
+            State.clientScript = nil
+            State.clientEnv = nil
+            State.scanBackoff = 1
+            if Toggles.RageExploit_InfAmmo.Value then
+                task.defer(function()
+                    requestScan(true)
+                    applyAmmo()
+                end)
+            end
+        end)
+        Library:GiveSignal(State.charConn)
+
+        local nextAmmoApply = 0
+        State.heartbeat = RunService.Heartbeat:Connect(function()
+            if not Toggles.RageExploit_InfAmmo.Value then
+                return
+            end
+            local now = os.clock()
+            if now < nextAmmoApply then
+                return
+            end
+            nextAmmoApply = now + 30
+            applyAmmo()
+        end)
+        Library:GiveSignal(State.heartbeat)
+
+        if Toggles.RageExploit_InfAmmo.Value then
+            requestScan(true)
+        end
+
+        AddUnload(function()
+            -- Ammo normal first, then disable (kick block becomes no-op).
+            pcall(restoreAmmoSafe)
+            State.ammoTable = nil
+            if State.heartbeat then
+                State.heartbeat:Disconnect()
+                State.heartbeat = nil
+            end
+            if State.charConn then
+                State.charConn:Disconnect()
+                State.charConn = nil
+            end
+        end)
+    end
+
     -- GunMods
     local GunMods = RageTab:AddRightGroupbox('GunMods')
     
@@ -2390,6 +3060,8 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         local WeaponConnections = {}
         local RootConnections = {}
         local ModConnection
+        local RapidAmmoTable = nil
+        local RapidLastUnlock = 0
         local WeaponCache = {
             Recoil = {},
             FireRate = {},
@@ -2410,6 +3082,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             if clientScript ~= ClientScript then
                 ClientScript = clientScript
                 ClientEnvironment = nil
+                RapidAmmoTable = nil
                 NextClientCheck = 0
             end
     
@@ -2419,6 +3092,53 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             end
     
             return ClientEnvironment
+        end
+
+        local function IsAmmoTable(obj)
+            if type(obj) ~= 'table' then return false end
+            return type(rawget(obj, 'ammocount')) == 'number'
+                and type(rawget(obj, 'ammocount2')) == 'number'
+                and rawget(obj, 'DISABLED') ~= nil
+                and rawget(obj, 'reloading') ~= nil
+        end
+
+        local function GetAmmoTable()
+            if RapidAmmoTable and rawget(RapidAmmoTable, 'DISABLED') ~= nil then
+                return RapidAmmoTable
+            end
+            local client = GetClientEnvironment()
+            if type(client) ~= 'table' then return nil end
+            if IsAmmoTable(client) then
+                RapidAmmoTable = client
+                return client
+            end
+            for _, obj in pairs(client) do
+                if IsAmmoTable(obj) then
+                    RapidAmmoTable = obj
+                    return obj
+                end
+            end
+            if debug and type(debug.getupvalue) == 'function' then
+                local names = { 'usethatgun', 'loadammo', 'countammo', 'resetguns' }
+                for i = 1, #names do
+                    local fn = rawget(client, names[i])
+                    if type(fn) == 'function' then
+                        local ok, found = pcall(function()
+                            for ui = 1, 64 do
+                                local name, val = debug.getupvalue(fn, ui)
+                                if name == nil and val == nil then break end
+                                if IsAmmoTable(val) then return val end
+                            end
+                            return nil
+                        end)
+                        if ok and found then
+                            RapidAmmoTable = found
+                            return found
+                        end
+                    end
+                end
+            end
+            return nil
         end
     
         local function RestoreSaved(saved)
@@ -2452,6 +3172,26 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             table.clear(WeaponConnections)
         end
 
+        local function ResolveFireRate(weapon)
+            if not weapon then return nil end
+            -- Client wait uses fgun = getref(gun): CopyFrom base if present
+            local source = weapon
+            local copyFrom = weapon:FindFirstChild('CopyFrom')
+            if copyFrom then
+                local ref = copyFrom.Value
+                if typeof(ref) == 'Instance' then
+                    source = ref
+                elseif type(ref) == 'string' and ref ~= '' then
+                    source = (WeaponsFolder and WeaponsFolder:FindFirstChild(ref)) or weapon
+                end
+            end
+            local fireRate = source:FindFirstChild('FireRate')
+            if fireRate and fireRate:IsA('NumberValue') then return fireRate end
+            fireRate = weapon:FindFirstChild('FireRate')
+            if fireRate and fireRate:IsA('NumberValue') then return fireRate end
+            return nil
+        end
+
         local function RebuildWeaponCache()
             for _, list in pairs(WeaponCache) do table.clear(list) end
             local folder = WeaponsFolder
@@ -2459,18 +3199,30 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                 WeaponsDirty = false
                 return
             end
+            local seenFireRate = {}
             for _, weapon in ipairs(folder:GetChildren()) do
                 local spread = weapon:FindFirstChild('Spread')
                 local recoil = spread and spread:FindFirstChild('Recoil')
-                local fireRate = weapon:FindFirstChild('FireRate')
+                local fireRate = ResolveFireRate(weapon)
                 local equipTime = weapon:FindFirstChild('EquipTime')
                 local reloadTime = weapon:FindFirstChild('ReloadTime')
                 local auto = weapon:FindFirstChild('Auto')
-                if recoil then WeaponCache.Recoil[#WeaponCache.Recoil + 1] = recoil end
-                if fireRate then WeaponCache.FireRate[#WeaponCache.FireRate + 1] = fireRate end
-                if equipTime then WeaponCache.EquipTime[#WeaponCache.EquipTime + 1] = equipTime end
-                if reloadTime then WeaponCache.ReloadTime[#WeaponCache.ReloadTime + 1] = reloadTime end
-                if auto then WeaponCache.Auto[#WeaponCache.Auto + 1] = auto end
+                if recoil and recoil:IsA('NumberValue') then
+                    WeaponCache.Recoil[#WeaponCache.Recoil + 1] = recoil
+                end
+                if fireRate and not seenFireRate[fireRate] then
+                    seenFireRate[fireRate] = true
+                    WeaponCache.FireRate[#WeaponCache.FireRate + 1] = fireRate
+                end
+                if equipTime and equipTime:IsA('NumberValue') then
+                    WeaponCache.EquipTime[#WeaponCache.EquipTime + 1] = equipTime
+                end
+                if reloadTime and reloadTime:IsA('NumberValue') then
+                    WeaponCache.ReloadTime[#WeaponCache.ReloadTime + 1] = reloadTime
+                end
+                if auto and auto:IsA('BoolValue') then
+                    WeaponCache.Auto[#WeaponCache.Auto + 1] = auto
+                end
             end
             WeaponsDirty = false
         end
@@ -2492,7 +3244,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         end
 
         local function EnsureWeaponCache()
-            local folder = ReplicatedStorage:FindFirstChild('Weapons')
+            local folder = GetWeaponsFolder() or ReplicatedStorage:FindFirstChild('Weapons')
             if folder ~= WeaponsFolder then BindWeaponsFolder(folder) end
             if WeaponsDirty then RebuildWeaponCache() end
         end
@@ -2536,7 +3288,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             if object.Value ~= value then object.Value = value end
         end
     
-        local function ApplyGunMods()
+        local function ApplyWeaponMods()
             if Toggles.GunMods_RemoveSpread.Value then
                 local client = GetClientEnvironment()
                 if client then
@@ -2544,12 +3296,12 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                     if SavedAccuracySd == nil and type(current) == 'number' then
                         SavedAccuracySd = current
                     end
-                    if current == 0.001 then
+                    if type(current) == 'number' and current ~= 0 then
                         rawset(client, 'accuracy_sd', 0)
                     end
                 end
             end
-    
+
             local weaponModsEnabled = Toggles.GunMods_RemoveRecoil.Value
                 or Toggles.GunMods_RapidFire.Value
                 or Toggles.GunMods_FastEquip.Value
@@ -2561,8 +3313,10 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                 for i = 1, #WeaponCache.Recoil do ApplyValue(WeaponCache.Recoil[i], SavedValues.Recoil, 1) end
             end
             if Toggles.GunMods_RapidFire.Value then
-                local rapidRate = (tonumber(Options.GunMods_RapidFireRate.Value) or 10) / 1000
-                for i = 1, #WeaponCache.FireRate do ApplyValue(WeaponCache.FireRate[i], SavedValues.FireRate, rapidRate) end
+                local rapidRate = math.clamp((tonumber(Options.GunMods_RapidFireRate.Value) or 10) / 1000, 0.001, 0.05)
+                for i = 1, #WeaponCache.FireRate do
+                    ApplyValue(WeaponCache.FireRate[i], SavedValues.FireRate, rapidRate)
+                end
             end
             if Toggles.GunMods_FastEquip.Value then
                 for i = 1, #WeaponCache.EquipTime do ApplyValue(WeaponCache.EquipTime[i], SavedValues.EquipTime, 0.1) end
@@ -2575,19 +3329,93 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             end
         end
 
+        local function RapidFireTick()
+            if not Toggles.GunMods_RapidFire.Value then
+                return
+            end
+            local ammo = GetAmmoTable()
+            if ammo and not rawget(ammo, 'reloading') and (rawget(ammo, 'Held') or rawget(ammo, 'Held2')) then
+                rawset(ammo, 'DISABLED', false)
+            end
+        end
+
         local function ModsEnabled()
             return Toggles.GunMods_RemoveSpread.Value or Toggles.GunMods_RemoveRecoil.Value
                 or Toggles.GunMods_RapidFire.Value or Toggles.GunMods_FastEquip.Value
                 or Toggles.GunMods_FastReload.Value or Toggles.GunMods_FullAuto.Value
         end
 
+        -- Forward declarations used by BindWeaponsFolder (Lua local scoping).
+        -- BindWeaponsFolder above references ModsEnabled/ApplyWeaponMods; redefine bindings after defs:
+        local function RebindWeaponsFolderHandlers()
+            local folder = WeaponsFolder
+            if not folder then return end
+            DisconnectWeaponConnections()
+            WeaponConnections[#WeaponConnections + 1] = folder.DescendantAdded:Connect(function()
+                WeaponsDirty = true
+                if ModsEnabled() then
+                    ApplyWeaponMods()
+                end
+            end)
+            WeaponConnections[#WeaponConnections + 1] = folder.DescendantRemoving:Connect(function(object)
+                RestoreObject(object)
+                WeaponsDirty = true
+            end)
+        end
+
+        local NextWeaponModsApply = 0
+        local RapidTickConnection
+        local ValuesTickConnection
+
+        local function StopRapidTick()
+            if RapidTickConnection then
+                RapidTickConnection:Disconnect()
+                RapidTickConnection = nil
+            end
+        end
+
+        local function StopValuesTick()
+            if ValuesTickConnection then
+                ValuesTickConnection:Disconnect()
+                ValuesTickConnection = nil
+            end
+        end
+
         local function RefreshModConnection()
             if ModsEnabled() then
-                ApplyGunMods()
-                if not ModConnection then ModConnection = RunService.Heartbeat:Connect(ApplyGunMods) end
-            elseif ModConnection then
-                ModConnection:Disconnect()
-                ModConnection = nil
+                ApplyWeaponMods()
+                NextWeaponModsApply = os.clock() + 10
+                if not ValuesTickConnection then
+                    ValuesTickConnection = RunService.Heartbeat:Connect(function()
+                        if not ModsEnabled() then
+                            return
+                        end
+                        local now = os.clock()
+                        if now < NextWeaponModsApply then
+                            return
+                        end
+                        NextWeaponModsApply = now + 10
+                        ApplyWeaponMods()
+                    end)
+                end
+            else
+                StopValuesTick()
+            end
+
+            if Toggles.GunMods_RapidFire.Value then
+                if not RapidTickConnection then
+                    local nextRapid = 0
+                    RapidTickConnection = RunService.Heartbeat:Connect(function()
+                        local now = os.clock()
+                        if now < nextRapid then
+                            return
+                        end
+                        nextRapid = now + 1 / 15
+                        RapidFireTick()
+                    end)
+                end
+            else
+                StopRapidTick()
             end
         end
     
@@ -2611,7 +3439,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         end)
         Options.GunMods_RapidFireRate:OnChanged(function()
             if Toggles.GunMods_RapidFire.Value then
-                RefreshModConnection()
+                ApplyWeaponMods()
             end
         end)
         Toggles.GunMods_FastEquip:OnChanged(function()
@@ -2634,15 +3462,31 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         end)
 
         RootConnections[#RootConnections + 1] = ReplicatedStorage.ChildAdded:Connect(function(child)
-            if child.Name == 'Weapons' then BindWeaponsFolder(child) end
+            if child.Name == 'Weapons' then
+                BindWeaponsFolder(child)
+                RebindWeaponsFolderHandlers()
+                if ModsEnabled() then
+                    ApplyWeaponMods()
+                end
+            end
         end)
         RootConnections[#RootConnections + 1] = ReplicatedStorage.ChildRemoved:Connect(function(child)
             if child == WeaponsFolder then BindWeaponsFolder(nil) end
         end)
-        BindWeaponsFolder(ReplicatedStorage:FindFirstChild('Weapons'))
+        BindWeaponsFolder(GetWeaponsFolder() or ReplicatedStorage:FindFirstChild('Weapons'))
+        RebindWeaponsFolderHandlers()
+
+        Library:GiveSignal(LocalPlayer.CharacterAdded:Connect(function()
+            if ModsEnabled() then
+                task.defer(ApplyWeaponMods)
+            end
+        end))
+
         RefreshModConnection()
     
         AddUnload(function()
+            StopRapidTick()
+            StopValuesTick()
             if ModConnection then ModConnection:Disconnect(); ModConnection = nil end
             for i = 1, #RootConnections do RootConnections[i]:Disconnect() end
             table.clear(RootConnections)
@@ -2652,6 +3496,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
     end
     
     local GetCurrentSpreadRadius
+    local GetCurrentSpreadAngle
     
     do
         local SpreadCircle
@@ -2786,12 +3631,16 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             return GetFallbackSpread(weapon, character, client) * accuracyScale
         end
     
+        GetCurrentSpreadAngle = function()
+            return math.max(GetSpreadAngle(), 0)
+        end
+
         GetCurrentSpreadRadius = function(camera)
             if not camera then
                 return 0
             end
     
-            local spreadAngle = GetSpreadAngle()
+            local spreadAngle = GetCurrentSpreadAngle()
             return math.max(
                 0,
                 math.deg(spreadAngle) * VISUAL_SCALE * camera.ViewportSize.Y / 600
@@ -3094,7 +3943,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             end
     
             if now >= NextFovUpdate then
-                NextFovUpdate = now + 1 / 30
+                NextFovUpdate = now + 1 / 60
                 UpdateFovCircle(camera)
             end
     
@@ -3169,16 +4018,12 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
     do
         local RayParams = RaycastParams.new()
         local RaycastIgnore = {}
-        local PenetrationParams = RaycastParams.new()
-        local PenetrationInclude = {}
         local FireRemote
         local DelayTarget
         local DelayUntil = 0
         local LastFireAt = 0
         local NextUpdate = 0
         RayParams.FilterType = Enum.RaycastFilterType.Exclude
-        PenetrationParams.FilterType = Enum.RaycastFilterType.Include
-        PenetrationParams.IgnoreWater = true
     
         local function ResetDelay()
             DelayTarget = nil
@@ -3213,8 +4058,6 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         end
     
         local SelectedParts = {}
-        local HITBOX_CENTER_SCALE = 0.8
-    
         local function IsTriggerTeammate(player)
             if not Toggles.Triggerbot_TeamCheck.Value then
                 return false
@@ -3266,11 +4109,28 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         end
 
         local function GetTriggerWallThickness(part, hitPosition, direction)
-            PenetrationInclude[1] = part
-            PenetrationParams.FilterDescendantsInstances = PenetrationInclude
-            local result = workspace:Raycast(hitPosition + direction, direction * -2, PenetrationParams)
-            PenetrationInclude[1] = nil
-            return result and (result.Position - hitPosition).Magnitude or 1
+            local localHit = part.CFrame:PointToObjectSpace(hitPosition)
+            local localDirection = part.CFrame:VectorToObjectSpace(direction.Unit)
+            local half = part.Size * 0.5
+            local thickness = math.huge
+
+            local function updateExit(position, travel, extent)
+                if math.abs(travel) <= 1e-8 then
+                    return
+                end
+                local t1 = (-extent - position) / travel
+                local t2 = (extent - position) / travel
+                local exitDistance = math.max(t1, t2)
+                if exitDistance > 0 and exitDistance < thickness then
+                    thickness = exitDistance
+                end
+            end
+
+            updateExit(localHit.X, localDirection.X, half.X)
+            updateExit(localHit.Y, localDirection.Y, half.Y)
+            updateExit(localHit.Z, localDirection.Z, half.Z)
+
+            return math.clamp(thickness, 0.01, 1000)
         end
 
         local function CanTriggerPenetrate(part, hitPosition, direction, used, wallCount, budget)
@@ -3298,49 +4158,6 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                 return false, used, wallCount
             end
             return true, used, wallCount + 1
-        end
-    
-        -- луч в локальном AABB части, ужатом к центру (scale)
-        local function RayHitsPartCenter(part, origin, direction, scale)
-            local half = part.Size * 0.5 * scale
-            local localOrigin = part.CFrame:PointToObjectSpace(origin)
-            local localDir = part.CFrame:VectorToObjectSpace(direction)
-            local tMin = 0
-            local tMax = 5000
-            local ox, oy, oz = localOrigin.X, localOrigin.Y, localOrigin.Z
-            local dx, dy, dz = localDir.X, localDir.Y, localDir.Z
-            local hx, hy, hz = half.X, half.Y, half.Z
-            if math.abs(dx) <= 1e-8 then
-                if ox < -hx or ox > hx then return false end
-            else
-                local inv = 1 / dx
-                local t1, t2 = (-hx - ox) * inv, (hx - ox) * inv
-                if t1 > t2 then t1, t2 = t2, t1 end
-                if t1 > tMin then tMin = t1 end
-                if t2 < tMax then tMax = t2 end
-                if tMin > tMax then return false end
-            end
-            if math.abs(dy) <= 1e-8 then
-                if oy < -hy or oy > hy then return false end
-            else
-                local inv = 1 / dy
-                local t1, t2 = (-hy - oy) * inv, (hy - oy) * inv
-                if t1 > t2 then t1, t2 = t2, t1 end
-                if t1 > tMin then tMin = t1 end
-                if t2 < tMax then tMax = t2 end
-                if tMin > tMax then return false end
-            end
-            if math.abs(dz) <= 1e-8 then
-                if oz < -hz or oz > hz then return false end
-            else
-                local inv = 1 / dz
-                local t1, t2 = (-hz - oz) * inv, (hz - oz) * inv
-                if t1 > t2 then t1, t2 = t2, t1 end
-                if t1 > tMin then tMin = t1 end
-                if t2 < tMax then tMax = t2 end
-                if tMin > tMax then return false end
-            end
-            return tMax >= 0 and tMin <= tMax
         end
     
         -- любой хит по персу, но стрельба только если aim в 80% от центра hitbox
@@ -3405,30 +4222,13 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                 return nil
             end
     
-            local cameraPosition = cameraCFrame.Position
-            local lookVector = cameraCFrame.LookVector
-            local bestPart, bestDot = nil, -2
-    
             for i = 1, #SelectedParts do
                 local selectedPart = SelectedParts[i]
-                if RayHitsPartCenter(selectedPart, cameraPosition, lookVector, HITBOX_CENTER_SCALE) then
-                    local direction = selectedPart.Position - cameraPosition
-                    local magnitude = direction.Magnitude
-                    if magnitude > 1e-4 then
-                        local dot = lookVector:Dot(direction / magnitude)
-                        if dot > bestDot then
-                            bestDot = dot
-                            bestPart = selectedPart
-                        end
-                    end
+                if part == selectedPart then
+                    return player, character, selectedPart
                 end
             end
-    
-            if not bestPart then
-                return nil
-            end
-    
-            return player, character, bestPart
+            return nil
         end
     
         local function GetHitChance(part, camera)
@@ -3436,8 +4236,8 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                 return 0
             end
     
-            local spreadRadius = GetCurrentSpreadRadius and GetCurrentSpreadRadius(camera) or 0
-            if spreadRadius <= 0 then
+            local spreadAngle = GetCurrentSpreadAngle and GetCurrentSpreadAngle() or 0
+            if spreadAngle <= 0 then
                 return 100
             end
     
@@ -3446,7 +4246,6 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                 return 100
             end
     
-            local spreadAngle = math.rad(spreadRadius * 60 / camera.ViewportSize.Y)
             local partRadius = math.max(part.Size.X, part.Size.Y, part.Size.Z) * 0.5
             if part.Name == 'Head' or part.Name == 'HeadHB' or part.Name == 'FakeHead' then
                 partRadius = math.max(partRadius, 0.6)
@@ -4072,6 +4871,13 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             RemoveDrop(item)
         end
 
+        local function IsDroppedWeapon(item, weapons)
+            if not item or item:GetAttribute('RagDoll') then
+                return false
+            end
+            return weapons and weapons:FindFirstChild(item.Name) ~= nil
+        end
+
         local function BindDebris(folder)
             if BoundDebris == folder then return end
             for i = 1, #DebrisConnections do DebrisConnections[i]:Disconnect() end
@@ -4081,12 +4887,15 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             table.clear(DropIndex)
             BoundDebris = folder
             if not folder then return end
+            local weapons = GetWeaponsFolder()
             for _, item in ipairs(folder:GetChildren()) do
-                DropItems[#DropItems + 1] = item
-                DropIndex[item] = #DropItems
+                if IsDroppedWeapon(item, weapons) then
+                    DropItems[#DropItems + 1] = item
+                    DropIndex[item] = #DropItems
+                end
             end
             DebrisConnections[#DebrisConnections + 1] = folder.ChildAdded:Connect(function(item)
-                if not DropIndex[item] then
+                if not DropIndex[item] and IsDroppedWeapon(item, GetWeaponsFolder()) then
                     DropItems[#DropItems + 1] = item
                     DropIndex[item] = #DropItems
                 end
@@ -4103,13 +4912,6 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             end
             local part = item:FindFirstChildWhichIsA('BasePart', true)
             return part and part.Position or nil
-        end
-    
-        local function IsDroppedWeapon(item, weapons)
-            if not item or item:GetAttribute('RagDoll') then
-                return false
-            end
-            return weapons and weapons:FindFirstChild(item.Name) ~= nil
         end
     
         local function GetDropDisplayName(item)
@@ -4144,8 +4946,8 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             end
     
             local camera = workspace.CurrentCamera
-            local debris = workspace:FindFirstChild('Debris')
-            local weapons = ReplicatedStorage:FindFirstChild('Weapons')
+            local debris = GetDebrisRoot()
+            local weapons = GetWeaponsFolder()
             if not camera or not debris or not weapons then
                 if not debris and BoundDebris then BindDebris(nil) end
                 RemoveAllDrops()
@@ -4158,7 +4960,6 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             for i = 1, #DropItems do
                 local item = DropItems[i]
                 if not IsDroppedWeapon(item, weapons) then
-                    RemoveDrop(item)
                     continue
                 end
     
@@ -4403,15 +5204,25 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         local FORCEFIELD_TEXTURE = 'rbxassetid://4573037993'
         local Cache = { Arms = nil, WeaponParts = {}, ArmItems = {}, IsKnife = false, Handle = nil }
         local Connections = {}
-        local NextUpdate = 0
-    
+        local CameraConnection
+        local RestoreConnection
+        local NextRestore = 0
+        local CleanedParts = setmetatable({}, { __mode = 'k' })
+
         local function DisconnectCache()
             for i = 1, #Connections do
                 Connections[i]:Disconnect()
             end
             table.clear(Connections)
         end
-    
+
+        local function ViewModelEnabled()
+            return Toggles.ViewModel_WeaponChams.Value
+                or Toggles.ViewModel_ArmChams.Value
+                or Toggles.ViewModel_RemoveSleeves.Value
+                or Toggles.ViewModel_RemoveGloves.Value
+        end
+
         local function IsWeaponPart(part)
             local name = part.Name
             local lower = string.lower(name)
@@ -4422,14 +5233,14 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                 or (part:IsA('BasePart') and (name == 'Part' or name == 'Handle' or name == 'Handle2' or name == 'Blade'
                     or name == 'Suppressed' or name == 'StatClock' or string.find(name, 'Silencer', 1, true)))
         end
-    
+
         local function RebuildCache(arms)
             Cache.Arms = arms
             table.clear(Cache.WeaponParts)
             table.clear(Cache.ArmItems)
             Cache.IsKnife = false
             Cache.Handle = nil
-    
+
             for _, child in ipairs(arms:GetChildren()) do
                 if child:IsA('Model') then
                     for _, item in ipairs(child:GetDescendants()) do
@@ -4454,33 +5265,9 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                 end
             end
         end
-    
-        local function EnsureCache(arms)
-            if Cache.Arms == arms then
-                return
-            end
-    
-            DisconnectCache()
-            RebuildCache(arms)
-            Connections[#Connections + 1] = arms.DescendantAdded:Connect(function()
-                if Cache.Arms == arms then
-                    RebuildCache(arms)
-                end
-            end)
-            Connections[#Connections + 1] = arms.DescendantRemoving:Connect(function()
-                if Cache.Arms == arms then
-                    RebuildCache(arms)
-                end
-            end)
-            Connections[#Connections + 1] = arms.AncestryChanged:Connect(function(_, parent)
-                if not parent and Cache.Arms == arms then
-                    Cache.Arms = nil
-                    table.clear(Cache.WeaponParts)
-                    table.clear(Cache.ArmItems)
-                end
-            end)
-        end
-    
+
+        local EnsureCache
+
         local function ApplyWeaponPart(part, color, material, transparency)
             if not part.Parent then
                 return
@@ -4493,15 +5280,18 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             if part:IsA('MeshPart') then
                 part.TextureID = ''
             end
-            local appearance = part:FindFirstChildOfClass('SurfaceAppearance')
-            if appearance then
-                appearance:Destroy()
-            end
-            if part.Name == 'StatClock' then
-                part:ClearAllChildren()
+            if not CleanedParts[part] then
+                CleanedParts[part] = true
+                local appearance = part:FindFirstChildOfClass('SurfaceAppearance')
+                if appearance then
+                    appearance:Destroy()
+                end
+                if part.Name == 'StatClock' then
+                    part:ClearAllChildren()
+                end
             end
         end
-    
+
         local function UpdateViewModelVisuals()
             local weaponOn = Toggles.ViewModel_WeaponChams.Value
             local armOn = Toggles.ViewModel_ArmChams.Value
@@ -4510,13 +5300,15 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             if not weaponOn and not armOn and not removeSleeves and not removeGloves then
                 return
             end
-    
+
             local camera = workspace.CurrentCamera
             local arms = camera and camera:FindFirstChild('Arms')
             if not arms then
                 return
             end
-            EnsureCache(arms)
+            if Cache.Arms ~= arms then
+                EnsureCache(arms)
+            end
     
             if weaponOn then
                 local color = Options.ViewModel_WeaponColor.Value
@@ -4559,11 +5351,81 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                 end
             end
         end
-    
+
+        function EnsureCache(arms)
+            if Cache.Arms == arms then
+                return
+            end
+
+            DisconnectCache()
+            RebuildCache(arms)
+            Connections[#Connections + 1] = arms.DescendantAdded:Connect(function()
+                if Cache.Arms == arms then
+                    RebuildCache(arms)
+                    UpdateViewModelVisuals()
+                end
+            end)
+            Connections[#Connections + 1] = arms.DescendantRemoving:Connect(function()
+                if Cache.Arms == arms then
+                    RebuildCache(arms)
+                    UpdateViewModelVisuals()
+                end
+            end)
+            Connections[#Connections + 1] = arms.AncestryChanged:Connect(function(_, parent)
+                if not parent and Cache.Arms == arms then
+                    Cache.Arms = nil
+                    table.clear(Cache.WeaponParts)
+                    table.clear(Cache.ArmItems)
+                end
+            end)
+        end
+
+        local function RefreshRestoreConnection()
+            if ViewModelEnabled() then
+                if not RestoreConnection then
+                    RestoreConnection = RunService.Heartbeat:Connect(function()
+                        local now = os.clock()
+                        if now < NextRestore then
+                            return
+                        end
+                        NextRestore = now + 0.25
+                        if ViewModelEnabled() then
+                            UpdateViewModelVisuals()
+                        end
+                    end)
+                    Library:GiveSignal(RestoreConnection)
+                end
+            elseif RestoreConnection then
+                RestoreConnection:Disconnect()
+                RestoreConnection = nil
+            end
+        end
+
+        local function BindCamera(camera)
+            if CameraConnection then
+                CameraConnection:Disconnect()
+                CameraConnection = nil
+            end
+            if not camera then
+                return
+            end
+            CameraConnection = camera.ChildAdded:Connect(function(child)
+                if child.Name == 'Arms' then
+                    EnsureCache(child)
+                end
+            end)
+            Library:GiveSignal(CameraConnection)
+            local arms = camera:FindFirstChild('Arms')
+            if arms then
+                EnsureCache(arms)
+            end
+        end
+
         local function ApplyNow()
             UpdateViewModelVisuals()
+            RefreshRestoreConnection()
         end
-    
+
         for _, option in ipairs({
             Toggles.ViewModel_WeaponChams, Toggles.ViewModel_ArmChams, Toggles.ViewModel_RemoveSleeves, Toggles.ViewModel_RemoveGloves,
             Options.ViewModel_WeaponColor, Options.ViewModel_WeaponMaterial, Options.ViewModel_WeaponTransparency,
@@ -4571,19 +5433,92 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         }) do
             option:OnChanged(ApplyNow)
         end
-    
-        Library:GiveSignal(RunService.RenderStepped:Connect(function()
-            local now = os.clock()
-            if now < NextUpdate then
-                return
-            end
-            NextUpdate = now + 0.1
+
+        BindCamera(workspace.CurrentCamera)
+        Library:GiveSignal(workspace:GetPropertyChangedSignal('CurrentCamera'):Connect(function()
+            DisconnectCache()
+            Cache.Arms = nil
+            table.clear(Cache.WeaponParts)
+            table.clear(Cache.ArmItems)
+            BindCamera(workspace.CurrentCamera)
             UpdateViewModelVisuals()
         end))
-    
-        AddUnload(DisconnectCache)
+
+        RefreshRestoreConnection()
+
+        AddUnload(function()
+            DisconnectCache()
+            if CameraConnection then
+                CameraConnection:Disconnect()
+                CameraConnection = nil
+            end
+            if RestoreConnection then
+                RestoreConnection:Disconnect()
+                RestoreConnection = nil
+            end
+        end)
     end
-    
+
+    -- FOV Changer
+    do
+        local camera = workspace.CurrentCamera
+        local SavedFov = camera and camera.FieldOfView or 70
+        local DefaultFov = math.clamp(math.floor(SavedFov + 0.5), 30, 120)
+
+        local FovChanger = VisualTab:AddLeftGroupbox('FOV Changer')
+        FovChanger:AddToggle('FovChanger_Enable', { Text = 'Enable', Default = false })
+        FovChanger:AddSlider('FovChanger_Fov', {
+            Text = 'FOV',
+            Default = DefaultFov,
+            Min = 30,
+            Max = 120,
+            Rounding = 0,
+        })
+
+        local function ApplyFov()
+            local cam = workspace.CurrentCamera
+            if not cam then
+                return
+            end
+            if Toggles.FovChanger_Enable.Value then
+                cam.FieldOfView = Options.FovChanger_Fov.Value
+            else
+                cam.FieldOfView = SavedFov
+            end
+        end
+
+        Toggles.FovChanger_Enable:OnChanged(ApplyFov)
+        Options.FovChanger_Fov:OnChanged(function()
+            if Toggles.FovChanger_Enable.Value then
+                ApplyFov()
+            end
+        end)
+
+        Library:GiveSignal(RunService.Heartbeat:Connect(function()
+            if Toggles.FovChanger_Enable.Value then
+                local cam = workspace.CurrentCamera
+                if cam then
+                    cam.FieldOfView = Options.FovChanger_Fov.Value
+                end
+            end
+        end))
+
+        Library:GiveSignal(workspace:GetPropertyChangedSignal('CurrentCamera'):Connect(function()
+            local cam = workspace.CurrentCamera
+            if cam and not Toggles.FovChanger_Enable.Value then
+                SavedFov = cam.FieldOfView
+            end
+            ApplyFov()
+        end))
+
+        AddUnload(function()
+            local cam = workspace.CurrentCamera
+            if cam then
+                cam.FieldOfView = SavedFov
+            end
+        end)
+    end
+
     -- ThirdPerson
     local ThirdPerson = VisualTab:AddLeftGroupbox('ThirdPerson')
     
@@ -4811,6 +5746,11 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
     
     MovementMisc:AddToggle('Movement_AutoJump', { Text = 'Auto Jump', Default = false })
     MovementMisc:AddToggle('Movement_FakeDuck', { Text = 'FakeDuck', Default = false })
+        :AddKeyPicker('Movement_FakeDuck_Key', {
+            Default = 'V',
+            Mode = 'Hold',
+            Text = 'FakeDuck',
+        })
     MovementMisc:AddToggle('Movement_Fly', { Text = 'Fly', Default = false })
     MovementMisc:AddSlider('Movement_FlySpeed', {
         Text = 'Fly speed',
@@ -4841,6 +5781,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         local FlyHumanoid
         local NoClipCharacter, NoClipConnection
         local NoClipSaved = {}
+        local FakeDuckTrack, FakeDuckHumanoid
     
         local function GetRig()
             local character = LocalPlayer.Character
@@ -4939,14 +5880,46 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             root.AssemblyLinearVelocity = Vector3.zero
             return true
         end
-    
+
+        local function StopFakeDuck()
+            if FakeDuckTrack then pcall(function() FakeDuckTrack:Stop() end) end
+            FakeDuckTrack, FakeDuckHumanoid = nil, nil
+        end
+
+        local function UpdateFakeDuck(humanoid)
+            if not Toggles.Movement_FakeDuck.Value or not Options.Movement_FakeDuck_Key:GetState() or not humanoid then
+                StopFakeDuck()
+                return
+            end
+            if FakeDuckTrack and FakeDuckHumanoid == humanoid then
+                if not FakeDuckTrack.IsPlaying then pcall(function() FakeDuckTrack:Play() end) end
+                return
+            end
+            StopFakeDuck()
+            local gui = LocalPlayer:FindFirstChild('PlayerGui')
+            local client = gui and gui:FindFirstChild('Client')
+            local idle = client and client:FindFirstChild('Idle')
+            if not idle or not idle:IsA('Animation') then return end
+            local ok, track = pcall(function() return humanoid:LoadAnimation(idle) end)
+            if ok and track then
+                FakeDuckTrack, FakeDuckHumanoid = track, humanoid
+                pcall(function() track:Play() end)
+            end
+        end
+
+        Toggles.Movement_FakeDuck:OnChanged(function()
+            if not Toggles.Movement_FakeDuck.Value then StopFakeDuck() end
+        end)
+
         MoveConnection = RunService.Heartbeat:Connect(function(deltaTime)
             local movementEnabled = Toggles.Bhop_Enable.Value
                 or Toggles.SpeedHack_Enable.Value
                 or Toggles.Movement_AutoJump.Value
+                or Toggles.Movement_FakeDuck.Value
                 or Toggles.Movement_Fly.Value
                 or Toggles.Movement_NoClip.Value
             if not movementEnabled then
+                StopFakeDuck()
                 if FlyHumanoid and FlyHumanoid.Parent then FlyHumanoid.PlatformStand = false end
                 FlyHumanoid = nil
                 if SpeedHumanoid then RestoreSpeed() end
@@ -4955,8 +5928,9 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                 return
             end
             local character, humanoid, root = GetRig()
-            if not character then return end
+            if not character then StopFakeDuck(); return end
             UpdateNoClip(character)
+            UpdateFakeDuck(humanoid)
     
             local spaceHeld = UserInputService:IsKeyDown(Enum.KeyCode.Space)
             local bhopActive = Toggles.Bhop_Enable.Value and spaceHeld
@@ -5000,6 +5974,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         AddUnload(function()
             if MoveConnection then MoveConnection:Disconnect() end
             RestoreSpeed()
+            StopFakeDuck()
             if NoClipConnection then NoClipConnection:Disconnect() end
             RestoreNoClip()
             local _, humanoid = GetRig()
@@ -5014,7 +5989,9 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
     ThemeManager:SetLibrary(Library)
     SaveManager:SetLibrary(Library)
     SaveManager:IgnoreThemeSettings()
-    SaveManager:SetIgnoreIndexes({ 'MenuKeybind' })
+    SaveManager:SetIgnoreIndexes({
+        'MenuKeybind', 'Skin_Knife_Skin', 'Skin_Weapon_Skin', 'Skin_Glove_Skin',
+    })
     
     local CONFIG_FOLDER = 'ValenokRecode'
     if not isfolder(CONFIG_FOLDER) then
@@ -5023,6 +6000,35 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
     
     ThemeManager:SetFolder(CONFIG_FOLDER)
     SaveManager:SetFolder(CONFIG_FOLDER)
+
+    do
+        local HttpService = game:GetService('HttpService')
+        local OriginalSave, OriginalLoad = SaveManager.Save, SaveManager.Load
+        SaveManager.Save = function(self, name, ...)
+            local success, err = OriginalSave(self, name, ...)
+            if not success then return false, err end
+            pcall(function()
+                local path = self.Folder .. '/settings/' .. name .. '.json'
+                if not isfile(path) then return end
+                local data = HttpService:JSONDecode(readfile(path))
+                data.skinChanger = SkinChanger.ExportConfig()
+                writefile(path, HttpService:JSONEncode(data))
+            end)
+            return true
+        end
+        SaveManager.Load = function(self, name, ...)
+            local success, err = OriginalLoad(self, name, ...)
+            if not success then return false, err end
+            pcall(function()
+                local path = self.Folder .. '/settings/' .. name .. '.json'
+                if not isfile(path) then return end
+                local data = HttpService:JSONDecode(readfile(path))
+                SkinChanger.ImportConfig(data.skinChanger)
+                task.delay(0.1, SkinChanger.RefreshConfig)
+            end)
+            return true
+        end
+    end
     
     -- Menu сверху слева
     local MenuGroup = ConfigTab:AddLeftGroupbox('Menu')
