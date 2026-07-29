@@ -290,9 +290,11 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
     local SoundService = game:GetService('SoundService')
     local LocalPlayer = PlayersService.LocalPlayer
     local HandleHitParl
+    local HandleKillEffect
     local HandleRageHitParl
     local PlayHitSound
     local HitLogCleanup
+    local KillEffectCleanup
     local NamecallCleanup
     local SharedNamecallState
     local ScriptEnvironment
@@ -398,6 +400,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             environment.__ValenokRecodeNamecallState = state
         end
         ScriptEnvironment = environment
+        environment.__ValenokHitCallbackSupported = true
         SharedNamecallState = state
     end
     
@@ -448,12 +451,27 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             local viewmodel = Viewmodels and Viewmodels:FindFirstChild(name)
             return viewmodel and viewmodel:Clone() or nil
         end
-
+        local CustomWeaponModels = {
+            AWP = { ['CSGO AWP'] = 'rbxassetid://7161319343' },
+            Scout = { ['CSGO Scout'] = 'rbxassetid://7161407697' },
+        }
+        local CustomKnifeModels = {
+            ['CSGO M9 Autotronic'] = 'rbxassetid://6590565396',
+            ['CSGO M9 Nebula'] = 'rbxassetid://6597109573',
+            ['Bayonet Brave Warrior'] = 'rbxassetid://134702266012551',
+        }
+        -- Catalog accessories have no viewmodel rig.  Mount them on this knife's real rig.
+        local AccessoryKnifeBases = {
+            ['Bayonet Brave Warrior'] = 'Bayonet',
+        }
         local State = {
             knifeSkins = {}, weaponSkins = {}, gloveSkins = {},
             currentKnife = nil, swapping = false, armsConnection = nil,
             skinConnection = nil, ancestryConnection = nil, cameraConnection = nil,
             originalCT = CloneViewmodel('v_CT Knife'), originalT = CloneViewmodel('v_T Knife'),
+            originalWeapons = { AWP = CloneViewmodel('v_AWP'), Scout = CloneViewmodel('v_Scout') },
+            customWeaponApplied = {}, customWeaponLoading = {}, customWeaponGeneration = {},
+            customKnifeGeneration = 0, pendingKnife = nil,
         }
         local KnifeNames = {
             'CT Knife', 'T Knife', 'Banana', 'Bayonet', 'Bearded Axe', 'Butterfly Knife', 'Cleaver',
@@ -466,6 +484,9 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         if ExtraModels and ExtraModels:FindFirstChild('Knives') then
             for _, model in ipairs(ExtraModels.Knives:GetChildren()) do AddUnique(KnifeNames, model.Name) end
         end
+        AddUnique(KnifeNames, 'CSGO M9 Autotronic')
+        AddUnique(KnifeNames, 'CSGO M9 Nebula')
+        AddUnique(KnifeNames, 'Bayonet Brave Warrior')
 
         local function KnifeShort(name)
             return name:gsub(' Knife', ''):gsub(' Classic', '')
@@ -503,7 +524,17 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             for _, weapon in ipairs(AllWeapons) do WeaponSkins[weapon] = ChildNames(Skins:FindFirstChild(weapon), 'Inventory') end
             for _, knife in ipairs(KnifeNames) do KnifeSkins[knife] = ChildNames(FindKnifeFolder(knife), 'Inventory') end
         end
-
+        for weapon, models in pairs(CustomWeaponModels) do
+            if Viewmodels and Viewmodels:FindFirstChild('v_' .. weapon) then
+                if not table.find(AllWeapons, weapon) then AllWeapons[#AllWeapons + 1] = weapon end
+                WeaponSkins[weapon] = WeaponSkins[weapon] or { 'Inventory' }
+                for modelName in pairs(models) do AddUnique(WeaponSkins[weapon], modelName) end
+            end
+        end
+        KnifeSkins['CSGO M9 Autotronic'] = { 'Inventory' }
+        KnifeSkins['CSGO M9 Nebula'] = { 'Inventory' }
+        KnifeSkins['Bayonet Brave Warrior'] = { 'Inventory' }
+        table.sort(AllWeapons)
         local AllGloves, GloveSkins = {}, {}
         if Gloves then
             for _, folder in ipairs(Gloves:GetChildren()) do
@@ -533,6 +564,8 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         end
 
         local function RestoreKnives()
+            State.customKnifeGeneration = State.customKnifeGeneration + 1
+            State.pendingKnife, State.swapping = nil, false
             if not Viewmodels then return end
             local ct, tt = Viewmodels:FindFirstChild('v_CT Knife'), Viewmodels:FindFirstChild('v_T Knife')
             if ct then ct:Destroy() end
@@ -540,8 +573,129 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             if State.originalCT then State.originalCT:Clone().Parent = Viewmodels end
             if State.originalT then State.originalT:Clone().Parent = Viewmodels end
         end
+
+        local function GetAssetModel(asset)
+            local ok, objects = pcall(game.GetObjects, game, asset)
+            if not ok or type(objects) ~= 'table' then return nil, objects end
+            local source = objects[1]
+            local model = source and (source:IsA('Model') and source or source:FindFirstChildOfClass('Model'))
+            if not model and source and source:FindFirstChildWhichIsA('BasePart', true) then
+                model = Instance.new('Model')
+                model.Name = source.Name
+                source.Parent = model
+            end
+            return ok and model or nil, objects
+        end
+
+        local function MountAccessoryKnife(model, baseName)
+            local base = Viewmodels and Viewmodels:FindFirstChild('v_' .. baseName)
+            local handle = model and (model:FindFirstChild('Handle', true) or model:FindFirstChildWhichIsA('BasePart', true))
+            if not base or not handle then return model end
+            local rig = base:Clone()
+            local root = rig.PrimaryPart or rig:FindFirstChildWhichIsA('BasePart', true)
+            if not root then rig:Destroy(); return model end
+            rig.PrimaryPart = root
+            for _, part in ipairs(rig:GetDescendants()) do
+                if part:IsA('BasePart') and part ~= root then part.Transparency = 1 end
+            end
+            local visual = handle:Clone()
+            visual.Name = 'BraveWarriorBlade'
+            visual.CFrame = root.CFrame * CFrame.Angles(math.rad(90), 0, 0)
+            visual.Anchored, visual.CanCollide, visual.Massless = false, false, true
+            visual.Parent = rig
+            local weld = Instance.new('WeldConstraint')
+            weld.Part0, weld.Part1, weld.Parent = root, visual, root
+            model:Destroy()
+            return rig
+        end
+
+        local function RestoreCustomWeapon(weapon)
+            State.customWeaponGeneration[weapon] = (State.customWeaponGeneration[weapon] or 0) + 1
+            State.customWeaponLoading[weapon], State.customWeaponApplied[weapon] = nil, nil
+            local original = State.originalWeapons[weapon]
+            if not Viewmodels or not original then return end
+            local current = Viewmodels:FindFirstChild('v_' .. weapon)
+            if current then current:Destroy() end
+            original:Clone().Parent = Viewmodels
+        end
+
+        local function SetCustomWeapon(weapon, skin)
+            local asset = CustomWeaponModels[weapon] and CustomWeaponModels[weapon][skin]
+            if not asset then
+                if State.customWeaponApplied[weapon] or State.customWeaponLoading[weapon] then RestoreCustomWeapon(weapon) end
+                return true
+            end
+            if State.customWeaponApplied[weapon] and Viewmodels and Viewmodels:FindFirstChild('v_' .. weapon) then return true end
+            if State.customWeaponLoading[weapon] or not Viewmodels then return false end
+
+            State.customWeaponLoading[weapon] = true
+            State.customWeaponGeneration[weapon] = (State.customWeaponGeneration[weapon] or 0) + 1
+            local generation = State.customWeaponGeneration[weapon]
+            task.spawn(function()
+                local model, objects = GetAssetModel(asset)
+                if generation ~= State.customWeaponGeneration[weapon] or not model or not Viewmodels then
+                    if type(objects) == 'table' then for _, object in ipairs(objects) do object:Destroy() end end
+                    if generation == State.customWeaponGeneration[weapon] then State.customWeaponLoading[weapon] = nil end
+                    return
+                end
+                local current = Viewmodels:FindFirstChild('v_' .. weapon)
+                if current then current:Destroy() end
+                model.Name, model.Parent = 'v_' .. weapon, Viewmodels
+                local root = model:FindFirstChild('HumanoidRootPart', true)
+                if root and root:IsA('BasePart') then root.Transparency = 1 end
+                State.customWeaponLoading[weapon], State.customWeaponApplied[weapon] = nil, skin
+                local arms = workspace.CurrentCamera and workspace.CurrentCamera:FindFirstChild('Arms')
+                if arms then arms:Destroy() end
+            end)
+            return false
+        end
+
+        local function UpdateCustomWeapons()
+            local enabled = Toggles.Skin_Weapon_Enable
+            local weapon = Options.Skin_Weapon_Weapon
+            local skin = Options.Skin_Weapon_Skin
+            for name in pairs(CustomWeaponModels) do
+                SetCustomWeapon(name, enabled and enabled.Value and weapon and weapon.Value == name and skin and skin.Value or nil)
+            end
+        end
+        
         local function SwapKnife(knifeName)
-            if not Viewmodels or State.swapping or State.currentKnife == knifeName then return end
+            if not Viewmodels then return false end
+            local asset = CustomKnifeModels[knifeName]
+            if State.swapping then
+                if State.pendingKnife == knifeName then return false end
+                State.customKnifeGeneration = State.customKnifeGeneration + 1
+                State.swapping, State.pendingKnife = false, nil
+            end
+            if State.currentKnife == knifeName then return true end
+            if asset then
+                State.swapping, State.pendingKnife = true, knifeName
+                State.customKnifeGeneration = State.customKnifeGeneration + 1
+                local generation = State.customKnifeGeneration
+                task.spawn(function()
+                    local model, objects = GetAssetModel(asset)
+                    if model and AccessoryKnifeBases[knifeName] then
+                        model = MountAccessoryKnife(model, AccessoryKnifeBases[knifeName])
+                    end
+                    if generation ~= State.customKnifeGeneration or not model then
+                        if type(objects) == 'table' then for _, object in ipairs(objects) do object:Destroy() end end
+                        if generation == State.customKnifeGeneration then State.swapping, State.pendingKnife = false, nil end
+                        return
+                    end
+                    RestoreKnives()
+                    local ct, tt = Viewmodels:FindFirstChild('v_CT Knife'), Viewmodels:FindFirstChild('v_T Knife')
+                    if ct then ct:Destroy() end
+                    if tt then tt:Destroy() end
+                    local first, second = model:Clone(), model:Clone()
+                    first.Name, second.Name = 'v_CT Knife', 'v_T Knife'
+                    first.Parent, second.Parent = Viewmodels, Viewmodels
+                    model:Destroy()
+                    State.currentKnife, State.swapping, State.pendingKnife = knifeName, false, nil
+                    local arms = workspace.CurrentCamera and workspace.CurrentCamera:FindFirstChild('Arms')
+                    if arms then arms:Destroy() end
+                end)
+                return false
+            end
             State.swapping = true
             RestoreKnives()
             if knifeName ~= 'CT Knife' and knifeName ~= 'T Knife' then
@@ -556,6 +710,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                 end
             end
             State.currentKnife, State.swapping = knifeName, false
+            return true
         end
 
         local TextureCache = setmetatable({}, { __mode = 'k' })
@@ -630,11 +785,15 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             end)
         end
         local function ApplyGloves(arms)
-            if not Toggles.Skin_Glove_Enable.Value or not GloveModels then return end
-            local glove, skin = Options.Skin_Glove_Glove.Value, Options.Skin_Glove_Skin.Value
+            local enabled = Toggles.Skin_Glove_Enable
+            local gloveOption, skinOption = Options.Skin_Glove_Glove, Options.Skin_Glove_Skin
+            if not enabled or not enabled.Value or not GloveModels or not gloveOption or not skinOption then return end
+            local glove, skin = gloveOption.Value, skinOption.Value
             local models = glove and GloveModels:FindFirstChild(glove)
             local textureData = glove and Gloves:FindFirstChild(glove) and Gloves[glove]:FindFirstChild(skin)
-            local texture = textureData and textureData:FindFirstChild('Textures') and textureData.Textures.TextureId
+            local textures = textureData and textureData:FindFirstChild('Textures')
+            local textureObject = textures and (textures:FindFirstChild('TextureId') or textures:FindFirstChildWhichIsA('StringValue'))
+            local texture = textureObject and textureObject:IsA('StringValue') and textureObject.Value or nil
             if not models or not UsefulTexture(texture) then return end
             local armModel
             for _, model in ipairs(arms:GetChildren()) do
@@ -665,30 +824,55 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             local gun = ok and environment and rawget(environment, 'gun')
             return typeof(gun) == 'Instance' and gun or nil
         end
+        local function TryApplyArms(arms)
+            if not arms or not arms.Parent then return true end
+            local gun = GetClientGun()
+            if not gun then return false end
+            local name = gun.Name
+            if string.find(name, 'Grenade', 1, true) or string.find(name, 'Flashbang', 1, true) or string.find(name, 'Smoke', 1, true)
+                or string.find(name, 'Decoy', 1, true) or string.find(name, 'Molotov', 1, true) or string.find(name, 'Incendiary', 1, true) or name == 'C4' then return true end
+            ApplyGloves(arms)
+            local knifeToggle = Toggles.Skin_Knife_Enable
+            local weaponToggle = Toggles.Skin_Weapon_Enable
+            if knifeToggle and knifeToggle.Value and gun:FindFirstChild('Melee') then
+                local knifeOption = Options.Skin_Knife_Knife
+                local knife = knifeOption and knifeOption.Value
+                if knife then
+                    if State.currentKnife ~= knife then SwapKnife(knife) end
+                    ApplySkin(arms, knife, State.knifeSkins[knife] or 'Inventory')
+                end
+            elseif weaponToggle and weaponToggle.Value and not gun:FindFirstChild('Melee') then
+                local skin = State.weaponSkins[name] or 'Inventory'
+                if CustomWeaponModels[name] and CustomWeaponModels[name][skin] then
+                    return SetCustomWeapon(name, skin)
+                end
+                if CustomWeaponModels[name] then SetCustomWeapon(name, nil) end
+                ApplySkin(arms, name, skin)
+            end
+            return true
+        end
+        local function QueueArmsApply(arms)
+            task.spawn(function()
+                for _ = 1, 80 do
+                    if TryApplyArms(arms) then return end
+                    task.wait(0.1)
+                end
+            end)
+        end
         local function SetupArmsWatcher()
             if State.armsConnection then State.armsConnection:Disconnect() end
             local camera = workspace.CurrentCamera
             if not camera then return end
             State.armsConnection = camera.ChildAdded:Connect(function(arms)
-                if arms.Name ~= 'Arms' then return end
-                task.defer(function()
-                    RunService.RenderStepped:Wait()
-                    if not arms.Parent then return end
-                    local gun = GetClientGun()
-                    if not gun then return end
-                    local name = gun.Name
-                    if string.find(name, 'Grenade', 1, true) or string.find(name, 'Flashbang', 1, true) or string.find(name, 'Smoke', 1, true)
-                        or string.find(name, 'Decoy', 1, true) or string.find(name, 'Molotov', 1, true) or string.find(name, 'Incendiary', 1, true) or name == 'C4' then return end
-                    ApplyGloves(arms)
-                    if Toggles.Skin_Knife_Enable.Value and gun:FindFirstChild('Melee') then
-                        local knife = Options.Skin_Knife_Knife.Value
-                        if State.currentKnife ~= knife then SwapKnife(knife); return end
-                        ApplySkin(arms, knife, State.knifeSkins[knife] or 'Inventory')
-                    elseif Toggles.Skin_Weapon_Enable.Value and not gun:FindFirstChild('Melee') then
-                        ApplySkin(arms, name, State.weaponSkins[name] or 'Inventory')
-                    end
-                end)
+                if arms.Name == 'Arms' then QueueArmsApply(arms) end
             end)
+            local arms = camera:FindFirstChild('Arms')
+            if arms then QueueArmsApply(arms) end
+        end
+        local function RefreshCurrentArms()
+            local camera = workspace.CurrentCamera
+            local arms = camera and camera:FindFirstChild('Arms')
+            if arms then QueueArmsApply(arms) end
         end
 
         local function SetDropdown(option, values, value)
@@ -722,6 +906,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         local KnifeBox = SkinTab:AddLeftGroupbox('Knife changer')
         KnifeBox:AddToggle('Skin_Knife_Enable', { Text = 'Enable', Default = false }):OnChanged(function()
             if Toggles.Skin_Knife_Enable.Value then SwapKnife(Options.Skin_Knife_Knife.Value) else RestoreKnives(); State.currentKnife = nil end
+            RefreshCurrentArms()
         end)
         KnifeBox:AddDropdown('Skin_Knife_Knife', { Text = 'Knife', Values = KnifeNames, Default = KnifeNames[1] }):OnChanged(function()
             SyncSkin(Options.Skin_Knife_Knife, Options.Skin_Knife_Skin, KnifeSkins, State.knifeSkins, 'Inventory')
@@ -736,12 +921,18 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         end)
 
         local WeaponBox = SkinTab:AddRightGroupbox('Weapon changer')
-        WeaponBox:AddToggle('Skin_Weapon_Enable', { Text = 'Enable', Default = false })
+        WeaponBox:AddToggle('Skin_Weapon_Enable', { Text = 'Enable', Default = false }):OnChanged(function()
+            UpdateCustomWeapons()
+            RefreshCurrentArms()
+        end)
         WeaponBox:AddDropdown('Skin_Weapon_Weapon', { Text = 'Weapon', Values = #AllWeapons > 0 and AllWeapons or { 'None' }, Default = AllWeapons[1] or 'None' }):OnChanged(function()
             SyncSkin(Options.Skin_Weapon_Weapon, Options.Skin_Weapon_Skin, WeaponSkins, State.weaponSkins, 'Inventory')
+            UpdateCustomWeapons()
         end)
         WeaponBox:AddDropdown('Skin_Weapon_Skin', { Text = 'Skin', Values = WeaponSkins[AllWeapons[1]] or { 'Inventory' }, Default = 'Inventory' }):OnChanged(function()
             SavePair(Options.Skin_Weapon_Weapon, Options.Skin_Weapon_Skin, State.weaponSkins)
+            UpdateCustomWeapons()
+            RefreshCurrentArms()
         end)
         WeaponBox:AddButton('Random skin', function()
             RandomizeSkins(AllWeapons, WeaponSkins, State.weaponSkins)
@@ -749,7 +940,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         end)
 
         local GloveBox = SkinTab:AddLeftGroupbox('Glove changer')
-        GloveBox:AddToggle('Skin_Glove_Enable', { Text = 'Enable', Default = false })
+        GloveBox:AddToggle('Skin_Glove_Enable', { Text = 'Enable', Default = false }):OnChanged(RefreshCurrentArms)
         GloveBox:AddDropdown('Skin_Glove_Glove', { Text = 'Glove', Values = #AllGloves > 0 and AllGloves or { 'None' }, Default = AllGloves[1] or 'None' }):OnChanged(function()
             SyncSkin(Options.Skin_Glove_Glove, Options.Skin_Glove_Skin, GloveSkins, State.gloveSkins, 'Default')
         end)
@@ -774,6 +965,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             if State.cameraConnection then State.cameraConnection:Disconnect() end
             DisconnectSkin()
             RestoreKnives()
+            for weapon in pairs(CustomWeaponModels) do RestoreCustomWeapon(weapon) end
         end
     end
 
@@ -784,6 +976,9 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
     local ViewModel = VisualTab:AddRightGroupbox('View model')
     local HitLog = VisualTab:AddRightGroupbox('Hit Sound')
     local HitLogDisplay = VisualTab:AddRightGroupbox('Hit Log')
+    local CustomCrosshair = VisualTab:AddLeftGroupbox('Custom crosshair')
+    local KillEffect = VisualTab:AddLeftGroupbox('Kill effect')
+    local CustomCrosshairCleanup
     
     HitLog:AddToggle('HitLog_Enable', { Text = 'Enable', Default = false })
     HitLog:AddDropdown('HitLog_Sound', {
@@ -814,6 +1009,301 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         Rounding = 0,
         Suffix = 's',
     })
+
+    CustomCrosshair:AddToggle('CustomCrosshair_Enable', { Text = 'Enable', Default = false })
+        :AddColorPicker('CustomCrosshair_Color', {
+            Default = Color3.fromRGB(255, 255, 255),
+            Transparency = 0,
+            Title = 'Color',
+        })
+    CustomCrosshair:AddToggle('CustomCrosshair_HideGame', { Text = 'Hide game crosshair', Default = false })
+    CustomCrosshair:AddToggle('CustomCrosshair_Spin', { Text = 'Spin', Default = false })
+    CustomCrosshair:AddSlider('CustomCrosshair_SpinSpeed', {
+        Text = 'Spin speed', Default = 25, Min = 1, Max = 100, Rounding = 0,
+    })
+    CustomCrosshair:AddSlider('CustomCrosshair_Width', {
+        Text = 'Width', Default = 2, Min = 1, Max = 10, Rounding = 0,
+    })
+    CustomCrosshair:AddSlider('CustomCrosshair_Length', {
+        Text = 'Length', Default = 6, Min = 1, Max = 10, Rounding = 0,
+    })
+    CustomCrosshair:AddToggle('CustomCrosshair_Outline', { Text = 'Outline', Default = true })
+        :AddColorPicker('CustomCrosshair_OutlineColor', {
+            Default = Color3.fromRGB(0, 0, 0),
+            Transparency = 0,
+            Title = 'Outline color',
+        })
+    CustomCrosshair:AddSlider('CustomCrosshair_OutlineWidth', {
+        Text = 'Outline thickness', Default = 1, Min = 1, Max = 10, Rounding = 0,
+    })
+
+    KillEffect:AddToggle('KillEffect_Enable', { Text = 'Enable', Default = false })
+        :AddColorPicker('KillEffect_Color', {
+            Default = Color3.fromRGB(255, 210, 70),
+            Transparency = 0,
+            Title = 'Color',
+        })
+    KillEffect:AddSlider('KillEffect_Lifetime', {
+        Text = 'Life time', Default = 4, Min = 1, Max = 15, Rounding = 0, Suffix = 's',
+    })
+    KillEffect:AddSlider('KillEffect_Amount', {
+        Text = 'Amount', Default = 50, Min = 10, Max = 300, Rounding = 0,
+    })
+    KillEffect:AddDropdown('KillEffect_Mode', {
+        Text = 'Particle mode', Values = { 'Statik', 'Dynamic' }, Default = 'Dynamic',
+    })
+    KillEffect:AddDropdown('KillEffect_Shape', {
+        Text = 'Particle shape', Values = { 'Circles', 'Snowflakes', 'Stars' }, Default = 'Circles',
+    })
+
+    do
+        local PendingKills, ActiveEffects = {}, {}
+        local EffectAlive = true
+
+        local function NewPart(parent, size, shape)
+            local part = Instance.new('Part')
+            part.Anchored, part.CanCollide, part.CanTouch, part.CanQuery = true, false, false, false
+            part.CastShadow, part.Material = false, Enum.Material.Neon
+            part.Shape, part.Size = shape or Enum.PartType.Block, size
+            part.Parent = parent
+            return part
+        end
+
+        local function BuildParticle(parent, shape)
+            local parts = {}
+            local function add(size, offset, angle, ball)
+                parts[#parts + 1] = {
+                    part = NewPart(parent, size, ball and Enum.PartType.Ball or nil),
+                    offset = CFrame.new(offset or Vector3.new()) * CFrame.Angles(0, 0, angle or 0),
+                }
+            end
+            if shape == 'Snowflakes' then
+                for i = 0, 2 do add(Vector3.new(0.78, 0.055, 0.055), nil, math.rad(i * 60)) end
+            elseif shape == 'Stars' then
+                for i = 0, 4 do add(Vector3.new(0.7, 0.06, 0.06), nil, math.rad(i * 72)) end
+            else
+                add(Vector3.new(0.28, 0.28, 0.28), nil, nil, true)
+            end
+            return parts
+        end
+
+        local function CreateEffect(character)
+            if not EffectAlive or not Toggles.KillEffect_Enable.Value then return end
+            local root = character and (character:FindFirstChild('HumanoidRootPart') or character:FindFirstChild('UpperTorso'))
+            if not root or not root:IsA('BasePart') then return end
+            local hitboxes = {}
+            for _, part in ipairs(character:GetChildren()) do
+                if part:IsA('BasePart') and part ~= root and part.Name ~= 'HumanoidRootPart' then
+                    hitboxes[#hitboxes + 1] = part
+                end
+            end
+            if #hitboxes == 0 then hitboxes[1] = root end
+
+            while #ActiveEffects >= 3 do
+                local old = table.remove(ActiveEffects, 1)
+                if old and old.Parent then old:Destroy() end
+            end
+            local holder = Instance.new('Folder')
+            holder.Name, holder.Parent = 'ValenokKillEffect', workspace
+            ActiveEffects[#ActiveEffects + 1] = holder
+
+            local particles, color = {}, Options.KillEffect_Color.Value
+            local shape, amount = Options.KillEffect_Shape.Value, Options.KillEffect_Amount.Value
+            for i = 1, amount do
+                local hitbox = hitboxes[(i - 1) % #hitboxes + 1]
+                local size = hitbox.Size
+                local origin = hitbox.CFrame:PointToWorldSpace(Vector3.new(
+                    (math.random() - 0.5) * size.X,
+                    (math.random() - 0.5) * size.Y,
+                    (math.random() - 0.5) * size.Z
+                ))
+                local angle = math.pi * 2 * i / amount + math.random() * 0.22
+                local direction = Vector3.new(math.cos(angle), 0.25 + math.random() * 0.55, math.sin(angle)).Unit
+                particles[#particles + 1] = {
+                    parts = BuildParticle(holder, shape),
+                    origin = origin,
+                    direction = direction,
+                    phase = math.random() * math.pi * 2,
+                    distance = 2.2 + math.random() * 2.6,
+                }
+            end
+
+            local started, lifetime = os.clock(), Options.KillEffect_Lifetime.Value
+            local dynamic = Options.KillEffect_Mode.Value == 'Dynamic'
+            local connection
+            connection = RunService.RenderStepped:Connect(function()
+                local progress = (os.clock() - started) / lifetime
+                if progress >= 1 or not EffectAlive or not holder.Parent then
+                    connection:Disconnect()
+                    if holder.Parent then holder:Destroy() end
+                    return
+                end
+                local transparency = math.clamp((progress - 0.72) / 0.28, 0, 1)
+                for _, particle in ipairs(particles) do
+                    local position = particle.origin
+                    if dynamic then
+                        position = position + particle.direction * (particle.distance * progress)
+                            + Vector3.new(0, math.sin(progress * math.pi) * 1.8, 0)
+                    end
+                    local frame = CFrame.new(position) * CFrame.Angles(0, progress * 8 + particle.phase, progress * 5)
+                    for _, entry in ipairs(particle.parts) do
+                        entry.part.Color, entry.part.Transparency = color, transparency
+                        entry.part.CFrame = frame * entry.offset
+                    end
+                end
+            end)
+            DebrisService:AddItem(holder, lifetime + 0.2)
+        end
+
+        local function WatchKill(player)
+            if not EffectAlive or not Toggles.KillEffect_Enable.Value then return end
+            local character = player.Character
+            local humanoid = character and character:FindFirstChildOfClass('Humanoid')
+            if not humanoid or humanoid.Health <= 0 then return end
+            local userId = player.UserId
+            local pending = PendingKills[userId]
+            if pending then pending.expires = os.clock() + 1.5 return end
+
+            pending = { expires = os.clock() + 1.5 }
+            PendingKills[userId] = pending
+            local function confirm()
+                if PendingKills[userId] ~= pending or os.clock() > pending.expires then return end
+                PendingKills[userId] = nil
+                if pending.health then pending.health:Disconnect() end
+                if pending.died then pending.died:Disconnect() end
+                CreateEffect(character)
+            end
+            pending.health = humanoid.HealthChanged:Connect(function(health)
+                if health <= 0 then confirm() end
+            end)
+            pending.died = humanoid.Died:Connect(confirm)
+            task.delay(1.6, function()
+                if PendingKills[userId] ~= pending then return end
+                PendingKills[userId] = nil
+                if pending.health then pending.health:Disconnect() end
+                if pending.died then pending.died:Disconnect() end
+            end)
+        end
+
+        HandleKillEffect = function(hitPart)
+            if typeof(hitPart) ~= 'Instance' or not hitPart:IsA('BasePart') then return end
+            local character = hitPart:FindFirstAncestorOfClass('Model')
+            local player = character and PlayersService:GetPlayerFromCharacter(character)
+            if player and player ~= LocalPlayer
+                and (not player.Team or player.Team ~= LocalPlayer.Team)
+            then
+                WatchKill(player)
+            end
+        end
+
+        KillEffectCleanup = function()
+            EffectAlive = false
+            HandleKillEffect = nil
+            for _, pending in pairs(PendingKills) do
+                if pending.health then pending.health:Disconnect() end
+                if pending.died then pending.died:Disconnect() end
+            end
+            for _, holder in ipairs(ActiveEffects) do
+                if holder and holder.Parent then holder:Destroy() end
+            end
+        end
+    end
+
+    do
+        local Lines, Outlines = {}, {}
+        local GameCrosshair, GameCrosshairConnection
+        for i = 1, 4 do
+            local okLine, line = pcall(Drawing.new, 'Line')
+            local okOutline, outline = pcall(Drawing.new, 'Line')
+            if okLine then line.Visible, line.ZIndex = false, 2 end
+            if okOutline then outline.Visible, outline.ZIndex = false, 1 end
+            Lines[i], Outlines[i] = line, outline
+        end
+
+        local function SetVisible(set, visible)
+            for i = 1, #set do
+                if set[i] then set[i].Visible = visible end
+            end
+        end
+
+        local function HideGameCrosshair()
+            if not Toggles.CustomCrosshair_Enable.Value or not Toggles.CustomCrosshair_HideGame.Value then
+                return
+            end
+            local playerGui = LocalPlayer:FindFirstChildOfClass('PlayerGui')
+            local gui = playerGui and playerGui:FindFirstChild('GUI')
+            local crosshairs = gui and gui:FindFirstChild('Crosshairs')
+            local crosshair = crosshairs and crosshairs:FindFirstChild('Crosshair')
+            if crosshair ~= GameCrosshair then
+                if GameCrosshairConnection then GameCrosshairConnection:Disconnect() end
+                GameCrosshair, GameCrosshairConnection = crosshair, nil
+                if crosshair then
+                    GameCrosshairConnection = crosshair:GetPropertyChangedSignal('Visible'):Connect(function()
+                        if Toggles.CustomCrosshair_Enable.Value and Toggles.CustomCrosshair_HideGame.Value then
+                            crosshair.Visible = false
+                        end
+                    end)
+                end
+            end
+            if crosshair then crosshair.Visible = false end
+        end
+
+        Library:GiveSignal(RunService.RenderStepped:Connect(function()
+            local enabled = Toggles.CustomCrosshair_Enable.Value
+            if not enabled then
+                SetVisible(Lines, false)
+                SetVisible(Outlines, false)
+                return
+            end
+
+            local camera = workspace.CurrentCamera
+            if not camera then return end
+            local viewport = camera.ViewportSize
+            if viewport.X <= 0 or viewport.Y <= 0 then return end
+            local center = viewport * 0.5
+            local width = Options.CustomCrosshair_Width.Value
+            local length = Options.CustomCrosshair_Length.Value
+            local gap = 5 + width * 0.5
+            local angle = Toggles.CustomCrosshair_Spin.Value
+                and math.rad(os.clock() * Options.CustomCrosshair_SpinSpeed.Value * 3.6) or 0
+            local x, y = math.cos(angle), math.sin(angle)
+            local directions = {
+                Vector2.new(x, y), Vector2.new(-y, x), Vector2.new(-x, -y), Vector2.new(y, -x),
+            }
+            local color = Options.CustomCrosshair_Color.Value
+            local outlineOn = Toggles.CustomCrosshair_Outline.Value
+            local outlineColor = Options.CustomCrosshair_OutlineColor.Value
+            local outlineWidth = Options.CustomCrosshair_OutlineWidth.Value
+
+            for i = 1, 4 do
+                local from = center + directions[i] * gap
+                local to = center + directions[i] * (gap + length)
+                local line, outline = Lines[i], Outlines[i]
+                if line then
+                    line.From, line.To, line.Color, line.Thickness, line.Visible = from, to, color, width, true
+                end
+                if outline then
+                    outline.From, outline.To = from, to
+                    outline.Color, outline.Thickness, outline.Visible = outlineColor, width + outlineWidth * 2, outlineOn
+                end
+            end
+        end))
+
+        pcall(function()
+            RunService:UnbindFromRenderStep('ValenokHideGameCrosshair')
+            RunService:BindToRenderStep('ValenokHideGameCrosshair', Enum.RenderPriority.Last.Value, HideGameCrosshair)
+        end)
+
+        CustomCrosshairCleanup = function()
+            pcall(function() RunService:UnbindFromRenderStep('ValenokHideGameCrosshair') end)
+            if GameCrosshairConnection then GameCrosshairConnection:Disconnect() end
+            for _, set in ipairs({ Lines, Outlines }) do
+                for i = 1, #set do
+                    if set[i] then pcall(function() set[i]:Remove() end) end
+                end
+            end
+        end
+    end
     
     do
         local HitSounds = {
@@ -956,6 +1446,34 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         end
     end
     
+    local AntiAimState = {
+        pitchRandom = 0,
+        pitchRandomAt = 0,
+        yawSpin = 0,
+        yawSpinAt = 0,
+        targetAt = 0,
+        targetRoot = nil,
+    }
+    local function GetAntiAimPitchValue()
+        local mode = Options.AntiAim_Pitch_Mode and Options.AntiAim_Pitch_Mode.Value or 'Up'
+        if mode == 'Down' then return -1 end
+        if mode == 'Up' then return 1 end
+        if mode == 'Custom' then
+            return Options.AntiAim_Pitch_CustomValue and Options.AntiAim_Pitch_CustomValue.Value or 0
+        end
+        if mode == 'Random' then
+            local now = os.clock()
+            local speed = Options.AntiAim_Pitch_RandomSpeed and Options.AntiAim_Pitch_RandomSpeed.Value or 1
+            if (now - AntiAimState.pitchRandomAt) * 1000 >= speed then
+                local value = math.random(-10, 10) / 10
+                while math.abs(value - AntiAimState.pitchRandom) < 0.2 do value = math.random(-10, 10) / 10 end
+                AntiAimState.pitchRandom, AntiAimState.pitchRandomAt = value, now
+            end
+            return AntiAimState.pitchRandom
+        end
+        return 0
+    end
+
     do
         local HookActive = false
         local NamecallHandler
@@ -966,6 +1484,16 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                     return oldNamecall(self, ...)
                 end
                 local method = getnamecallmethod()
+                if (method == 'FireServer' or method == 'FireUnreliable')
+                    and typeof(self) == 'Instance'
+                    and self.Name == 'ControlTurn'
+                    and Toggles.AntiAim_Pitch_Enable
+                    and Toggles.AntiAim_Pitch_Enable.Value
+                then
+                    local args = table.pack(...)
+                    args[1] = GetAntiAimPitchValue()
+                    return oldNamecall(self, unpack(args, 1, args.n))
+                end
                 if (method == 'SetPrimaryPartCFrame' or method == 'PivotTo' or method == 'pivotTo')
                     and Toggles.ViewModel_Offset_Enable.Value
                     and self.Name ~= 'HumanoidRootPart' then
@@ -989,6 +1517,21 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                             args[1] = args[1] * offset
                             return oldNamecall(self, unpack(args, 1, args.n))
                         end
+                    end
+                end
+                if (method == 'FireServer' or method == 'FireUnreliable') and self.Name == 'HitParl' then
+                    local callbacks = ScriptEnvironment and ScriptEnvironment.__ValenokHitCallbacks
+                    if type(callbacks) == 'table' then
+                        local hitPart, hitPosition = ...
+                        for _, callback in pairs(callbacks) do
+                            if type(callback) == 'function' then
+                                task.defer(callback, hitPart, hitPosition)
+                            end
+                        end
+                    end
+                    if HandleKillEffect then
+                        local hitPart = ...
+                        task.defer(HandleKillEffect, hitPart)
                     end
                 end
                 if not Toggles.HitLog_Enable.Value
@@ -1145,6 +1688,14 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
     local function AddUnload(fn)
         UnloadFns[#UnloadFns + 1] = fn
     end
+
+    AddUnload(function()
+        if CustomCrosshairCleanup then CustomCrosshairCleanup() end
+    end)
+
+    AddUnload(function()
+        if KillEffectCleanup then KillEffectCleanup() end
+    end)
 
     AddUnload(function()
         if SkinCleanup then
@@ -1465,6 +2016,21 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             PlayerSnapshotIndex[last] = index
         end
     end))
+
+    local function IsCombatRoundActive()
+        local status = workspace:FindFirstChild('Status')
+        local preparation = status and status:FindFirstChild('Preparation')
+        local gameOver = status and status:FindFirstChild('GameOver')
+        return not (preparation and preparation.Value == true)
+            and not (gameOver and gameOver.Value == true)
+    end
+
+    local function HasCombatProtection(character)
+        return not character
+            or character:FindFirstChild('PF') ~= nil
+            or character:FindFirstChild('Shield') ~= nil
+            or character:FindFirstChildOfClass('ForceField') ~= nil
+    end
     
     local function MakeESPText()
         local ok, text = pcall(Drawing.new, 'Text')
@@ -1582,6 +2148,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
     }
     
     -- RageBot
+    local GetShotHitChance
     local RageBot = RageTab:AddLeftGroupbox('RageBot')
     
     RageBot:AddToggle('RageBot_Enable', { Text = 'Enable', Default = false })
@@ -1599,7 +2166,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         Default = { 'Head' },
         Multi = true,
     })
-    
+
     RageBot:AddToggle('RageBot_TeamCheck', { Text = 'TeamCheck', Default = true })
     RageBot:AddToggle('RageBot_ShowFov', { Text = 'Show Fov', Default = false })
     
@@ -1637,6 +2204,172 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         end
         Options.RageBot_PenMode:OnChanged(UpdatePenModeUI)
         UpdatePenModeUI()
+    end
+
+    local AntiAim = RageTab:AddLeftTabbox('Anti aim')
+    local AntiAimPitch = AntiAim:AddTab('Pitch')
+    AntiAimPitch:AddToggle('AntiAim_Pitch_Enable', { Text = 'Enable', Default = false })
+    AntiAimPitch:AddDropdown('AntiAim_Pitch_Mode', {
+        Text = 'Pitch mode',
+        Values = { 'Up', 'Down', 'Custom', 'Random' },
+        Default = 'Up',
+    })
+    AntiAimPitch:AddSlider('AntiAim_Pitch_RandomSpeed', {
+        Text = 'Random speed',
+        Default = 1,
+        Min = 1,
+        Max = 1000,
+        Rounding = 0,
+    })
+    AntiAimPitch:AddSlider('AntiAim_Pitch_CustomValue', {
+        Text = 'Custom value',
+        Default = 0,
+        Min = -1,
+        Max = 1,
+        Rounding = 2,
+    })
+
+    local AntiAimYaw = AntiAim:AddTab('Yaw')
+    AntiAimYaw:AddToggle('AntiAim_Yaw_Enable', { Text = 'Enable', Default = false })
+    AntiAimYaw:AddDropdown('AntiAim_Yaw_Type', {
+        Text = 'Yaw type',
+        Values = { 'Local', 'At target' },
+        Default = 'Local',
+    })
+    AntiAimYaw:AddDropdown('AntiAim_Yaw_Mode', {
+        Text = 'Yaw mode',
+        Values = { 'Backwards', 'Forwards', 'Spin', 'Custom' },
+        Default = 'Backwards',
+    })
+    AntiAimYaw:AddSlider('AntiAim_Yaw_SpinSpeed', {
+        Text = 'Spin speed',
+        Default = 1,
+        Min = 1,
+        Max = 1000,
+        Rounding = 0,
+    })
+    AntiAimYaw:AddSlider('AntiAim_Yaw_CustomValue', {
+        Text = 'Custom value',
+        Default = 0,
+        Min = -180,
+        Max = 180,
+        Rounding = 0,
+    })
+
+    do
+        local function SetVisible(option, visible)
+            if option and type(option.SetVisible) == 'function' then option:SetVisible(visible) end
+        end
+        local function UpdateAntiAimUI()
+            SetVisible(Options.AntiAim_Pitch_RandomSpeed, Options.AntiAim_Pitch_Mode.Value == 'Random')
+            SetVisible(Options.AntiAim_Pitch_CustomValue, Options.AntiAim_Pitch_Mode.Value == 'Custom')
+            SetVisible(Options.AntiAim_Yaw_SpinSpeed, Options.AntiAim_Yaw_Mode.Value == 'Spin')
+            SetVisible(Options.AntiAim_Yaw_CustomValue, Options.AntiAim_Yaw_Mode.Value == 'Custom')
+        end
+        Options.AntiAim_Pitch_Mode:OnChanged(UpdateAntiAimUI)
+        Options.AntiAim_Yaw_Mode:OnChanged(UpdateAntiAimUI)
+        UpdateAntiAimUI()
+    end
+
+    do
+        local ControlTurnRemote
+        local function GetControlTurnRemote()
+            if ControlTurnRemote and ControlTurnRemote.Parent then return ControlTurnRemote end
+            local events = GetEventsFolder()
+            ControlTurnRemote = (events and events:FindFirstChild('ControlTurn'))
+                or ReplicatedStorage:FindFirstChild('ControlTurn')
+            return ControlTurnRemote
+        end
+        local function IsAntiAimTeammate(player)
+            local localTeam, targetTeam = LocalPlayer.Team, player.Team
+            if localTeam and targetTeam then return localTeam == targetTeam end
+            local localStatus, targetStatus = LocalPlayer:FindFirstChild('Status'), player:FindFirstChild('Status')
+            local localValue = localStatus and localStatus:FindFirstChild('Team')
+            local targetValue = targetStatus and targetStatus:FindFirstChild('Team')
+            return localValue and targetValue and localValue.Value == targetValue.Value
+        end
+        local function GetAntiAimTargetRoot(origin)
+            local now = os.clock()
+            if now - AntiAimState.targetAt >= 1 / 30 then
+                AntiAimState.targetAt = now
+                local bestRoot, bestDistance = nil, math.huge
+                for i = 1, #PlayerSnapshot do
+                    local player = PlayerSnapshot[i]
+                    if player ~= LocalPlayer and (not Toggles.RageBot_TeamCheck.Value or not IsAntiAimTeammate(player)) then
+                        local character = player.Character
+                        local humanoid = character and character:FindFirstChildOfClass('Humanoid')
+                        local root = character and character:FindFirstChild('HumanoidRootPart')
+                        if root and humanoid and humanoid.Health > 0 and not HasCombatProtection(character) then
+                            local distance = (root.Position - origin).Magnitude
+                            if distance < bestDistance then bestRoot, bestDistance = root, distance end
+                        end
+                    end
+                end
+                AntiAimState.targetRoot = bestRoot
+            end
+            local root = AntiAimState.targetRoot
+            return root and root.Parent and root or nil
+        end
+        local function UpdateAntiAim()
+            local pitchEnabled = Toggles.AntiAim_Pitch_Enable.Value
+            local yawEnabled = Toggles.AntiAim_Yaw_Enable.Value
+            local character = LocalPlayer.Character
+            local humanoid = character and character:FindFirstChildOfClass('Humanoid')
+            local root = character and character:FindFirstChild('HumanoidRootPart')
+            if not humanoid or not root then return end
+            if not pitchEnabled and not yawEnabled then
+                humanoid.AutoRotate = true
+                return
+            end
+            if not IsCombatRoundActive() or HasCombatProtection(character) then
+                humanoid.AutoRotate = true
+                return
+            end
+            humanoid.AutoRotate = not yawEnabled
+
+            if pitchEnabled then
+                local remote = GetControlTurnRemote()
+                if remote then pcall(function() remote:FireServer(GetAntiAimPitchValue()) end) end
+            end
+            if not yawEnabled then return end
+
+            local baseYaw = 0
+            if Options.AntiAim_Yaw_Type.Value == 'At target' then
+                local targetRoot = GetAntiAimTargetRoot(root.Position)
+                local direction = targetRoot and (targetRoot.Position - root.Position) * Vector3.new(1, 0, 1)
+                if direction and direction.Magnitude > 0.1 then
+                    baseYaw = math.deg(math.atan2(direction.X, direction.Z))
+                end
+            else
+                local camera = workspace.CurrentCamera
+                if camera then
+                    local look = camera.CFrame.LookVector
+                    baseYaw = math.deg(math.atan2(look.X, look.Z))
+                end
+            end
+
+            local mode = Options.AntiAim_Yaw_Mode.Value
+            local yaw = baseYaw
+            if mode == 'Forwards' then
+                yaw = yaw + 180
+            elseif mode == 'Spin' then
+                local now = os.clock()
+                local speed = math.max(Options.AntiAim_Yaw_SpinSpeed.Value, 1)
+                local elapsed = (now - AntiAimState.yawSpinAt) * 1000
+                AntiAimState.yawSpin = (AntiAimState.yawSpin + elapsed / speed * 360) % 360
+                AntiAimState.yawSpinAt = now
+                yaw = yaw + AntiAimState.yawSpin
+            elseif mode == 'Custom' then
+                yaw = yaw + Options.AntiAim_Yaw_CustomValue.Value
+            end
+            root.CFrame = CFrame.new(root.Position, root.Position + Vector3.new(0, 0, -1))
+                * CFrame.Angles(0, math.rad(yaw), 0)
+        end
+        Library:GiveSignal(RunService.RenderStepped:Connect(UpdateAntiAim))
+        AddUnload(function()
+            local humanoid = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass('Humanoid')
+            if humanoid then humanoid.AutoRotate = true end
+        end)
     end
 
     local RageExploit = RageTab:AddRightGroupbox('Exploit')
@@ -1748,12 +2481,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         end
     
         local function RageHasShield(character)
-            if not character then
-                return true
-            end
-            return character:FindFirstChild('PF')
-                or character:FindFirstChild('Shield')
-                or character:FindFirstChildOfClass('ForceField') ~= nil
+            return HasCombatProtection(character)
         end
     
         local function RageCanFire()
@@ -1776,9 +2504,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                 return false
             end
     
-            local gameStatus = workspace:FindFirstChild('Status')
-            local preparation = gameStatus and gameStatus:FindFirstChild('Preparation')
-            if preparation and preparation.Value == true then
+            if not IsCombatRoundActive() then
                 return false
             end
     
@@ -2219,7 +2945,6 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                     if not part or not part:IsA('BasePart') then
                         continue
                     end
-    
                     local point = part.Position
                     local dot = RageGetAimDot(point, frame.origin, frame.lookVector)
                     if not dot or dot < frame.minimumDot or dot <= bestDot then
@@ -2259,7 +2984,6 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                 if not part or not point or walls > frame.maxWalls then
                     continue
                 end
-    
                 if dot and dot >= frame.minimumDot and dot > bestDot then
                     bestDot = dot
                     RageTarget.part, RageTarget.point, RageTarget.walls, RageTarget.damageMod =
@@ -2283,7 +3007,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             local rate = fireRate and fireRate:IsA('NumberValue') and fireRate.Value > 0 and fireRate.Value or 0.1
             return gunName, gun, gunData, rate
         end
-    
+
         local function RageShotFlags(gunData, cameraPosition, hitPosition)
             local playerGui = LocalPlayer:FindFirstChild('PlayerGui')
             local blind = playerGui and playerGui:FindFirstChild('Blnd')
@@ -3733,6 +4457,30 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             return math.max(GetSpreadAngle(), 0)
         end
 
+        GetShotHitChance = function(part, camera, origin)
+            if not part or not camera then
+                return 0
+            end
+
+            local spreadAngle = GetCurrentSpreadAngle()
+            if spreadAngle <= 0 then
+                return 100
+            end
+
+            origin = typeof(origin) == 'Vector3' and origin or camera.CFrame.Position
+            local distance = (part.Position - origin).Magnitude
+            if distance <= 1e-3 then
+                return 100
+            end
+
+            local radius = math.max(part.Size.X, part.Size.Y, part.Size.Z) * 0.5
+            if part.Name == 'Head' or part.Name == 'HeadHB' or part.Name == 'FakeHead' then
+                radius = math.max(radius, 0.6)
+            end
+
+            return math.clamp(math.atan(radius / distance) / math.max(spreadAngle, 1e-6) * 100, 0, 100)
+        end
+
         GetCurrentSpreadRadius = function(camera)
             if not camera then
                 return 0
@@ -3972,7 +4720,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
 
                 local character = player.Character
                 local humanoid = character and character:FindFirstChildOfClass('Humanoid')
-                if not character or not humanoid or humanoid.Health <= 0 then
+                if not character or not humanoid or humanoid.Health <= 0 or HasCombatProtection(character) then
                     continue
                 end
 
@@ -4051,6 +4799,10 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             NextUpdate = now + GetUpdateInterval()
     
             if not Options.Aimbot_Key:GetState() then
+                return
+            end
+
+            if not IsCombatRoundActive() or HasCombatProtection(LocalPlayer.Character) then
                 return
             end
     
@@ -4316,7 +5068,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             local player = character and PlayersService:GetPlayerFromCharacter(character)
             local humanoid = character and character:FindFirstChildOfClass('Humanoid')
             if not player or player == LocalPlayer or IsTriggerTeammate(player)
-                or not humanoid or humanoid.Health <= 0
+                or not humanoid or humanoid.Health <= 0 or HasCombatProtection(character)
             then
                 return nil
             end
@@ -4333,30 +5085,6 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                 end
             end
             return nil
-        end
-    
-        local function GetHitChance(part, camera)
-            if not part then
-                return 0
-            end
-    
-            local spreadAngle = GetCurrentSpreadAngle and GetCurrentSpreadAngle() or 0
-            if spreadAngle <= 0 then
-                return 100
-            end
-    
-            local distance = (part.Position - camera.CFrame.Position).Magnitude
-            if distance <= 1e-3 then
-                return 100
-            end
-    
-            local partRadius = math.max(part.Size.X, part.Size.Y, part.Size.Z) * 0.5
-            if part.Name == 'Head' or part.Name == 'HeadHB' or part.Name == 'FakeHead' then
-                partRadius = math.max(partRadius, 0.6)
-            end
-    
-            local targetAngle = math.atan(partRadius / distance)
-            return math.clamp(targetAngle / math.max(spreadAngle, 1e-6) * 100, 0, 100)
         end
     
         local function GetFireRate()
@@ -4401,6 +5129,11 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                 ResetDelay()
                 return
             end
+
+            if not IsCombatRoundActive() or HasCombatProtection(LocalPlayer.Character) then
+                ResetDelay()
+                return
+            end
     
             local player, _, part = GetTarget(camera)
             if not player then
@@ -4408,7 +5141,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                 return
             end
     
-            if GetHitChance(part, camera) + 1e-3 < Options.Triggerbot_HitChance.Value then
+            if GetShotHitChance(part, camera) + 1e-3 < Options.Triggerbot_HitChance.Value then
                 ResetDelay()
                 return
             end
@@ -5126,30 +5859,14 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             Title = 'Outline',
         })
 
-    Players:AddToggle('ESP_HandChams', { Text = 'Hand chams', Default = false })
-        :AddColorPicker('ESP_HandChams_Color', {
-            Default = Color3.fromRGB(0, 170, 255),
-            Transparency = 0.35,
-            Title = 'Hands',
-        })
-    
     do
         local Highlights = {}
-        local HandHighlights = {}
         local VisCache = {}
         local ChamsFolder
         local NextUpdate = 0
         local RayParams = RaycastParams.new()
         local RaycastIgnore = {}
         RayParams.FilterType = Enum.RaycastFilterType.Exclude
-        local HandHitboxNames = {
-            'LeftUpperArm', 'LeftLowerArm', 'LeftHand',
-            'RightUpperArm', 'RightLowerArm', 'RightHand',
-            'Left Arm', 'Right Arm', 'LeftHandHB', 'RightHandHB',
-            'LeftArmHB', 'RightArmHB', 'LeftUpperArmHB', 'LeftLowerArmHB',
-            'RightUpperArmHB', 'RightLowerArmHB',
-        }
-    
         local function GetChamsFolder()
             if ChamsFolder and ChamsFolder.Parent then return ChamsFolder end
             ChamsFolder = Instance.new('Folder')
@@ -5166,11 +5883,6 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                 end)
                 Highlights[player] = nil
             end
-            local hands = HandHighlights[player]
-            if hands then
-                for _, handHighlight in pairs(hands) do pcall(function() handHighlight:Destroy() end) end
-                HandHighlights[player] = nil
-            end
             VisCache[player] = nil
         end
     
@@ -5185,13 +5897,6 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             if hl then
                 hl.Enabled = false
                 hl.Adornee = nil
-            end
-            local hands = HandHighlights[player]
-            if hands then
-                for _, handHighlight in pairs(hands) do
-                    handHighlight.Enabled = false
-                    handHighlight.Adornee = nil
-                end
             end
             VisCache[player] = nil
         end
@@ -5254,49 +5959,6 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             return color, transparency
         end
 
-        local function HideHandChams(player)
-            local hands = HandHighlights[player]
-            if not hands then return end
-            for _, handHighlight in pairs(hands) do
-                handHighlight.Enabled = false
-                handHighlight.Adornee = nil
-            end
-        end
-
-        local function UpdateHandChams(player, character, color, transparency)
-            local hands = HandHighlights[player]
-            if not hands then
-                hands = {}
-                HandHighlights[player] = hands
-            end
-            local seen = {}
-            for _, name in ipairs(HandHitboxNames) do
-                local part = character:FindFirstChild(name)
-                if part and part:IsA('BasePart') then
-                    seen[name] = true
-                    local handHighlight = hands[name]
-                    if not handHighlight or not handHighlight.Parent then
-                        handHighlight = Instance.new('Highlight')
-                        handHighlight.Name = '__ValenokHandChams'
-                        handHighlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-                        handHighlight.Parent = GetChamsFolder()
-                        hands[name] = handHighlight
-                    end
-                    handHighlight.Enabled = true
-                    handHighlight.Adornee = part
-                    handHighlight.FillColor = color
-                    handHighlight.FillTransparency = transparency
-                    handHighlight.OutlineTransparency = 1
-                end
-            end
-            for name, handHighlight in pairs(hands) do
-                if not seen[name] then
-                    handHighlight.Enabled = false
-                    handHighlight.Adornee = nil
-                end
-            end
-        end
-
         Library:GiveSignal(RunService.RenderStepped:Connect(function()
             local now = os.clock()
             if now < NextUpdate then
@@ -5306,9 +5968,8 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
     
             local chamsOn = Toggles.ESP_Chams.Value
             local outlineOn = Toggles.ESP_ChamsOutline.Value
-            local handChamsOn = Toggles.ESP_HandChams.Value
 
-            if not Toggles.ESP_Enable.Value or (not chamsOn and not outlineOn and not handChamsOn) then
+            if not Toggles.ESP_Enable.Value or (not chamsOn and not outlineOn) then
                 HideAllChams()
                 return
             end
@@ -5321,8 +5982,6 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
     
             local outlineColor = Options.ESP_Chams_Outline.Value
             local outlineTransparency = Options.ESP_Chams_Outline.Transparency
-            local handColor = Options.ESP_HandChams_Color.Value
-            local handTransparency = Options.ESP_HandChams_Color.Transparency
             for _, player in ipairs(PlayerSnapshot) do
                 if player == LocalPlayer or IsTeammate(player) then
                     HideChams(player)
@@ -5359,12 +6018,6 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
                 hl.OutlineColor = outlineColor
                 hl.FillTransparency = chamsOn and fillTransparency or 1
                 hl.OutlineTransparency = outlineOn and outlineTransparency or 1
-                if handChamsOn then
-                    UpdateHandChams(player, character, handColor, handTransparency)
-                else
-                    HideHandChams(player)
-                end
-
             end
         end))
     
@@ -5730,6 +6383,15 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         Max = 100,
         Rounding = 0,
     })
+
+    ThirdPerson:AddToggle('ThirdPerson_HideViewModel', {
+        Text = 'Hide viewmodel',
+        Default = true,
+    }):AddKeyPicker('ThirdPerson_HideViewModel_Key', {
+        Default = 'None',
+        Mode = 'Toggle',
+        Text = 'Hide viewmodel',
+    })
     
     ThirdPerson:AddToggle('ThirdPerson_ThroughWalls', {
         Text = 'Through walls',
@@ -5742,9 +6404,66 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         local lastActive = false
         local NextUpdate = 0
         local NextNoClipUpdate = 0
+        local ViewModelCache = {
+            arms = nil,
+            parts = nil,
+            hideState = nil,
+        }
     
         local function IsThirdPersonActive()
             return Toggles.ThirdPerson_Enable.Value and Options.ThirdPerson_Key:GetState()
+        end
+
+        local function IsViewModelHidden()
+            local keybind = Options.ThirdPerson_HideViewModel_Key
+            return Toggles.ThirdPerson_HideViewModel.Value
+                and (not keybind or keybind.Value == 'None' or keybind:GetState())
+        end
+
+        local function RestoreViewModel()
+            for _, part in ipairs(ViewModelCache.parts or {}) do
+                if part and part.Parent then
+                    part.LocalTransparencyModifier = 0
+                end
+            end
+
+            ViewModelCache.arms = nil
+            ViewModelCache.parts = nil
+            ViewModelCache.hideState = nil
+        end
+
+        local function UpdateViewModelVisibility(isThirdPerson)
+            local camera = workspace.CurrentCamera
+            local arms = camera and camera:FindFirstChild('Arms')
+
+            if arms ~= ViewModelCache.arms then
+                RestoreViewModel()
+                if not arms then
+                    return
+                end
+
+                local parts = {}
+                for _, part in ipairs(arms:GetDescendants()) do
+                    if part:IsA('BasePart') then
+                        parts[#parts + 1] = part
+                    end
+                end
+
+                ViewModelCache.arms = arms
+                ViewModelCache.parts = parts
+            end
+
+            local hideState = isThirdPerson and IsViewModelHidden()
+            if ViewModelCache.hideState == hideState then
+                return
+            end
+
+            ViewModelCache.hideState = hideState
+            for _, part in ipairs(ViewModelCache.parts or {}) do
+                if part and part.Parent then
+                    part.LocalTransparencyModifier = hideState and 1 or 0
+                end
+            end
         end
     
         local function SetFirstPerson()
@@ -5811,6 +6530,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
     
         local function ApplyThirdPerson()
             local active = IsThirdPersonActive()
+            UpdateViewModelVisibility(active)
     
             if active then
                 SetThirdPerson()
@@ -5830,6 +6550,7 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             NextUpdate = now + GetUpdateInterval()
     
             local active = IsThirdPersonActive()
+            UpdateViewModelVisibility(active)
             if active ~= lastActive then
                 ApplyThirdPerson()
             elseif active then
@@ -5848,9 +6569,16 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
             end
         end)
         Toggles.ThirdPerson_ThroughWalls:OnChanged(BindThroughWalls)
+        Toggles.ThirdPerson_HideViewModel:OnChanged(function()
+            UpdateViewModelVisibility(IsThirdPersonActive())
+        end)
+        Options.ThirdPerson_HideViewModel_Key:OnChanged(function()
+            UpdateViewModelVisibility(IsThirdPersonActive())
+        end)
     
         AddUnload(function()
             UnbindThroughWalls()
+            RestoreViewModel()
             SetFirstPerson()
         end)
     end
@@ -5912,7 +6640,825 @@ local Environment = type(getgenv) == 'function' and getgenv() or _G
         end)
     end
     
-    Window:AddTab('World')
+    local WorldTab = Window:AddTab('World')
+    local WorldAmbience = WorldTab:AddLeftGroupbox('Ambience')
+    local WorldLighting = WorldTab:AddRightGroupbox('Lighting')
+    local WorldCustomPlayer = WorldTab:AddLeftGroupbox('Custom Player')
+    local WorldCameraFX = WorldTab:AddRightGroupbox('Camera effects')
+
+    WorldAmbience:AddToggle('World_CustomTime', { Text = 'Custom time', Default = false })
+    WorldAmbience:AddSlider('World_Time', {
+        Text = 'Time',
+        Default = 12,
+        Min = 0,
+        Max = 24,
+        Rounding = 1,
+    })
+    WorldAmbience:AddToggle('World_SkyboxAmbient', {
+        Text = 'Custom skybox',
+        Default = false,
+    }):AddColorPicker('World_SkyboxAmbientColor', {
+        Default = Color3.fromRGB(0, 0, 0),
+        Transparency = 0,
+    })
+    WorldAmbience:AddToggle('World_SkyColor', {
+        Text = 'Sky color',
+        Default = false,
+    }):AddColorPicker('World_SkyColorValue', {
+        Default = Color3.fromRGB(0, 0, 0),
+        Transparency = 0,
+    })
+    WorldAmbience:AddToggle('World_NoShadows', { Text = 'No shadows', Default = false })
+    WorldAmbience:AddToggle('World_SkyboxChanger', { Text = 'Skybox changer', Default = false })
+    WorldAmbience:AddDropdown('World_SkyboxPreset', {
+        Text = 'Skybox preset',
+        Values = {
+            "Game's Sky", 'Purple Nebula', 'Night Sky', 'Pink Daylight', 'Morning Glow',
+            'Setting Sun', 'Fade Blue', 'Elegant Morning', 'Neptune', 'Redshift',
+            'Aesthetic Night', 'Gloomy Gray', 'Light Within Dark', 'Green Space',
+            'The Winter', 'Oblivion', 'Final Bloodmoon', 'Clouds', 'Twilight',
+            'Red Mountain', 'Cloudy Skies', 'Dark Blue',
+        },
+        Default = "Game's Sky",
+    })
+    WorldAmbience:AddInput('World_SkyboxAsset', {
+        Text = 'Custom asset ID',
+        Default = '',
+        Placeholder = 'e.g. 159454299',
+    })
+
+    WorldLighting:AddToggle('World_BetterShadows', { Text = 'Better shadows', Default = false })
+    WorldLighting:AddToggle('World_Ambient', {
+        Text = 'Ambient',
+        Default = false,
+    }):AddColorPicker('World_AmbientColor', {
+        Default = Color3.fromRGB(128, 128, 128),
+        Transparency = 0,
+    })
+    WorldLighting:AddSlider('World_Brightness', {
+        Text = 'Brightness',
+        Default = 2,
+        Min = 0,
+        Max = 10,
+        Rounding = 1,
+    })
+    WorldLighting:AddToggle('World_Gradient', {
+        Text = 'Gradient color 1',
+        Default = false,
+    }):AddColorPicker('World_GradientColor1', {
+        Default = Color3.fromRGB(90, 90, 90),
+        Transparency = 0,
+    })
+    WorldLighting:AddToggle('World_GradientColor2Enabled', {
+        Text = 'Gradient color 2',
+        Default = false,
+    }):AddColorPicker('World_GradientColor2', {
+        Default = Color3.fromRGB(150, 150, 150),
+        Transparency = 0,
+    })
+    WorldLighting:AddToggle('World_Saturation', { Text = 'Saturation', Default = false })
+    WorldLighting:AddSlider('World_SaturationValue', {
+        Text = 'Saturation value',
+        Default = 10,
+        Min = 0,
+        Max = 100,
+        Rounding = 0,
+    })
+    WorldCustomPlayer:AddToggle('World_CustomPlayer_Enable', { Text = 'Enable', Default = false })
+    WorldCustomPlayer:AddDropdown('World_CustomPlayer_Model', {
+        Text = 'Model',
+        Values = {
+            'Normal', 'Puzati', 'Jhon Pork', 'Pigeon', 'Patrik',
+            'Biggers_Gal', 'Among us', 'Skipper', 'Old Lester', 'Pibble', 'Big guy',
+            'Skeleton', 'Fat guy 1',
+        },
+        Default = 'Normal',
+    })
+    WorldCustomPlayer:AddSlider('World_CustomPlayer_Scale', {
+        Text = 'Scale',
+        Default = 1.6,
+        Min = 0.5,
+        Max = 3,
+        Rounding = 1,
+    })
+    WorldCameraFX:AddToggle('World_CameraBlur', { Text = 'Camera blur', Default = false })
+    WorldCameraFX:AddSlider('World_CameraBlurIntensity', {
+        Text = 'Blur intensity',
+        Default = 100,
+        Min = 0,
+        Max = 100,
+        Rounding = 0,
+    })
+    do
+        local Lighting = game:GetService('Lighting')
+        local SkyFaces = { 'SkyboxBk', 'SkyboxDn', 'SkyboxFt', 'SkyboxLf', 'SkyboxRt', 'SkyboxUp' }
+        local SkyProperties = {
+            'SkyboxBk', 'SkyboxDn', 'SkyboxFt', 'SkyboxLf', 'SkyboxRt', 'SkyboxUp',
+            'StarCount', 'SunTextureId', 'MoonTextureId',
+        }
+        local SkyboxPresets = {
+            ['Purple Nebula'] = { 159454299, 159454296, 159454293, 159454286, 159454300, 159454288 },
+            ['Night Sky'] = { 12064107, 12064152, 12064121, 12063984, 12064115, 12064131 },
+            ['Pink Daylight'] = { 271042516, 271077243, 271042556, 271042310, 271042467, 271077958 },
+            ['Morning Glow'] = { 1417494030, 1417494146, 1417494253, 1417494402, 1417494499, 1417494643 },
+            ['Setting Sun'] = { 626460377, 626460216, 626460513, 626473032, 626458639, 626460625 },
+            ['Fade Blue'] = { 153695414, 153695352, 153695452, 153695320, 153695383, 153695471 },
+            ['Elegant Morning'] = { 153767241, 153767216, 153767266, 153767200, 153767231, 153767288 },
+            ['Neptune'] = { 218955819, 218953419, 218954524, 218958493, 218957134, 218950090 },
+            ['Redshift'] = { 401664839, 401664862, 401664960, 401664881, 401664901, 401664936 },
+            ['Aesthetic Night'] = { 1045964490, 1045964368, 1045964655, 1045964655, 1045964655, 1045962969 },
+            ['Gloomy Gray'] = { 4495864450, 4495864887, 4495865458, 4495866035, 4495866584, 4495867486 },
+            ['Light Within Dark'] = { 15502511288, 15502508460, 15502510289, 15502507918, 15502509398, 15502511911 },
+            ['Green Space'] = { 16823270864, 16823272150, 16823273508, 16823274898, 16823276281, 16823277547 },
+            ['The Winter'] = { 7307273436, 7307275898, 7307282434, 7307284944, 7307287254, 7307290025 },
+            ['Oblivion'] = { 16642312709, 16642313526, 16642314757, 16642307918, 16642313526, 16642314708 },
+            ['Final Bloodmoon'] = { 15493709538, 15493710499, 15493711616, 15493712720, 15493712397, 15493711792 },
+            ['Clouds'] = { 570557514, 570557775, 570557559, 570557620, 570557672, 570557727 },
+            ['Twilight'] = { 264908339, 264907909, 264909420, 264909758, 264908886, 264907379 },
+            ['Red Mountain'] = { 6636457509, 6636457509, 6636457509, 6636457509, 6636457509, 6636457509 },
+            ['Cloudy Skies'] = { 252760981, 252763035, 252761439, 252760980, 252762652, 252762652 },
+            ['Dark Blue'] = { 30306692, 25901058, 30306730, 30306626, 30306665, 30306603 },
+        }
+        local State = {
+            snapshot = nil,
+            skies = {},
+            saturation = nil,
+            saturationSnapshot = nil,
+            ownsSaturation = false,
+            technology = nil,
+            originalSky = nil,
+            customSky = nil,
+            skyboxGeneration = 0,
+            cameraBlur = nil,
+            lastCameraCFrame = nil,
+            blurSize = 0,
+        }
+
+        local function Enabled(id)
+            local toggle = Toggles[id]
+            return toggle and toggle.Value == true
+        end
+
+        local function Value(id, fallback)
+            local option = Options[id]
+            return option and option.Value ~= nil and option.Value or fallback
+        end
+
+        local function Set(object, property, value)
+            object[property] = value
+        end
+
+        local function CaptureSky(sky)
+            if not sky or State.skies[sky] then
+                return
+            end
+            local snapshot = {}
+            for i = 1, #SkyProperties do
+                local property = SkyProperties[i]
+                snapshot[property] = sky[property]
+            end
+            State.skies[sky] = snapshot
+        end
+
+        local function CaptureWorld()
+            if State.snapshot then
+                return
+            end
+            State.snapshot = {
+                ClockTime = Lighting.ClockTime,
+                GlobalShadows = Lighting.GlobalShadows,
+                Brightness = Lighting.Brightness,
+                Ambient = Lighting.Ambient,
+                OutdoorAmbient = Lighting.OutdoorAmbient,
+                ColorShift_Bottom = Lighting.ColorShift_Bottom,
+                ColorShift_Top = Lighting.ColorShift_Top,
+                FogColor = Lighting.FogColor,
+                FogEnd = Lighting.FogEnd,
+            }
+            CaptureSky(Lighting:FindFirstChildOfClass('Sky'))
+        end
+
+        local function RestoreWorld()
+            local snapshot = State.snapshot
+            if not snapshot then
+                return
+            end
+            pcall(function()
+                for property, value in pairs(snapshot) do
+                    Lighting[property] = value
+                end
+                if State.technology ~= nil and type(sethiddenproperty) == 'function' then
+                    sethiddenproperty(Lighting, 'Technology', State.technology)
+                end
+                for sky, values in pairs(State.skies) do
+                    if sky and sky.Parent then
+                        for property, value in pairs(values) do
+                            sky[property] = value
+                        end
+                    end
+                end
+                if State.saturation and State.saturation.Parent then
+                    if State.ownsSaturation then
+                        State.saturation:Destroy()
+                    elseif State.saturationSnapshot then
+                        for property, value in pairs(State.saturationSnapshot) do
+                            State.saturation[property] = value
+                        end
+                    end
+                end
+            end)
+            State.snapshot, State.technology = nil, nil
+            State.saturation, State.saturationSnapshot, State.ownsSaturation = nil, nil, false
+            table.clear(State.skies)
+        end
+
+        local function SetSkyColor(sky, color)
+            if not sky then
+                return
+            end
+            local white = 'rbxasset://textures/white.png'
+            for i = 1, #SkyFaces do
+                Set(sky, SkyFaces[i], white)
+            end
+            Set(sky, 'StarCount', 0)
+            Set(sky, 'SunTextureId', '')
+            Set(sky, 'MoonTextureId', '')
+            Set(Lighting, 'FogColor', color)
+            Set(Lighting, 'FogEnd', 9e9)
+        end
+
+        local function WorldActive()
+            return Enabled('World_CustomTime')
+                or Enabled('World_SkyboxAmbient')
+                or Enabled('World_SkyColor')
+                or Enabled('World_NoShadows')
+                or Enabled('World_BetterShadows')
+                or Enabled('World_Ambient')
+                or Enabled('World_Gradient')
+                or Enabled('World_Saturation')
+        end
+
+        local function ApplyWorld()
+            if not WorldActive() then
+                RestoreWorld()
+                return
+            end
+            CaptureWorld()
+            local saved = State.snapshot
+            local sky = Lighting:FindFirstChildOfClass('Sky')
+            CaptureSky(sky)
+
+            Set(Lighting, 'ClockTime', Enabled('World_CustomTime') and Value('World_Time', 12) or saved.ClockTime)
+            local ambient, outdoor, bottom, top = saved.Ambient, saved.OutdoorAmbient, saved.ColorShift_Bottom, saved.ColorShift_Top
+            if Enabled('World_Gradient') then
+                ambient = Value('World_GradientColor1', Color3.fromRGB(90, 90, 90))
+                outdoor = Value('World_GradientColor2', Color3.fromRGB(150, 150, 150))
+            elseif Enabled('World_Ambient') then
+                ambient = Value('World_AmbientColor', Color3.fromRGB(128, 128, 128))
+            elseif Enabled('World_SkyboxAmbient') then
+                ambient = Value('World_SkyboxAmbientColor', Color3.new())
+                outdoor, bottom, top = ambient, ambient, ambient
+            end
+            Set(Lighting, 'Ambient', ambient)
+            Set(Lighting, 'OutdoorAmbient', outdoor)
+            Set(Lighting, 'ColorShift_Bottom', bottom)
+            Set(Lighting, 'ColorShift_Top', top)
+
+            if Enabled('World_SkyColor') then
+                SetSkyColor(sky, Value('World_SkyColorValue', Color3.new()))
+            else
+                Set(Lighting, 'FogColor', saved.FogColor)
+                Set(Lighting, 'FogEnd', saved.FogEnd)
+            end
+            Set(Lighting, 'GlobalShadows', Enabled('World_NoShadows') and false or saved.GlobalShadows)
+
+            if Enabled('World_BetterShadows') and State.technology == nil and type(gethiddenproperty) == 'function' then
+                pcall(function()
+                    State.technology = gethiddenproperty(Lighting, 'Technology')
+                end)
+            end
+            if Enabled('World_BetterShadows') and type(sethiddenproperty) == 'function' then
+                pcall(function()
+                    sethiddenproperty(Lighting, 'Technology', Enum.Technology.ShadowMap)
+                end)
+            end
+
+            local brightnessOn = Enabled('World_Ambient') or Enabled('World_Gradient')
+                or Enabled('World_BetterShadows') or Enabled('World_Saturation')
+            Set(Lighting, 'Brightness', brightnessOn and Value('World_Brightness', 2) or saved.Brightness)
+
+            if Enabled('World_Saturation') then
+                if not State.saturation or not State.saturation.Parent then
+                    local existing = Lighting:FindFirstChild('ValenokWorldSaturation')
+                    State.saturation = existing or Instance.new('ColorCorrectionEffect')
+                    State.ownsSaturation = not existing
+                    State.saturation.Name = 'ValenokWorldSaturation'
+                    if not State.ownsSaturation then
+                        State.saturationSnapshot = {
+                            Saturation = State.saturation.Saturation,
+                            Enabled = State.saturation.Enabled,
+                        }
+                    end
+                    State.saturation.Parent = Lighting
+                end
+                Set(State.saturation, 'Enabled', true)
+                Set(State.saturation, 'Saturation', Value('World_SaturationValue', 10) / 50)
+            elseif State.saturation then
+                if State.ownsSaturation then
+                    State.saturation:Destroy()
+                elseif State.saturationSnapshot and State.saturation.Parent then
+                    for property, value in pairs(State.saturationSnapshot) do
+                        State.saturation[property] = value
+                    end
+                end
+                State.saturation, State.saturationSnapshot, State.ownsSaturation = nil, nil, false
+            end
+        end
+
+        local function UpdateCameraBlur(deltaTime)
+            if not Enabled('World_CameraBlur') then
+                if State.cameraBlur then
+                    State.cameraBlur:Destroy()
+                    State.cameraBlur = nil
+                end
+                State.lastCameraCFrame, State.blurSize = nil, 0
+                return
+            end
+
+            local camera = workspace.CurrentCamera
+            if not camera then return end
+            if not State.cameraBlur or not State.cameraBlur.Parent then
+                State.cameraBlur = Instance.new('BlurEffect')
+                State.cameraBlur.Name = 'ValenokCameraBlur'
+                State.cameraBlur.Parent = Lighting
+            end
+
+            local current, previous = camera.CFrame, State.lastCameraCFrame
+            local target = 0
+            if previous then
+                local move = (current.Position - previous.Position).Magnitude
+                local turn = math.acos(math.clamp(current.LookVector:Dot(previous.LookVector), -1, 1))
+                local intensity = math.clamp(Value('World_CameraBlurIntensity', 50), 0, 100) / 100
+                target = math.clamp((move * 260 + turn * 3000) * intensity, 0, 56)
+            end
+            State.lastCameraCFrame = current
+            local blend = math.clamp((deltaTime or 1 / 60) * (target > State.blurSize and 40 or 16), 0, 1)
+            State.blurSize = State.blurSize + (target - State.blurSize) * blend
+            State.cameraBlur.Size = State.blurSize
+        end
+
+        local function RemoveCustomSky()
+            if State.customSky then
+                State.customSky:Destroy()
+                State.customSky = nil
+            end
+        end
+
+        local function RestoreSkybox()
+            RemoveCustomSky()
+            if State.originalSky and not State.originalSky.Parent then
+                State.originalSky.Parent = Lighting
+            end
+            State.originalSky = nil
+        end
+
+        local function ApplySkyboxChanger()
+            State.skyboxGeneration = State.skyboxGeneration + 1
+            local generation = State.skyboxGeneration
+            if not Enabled('World_SkyboxChanger') then
+                RestoreSkybox()
+                return
+            end
+
+            local currentSky = Lighting:FindFirstChildOfClass('Sky')
+            if not State.originalSky and currentSky and currentSky ~= State.customSky then
+                State.originalSky = currentSky
+            end
+            if currentSky and currentSky ~= State.customSky then
+                currentSky.Parent = nil
+            end
+            RemoveCustomSky()
+
+            local assetId = tostring(Value('World_SkyboxAsset', '')):match('%d+')
+            if assetId then
+                task.spawn(function()
+                    local ok, objects = pcall(game.GetObjects, game, 'rbxassetid://' .. assetId)
+                    if not ok or type(objects) ~= 'table' or generation ~= State.skyboxGeneration
+                        or not Enabled('World_SkyboxChanger')
+                    then
+                        if type(objects) == 'table' then
+                            for _, object in ipairs(objects) do
+                                object:Destroy()
+                            end
+                        end
+                        return
+                    end
+                    local object = objects and objects[1]
+                    local sky = object and (object:IsA('Sky') and object or object:FindFirstChildOfClass('Sky'))
+                    if sky then
+                        State.customSky = sky:IsA('Sky') and (sky.Parent and sky:Clone() or sky) or nil
+                        if State.customSky then
+                            State.customSky.Name = 'ValenokWorldSky'
+                            State.customSky.Parent = Lighting
+                        end
+                    end
+                    if object and object ~= State.customSky then
+                        object:Destroy()
+                    end
+                end)
+                return
+            end
+
+            local faces = SkyboxPresets[Value('World_SkyboxPreset', "Game's Sky")]
+            if not faces then
+                if State.originalSky and not State.originalSky.Parent then
+                    State.originalSky.Parent = Lighting
+                end
+                return
+            end
+            local sky = Instance.new('Sky')
+            sky.Name, sky.StarCount, sky.SunTextureId, sky.MoonTextureId = 'ValenokWorldSky', 0, '', ''
+            for i = 1, #SkyFaces do
+                sky[SkyFaces[i]] = 'rbxassetid://' .. faces[i]
+            end
+            sky.Parent = Lighting
+            State.customSky = sky
+        end
+
+        Library:GiveSignal(Lighting.ChildAdded:Connect(function(child)
+            if child:IsA('Sky') and State.customSky and child ~= State.customSky then
+                task.defer(function()
+                    if State.customSky and State.customSky.Parent and child.Parent then
+                        child.Parent = nil
+                    end
+                end)
+            end
+        end))
+
+        local WorldControls = {
+            'World_CustomTime', 'World_Time', 'World_SkyboxAmbient', 'World_SkyboxAmbientColor',
+            'World_SkyColor', 'World_SkyColorValue', 'World_NoShadows', 'World_BetterShadows',
+            'World_Ambient', 'World_AmbientColor', 'World_Brightness', 'World_Gradient',
+            'World_GradientColor1', 'World_GradientColor2Enabled', 'World_GradientColor2',
+            'World_Saturation', 'World_SaturationValue',
+        }
+        for i = 1, #WorldControls do
+            local option = Toggles[WorldControls[i]] or Options[WorldControls[i]]
+            if option then
+                option:OnChanged(ApplyWorld)
+            end
+        end
+        for _, id in ipairs({ 'World_SkyboxChanger', 'World_SkyboxPreset', 'World_SkyboxAsset' }) do
+            local option = Toggles[id] or Options[id]
+            if option then
+                option:OnChanged(ApplySkyboxChanger)
+            end
+        end
+        for _, id in ipairs({ 'World_CameraBlur', 'World_CameraBlurIntensity' }) do
+            local option = Toggles[id] or Options[id]
+            if option then option:OnChanged(function() UpdateCameraBlur() end) end
+        end
+
+        pcall(function()
+            RunService:UnbindFromRenderStep('ValenokCameraBlur')
+            RunService:BindToRenderStep('ValenokCameraBlur', Enum.RenderPriority.Camera.Value + 1, UpdateCameraBlur)
+        end)
+        local updateAccumulator = 0
+        Library:GiveSignal(RunService.Heartbeat:Connect(function(deltaTime)
+            updateAccumulator = updateAccumulator + math.min(deltaTime, 0.25)
+            if updateAccumulator < 1 / 60 then
+                return
+            end
+            updateAccumulator = updateAccumulator % (1 / 60)
+            ApplyWorld()
+        end))
+
+        AddUnload(function()
+            State.skyboxGeneration = State.skyboxGeneration + 1
+            RestoreSkybox()
+            RestoreWorld()
+            if State.cameraBlur then State.cameraBlur:Destroy() end
+            pcall(function() RunService:UnbindFromRenderStep('ValenokCameraBlur') end)
+        end)
+    end
+
+    do
+        local BodyModels = {
+            Normal = {
+                Torso = 135121131602727,
+                LeftArm = 72804473226768,
+                RightArm = 130351594552744,
+                LeftLeg = 80105694195753,
+                RightLeg = 116476819182032,
+                Head = 118449923967495,
+            },
+            ['Jhon Pork'] = {
+                Torso = 132501585490463,
+                LeftArm = 88579015441753,
+                RightArm = 129842318757424,
+                LeftLeg = 100518704070331,
+                RightLeg = 92476775553785,
+                Head = 132721839382745,
+            },
+            Pigeon = {
+                Torso = 108606139451045,
+                LeftArm = 134006789505304,
+                RightArm = 85828897541190,
+                LeftLeg = 101883175743454,
+                RightLeg = 75417153810267,
+                Head = 127070584433499,
+            },
+            Patrik = {
+                Torso = 121429497485946,
+                LeftArm = 122232068641236,
+                RightArm = 93214372185918,
+                LeftLeg = 83875412970369,
+                RightLeg = 97452562708405,
+                Head = 137097755853616,
+            },
+            Biggers_Gal = {
+                Torso = 74673279267276,
+                LeftArm = 87018689087283,
+                RightArm = 132244196035713,
+                LeftLeg = 78760826287024,
+                RightLeg = 90291349193488,
+                Head = 93996073470815,
+            },
+            ['Among us'] = {
+                Torso = 107534460257855,
+                LeftArm = 77139673169857,
+                RightArm = 102635380480202,
+                LeftLeg = 115538462928796,
+                RightLeg = 126976948352037,
+                Head = 116779639423299,
+            },
+            Skipper = {
+                Torso = 130680650819430,
+                LeftArm = 81187641328514,
+                RightArm = 89085745510917,
+                LeftLeg = 121808135909788,
+                RightLeg = 77179784244521,
+                Head = 71903529157347,
+            },
+            ['Old Lester'] = {
+                Torso = 80859767821450,
+                LeftArm = 113667126099629,
+                RightArm = 112687265686668,
+                LeftLeg = 72818113233736,
+                RightLeg = 104423736812413,
+                Head = 77778446802448,
+            },
+            Pibble = {
+                Torso = 90696558840318,
+                LeftArm = 129050007743892,
+                RightArm = 130571043270887,
+                LeftLeg = 119969744556383,
+                RightLeg = 90886442487050,
+                Head = 93917690139663,
+            },
+            ['Big guy'] = {
+                Torso = 97885715091333,
+                LeftArm = 95372012633334,
+                RightArm = 80393387074127,
+                LeftLeg = 121169273294866,
+                RightLeg = 124328247767549,
+                Head = 83615494348795,
+            },
+            Skeleton = {
+                Torso = 127308046551037,
+                LeftArm = 90220814519470,
+                RightArm = 118877569125424,
+                LeftLeg = 135318822971898,
+                RightLeg = 86639514084572,
+                Head = 114932814714863,
+            },
+            ['Fat guy 1'] = {
+                Torso = 133205357743878,
+                LeftArm = 112483999219995,
+                RightArm = 92347775435494,
+                LeftLeg = 103791733575787,
+                RightLeg = 98800327125866,
+                Head = 132588947314373,
+            },
+        }
+        local State = {
+            fake = nil,
+            hidden = {},
+            generation = 0,
+            hideConnection = nil,
+            hideRender = nil,
+            visualParts = {},
+        }
+
+        local function ClearCustomPlayer()
+            if State.hideConnection then
+                State.hideConnection:Disconnect()
+                State.hideConnection = nil
+            end
+            if State.hideRender then
+                State.hideRender:Disconnect()
+                State.hideRender = nil
+            end
+            if State.fake then
+                State.fake:Destroy()
+                State.fake = nil
+            end
+            for part, transparency in pairs(State.hidden) do
+                if part and part.Parent then part.LocalTransparencyModifier = transparency end
+            end
+            table.clear(State.hidden)
+            table.clear(State.visualParts)
+        end
+
+        local function HideOriginal(part)
+            if part:IsA('BasePart') then
+                if State.hidden[part] == nil then
+                    State.hidden[part] = part.LocalTransparencyModifier
+                end
+                part.LocalTransparencyModifier = 1
+            end
+        end
+
+        local function UprightRoot(root)
+            local forward = root.CFrame.LookVector
+            forward = Vector3.new(forward.X, 0, forward.Z)
+            if forward.Magnitude < 1e-3 then
+                local right = root.CFrame.RightVector
+                forward = Vector3.yAxis:Cross(Vector3.new(right.X, 0, right.Z))
+            end
+            if forward.Magnitude < 1e-3 then forward = Vector3.new(0, 0, -1) end
+            return CFrame.lookAt(root.Position, root.Position + forward.Unit)
+        end
+
+        local function HideCharacter(character)
+            for _, part in ipairs(character:GetDescendants()) do
+                if part:IsA('BasePart') and not (State.fake and part:IsDescendantOf(State.fake)) then
+                    HideOriginal(part)
+                end
+            end
+            State.hideConnection = character.DescendantAdded:Connect(function(part)
+                if part:IsA('BasePart') and not (State.fake and part:IsDescendantOf(State.fake)) then
+                    HideOriginal(part)
+                end
+            end)
+            State.hideRender = RunService.RenderStepped:Connect(function()
+                if not Toggles.World_CustomPlayer_Enable.Value or character ~= LocalPlayer.Character then
+                    return
+                end
+                for part, data in pairs(State.visualParts) do
+                    if part.Parent and data.target and data.target.Parent then
+                        part.CFrame = data.target.CFrame
+                    elseif part.Parent and data.root and data.root.Parent then
+                        part.CFrame = UprightRoot(data.root) * data.offset
+                    else
+                        State.visualParts[part] = nil
+                    end
+                end
+                for _, part in ipairs(character:GetDescendants()) do
+                    if part:IsA('BasePart') and not (State.fake and part:IsDescendantOf(State.fake)) then
+                        HideOriginal(part)
+                    end
+                end
+            end)
+        end
+
+        local function ApplyCustomPlayer()
+            State.generation = State.generation + 1
+            local generation = State.generation
+            ClearCustomPlayer()
+            if not Toggles.World_CustomPlayer_Enable.Value then return end
+
+            local character = LocalPlayer.Character
+            local humanoid = character and character:FindFirstChildOfClass('Humanoid')
+            if not character or not humanoid or humanoid.RigType ~= Enum.HumanoidRigType.R15 then return end
+            HideCharacter(character)
+
+            task.spawn(function()
+                local scale = Options.World_CustomPlayer_Scale.Value
+                local selectedModel = Options.World_CustomPlayer_Model.Value
+                if selectedModel == 'Puzati' then
+                    local ok, objects = pcall(game.GetObjects, game, 'rbxassetid://104619471286143')
+                    local source = type(objects) == 'table' and objects[1] or nil
+                    local visual = typeof(source) == 'Instance' and (
+                        source:IsA('BasePart') and source
+                        or source:FindFirstChildWhichIsA('BasePart', true)
+                    )
+                    if not ok or not visual or generation ~= State.generation then
+                        if type(objects) == 'table' then
+                            for _, object in ipairs(objects) do object:Destroy() end
+                        end
+                        if generation == State.generation then warn('Puzati model failed to load') end
+                        return
+                    end
+
+                    local torso = character:FindFirstChild('UpperTorso')
+                    local root = character:FindFirstChild('HumanoidRootPart')
+                    local fake = Instance.new('Model')
+                    fake.Name = 'ValenokPuzati'
+                    local belly = visual:Clone()
+                    for _, object in ipairs(objects) do object:Destroy() end
+                    if not torso or not root or generation ~= State.generation then
+                        fake:Destroy()
+                        return
+                    end
+
+                    State.fake = fake
+                    fake.Parent = character
+                    belly.Name = 'PuzatiBelly'
+                    local uprightRoot = UprightRoot(root)
+                    local torsoOffset = uprightRoot:ToObjectSpace(torso.CFrame)
+                    local bellyOffset = CFrame.new(torsoOffset.Position)
+                        * CFrame.new(0, -0.15, -0.7)
+                    belly.CFrame = uprightRoot * bellyOffset
+                    belly.Size = belly.Size * scale
+                    belly.Anchored, belly.CanCollide, belly.CanTouch, belly.CanQuery, belly.Massless = true, false, false, false, true
+                    local mesh = belly:FindFirstChildOfClass('SpecialMesh')
+                    if mesh then mesh.Scale = mesh.Scale * scale end
+                    belly.Parent = fake
+                    State.visualParts[belly] = { root = root, offset = bellyOffset }
+                    return
+                end
+
+                local description = Instance.new('HumanoidDescription')
+                for property, assetId in pairs(BodyModels[selectedModel] or BodyModels.Normal) do
+                    description[property] = assetId
+                end
+                local ok, fake = pcall(
+                    PlayersService.CreateHumanoidModelFromDescription,
+                    PlayersService,
+                    description,
+                    Enum.HumanoidRigType.R15
+                )
+                description:Destroy()
+                if not ok or typeof(fake) ~= 'Instance'
+                    or generation ~= State.generation or character ~= LocalPlayer.Character
+                then
+                    if typeof(fake) == 'Instance' then fake:Destroy() end
+                    return
+                end
+
+                fake.Name = 'Valenok' .. selectedModel:gsub('%s+', '')
+                local fakeHumanoid = fake:FindFirstChildOfClass('Humanoid')
+                if fakeHumanoid then fakeHumanoid:Destroy() end
+                for _, item in ipairs(fake:GetDescendants()) do
+                    if item:IsA('Motor6D') or item:IsA('Script') or item:IsA('LocalScript') then
+                        item:Destroy()
+                    end
+                end
+
+                State.fake = fake
+                fake.Parent = character
+                local root = character:FindFirstChild('HumanoidRootPart')
+                if not root then
+                    fake:Destroy()
+                    return
+                end
+                local uprightRoot = UprightRoot(root)
+                for _, part in ipairs(fake:GetDescendants()) do
+                    if part:IsA('BasePart') then
+                        local target = character:FindFirstChild(part.Name)
+                        if target and target:IsA('BasePart') and part.Name ~= 'HumanoidRootPart' then
+                            -- The real limbs animate independently.  Keep the visual rig in
+                            -- one neutral pose, attached only to the upright root part.
+                            -- Scale only the mesh size.  Scaling offsets can put a visual body
+                            -- beneath the floor when the root is close to the ground.
+                            local offset = CFrame.new(uprightRoot:ToObjectSpace(target.CFrame).Position)
+                            part.CFrame = part.Name == 'Head' and target.CFrame or uprightRoot * offset
+                            part.Size = part.Size * scale
+                            part.Anchored, part.CanCollide, part.CanTouch, part.CanQuery, part.Massless = true, false, false, false, true
+                            local mesh = part:FindFirstChildOfClass('SpecialMesh')
+                            if mesh then mesh.Scale = mesh.Scale * scale end
+                            State.visualParts[part] = part.Name == 'Head'
+                                and { target = target }
+                                or { root = root, offset = offset }
+                        else
+                            part:Destroy()
+                        end
+                    end
+                end
+
+                if generation ~= State.generation or not Toggles.World_CustomPlayer_Enable.Value then
+                    fake:Destroy()
+                    return
+                end
+            end)
+        end
+
+        Toggles.World_CustomPlayer_Enable:OnChanged(ApplyCustomPlayer)
+        Options.World_CustomPlayer_Scale:OnChanged(function()
+            if Toggles.World_CustomPlayer_Enable.Value then ApplyCustomPlayer() end
+        end)
+        Options.World_CustomPlayer_Model:OnChanged(function()
+            if Toggles.World_CustomPlayer_Enable.Value then ApplyCustomPlayer() end
+        end)
+        Library:GiveSignal(LocalPlayer.CharacterAdded:Connect(function()
+            if Toggles.World_CustomPlayer_Enable.Value then
+                task.delay(1, ApplyCustomPlayer)
+            end
+        end))
+        AddUnload(ClearCustomPlayer)
+    end
+
     local MovementTab = Window:AddTab('Movement')
     local Bhop = MovementTab:AddLeftGroupbox('Bhop')
     local SpeedHack = MovementTab:AddLeftGroupbox('SpeedHack')
