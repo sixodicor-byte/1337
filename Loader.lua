@@ -238,17 +238,16 @@ if not windowSuccess or not Window then
 end
 
 local MainTab = Window:AddTab('Key System')
-local KeyInfoTab = Window:AddTab('Key Info')
 
 local KeyGroupbox = MainTab:AddLeftGroupbox('Authentication')
-local InfoGroupbox = MainTab:AddRightGroupbox('Information')
+local InfoGroupbox = MainTab:AddRightGroupbox('Credits')
 
 InfoGroupbox:AddLabel('Join Discord for key', true)
 InfoGroupbox:AddLabel('1) Check time / Verify  2) Inject', true)
-InfoGroupbox:AddLabel('See Key Info tab for details', true)
+InfoGroupbox:AddLabel('Verify key before Inject', true)
 InfoGroupbox:AddLabel('Made by SkyQred and Petrosyanhvh')
 
-local KeyInfoBox = KeyInfoTab:AddLeftGroupbox('Key details')
+local KeyInfoBox = MainTab:AddRightGroupbox('Key info')
 local keyInfoKeyLabel = KeyInfoBox:AddLabel('Key: —', true)
 local keyInfoTypeLabel = KeyInfoBox:AddLabel('Type: —', true)
 local keyInfoDurationLabel = KeyInfoBox:AddLabel('Duration: —', true)
