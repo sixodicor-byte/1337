@@ -3,17 +3,48 @@ if getgenv().ValenokKeySystemUnload then
 end
 
 local CONSTANTS = {
+    -- После деплоя Worker вставь свой URL:
+    -- https://violity-key-api.<твой-сабдомен>.workers.dev/verify
+    API_URL = "https://violity.bdimka251212.workers.dev/verify",
+
+    -- Если задал API_SECRET в Cloudflare — впиши тот же сюда. Иначе оставь "".
+    API_SECRET = "",
+
     GITHUB_LIB_URL = "https://raw.githubusercontent.com/sixodicor-byte/1337/refs/heads/main/NewLib.lua",
     DISCORD_URL = "https://discord.gg/8GRGXy742u",
-    BETA_SCRIPT = "https://raw.githubusercontent.com/sixodicor-byte/1337/refs/heads/main/Beta_Main.lua",
-    MAIN_SCRIPT = "https://raw.githubusercontent.com/sixodicor-byte/1337/refs/heads/main/Main_Script.lua",
-    VALID_KEY = "7K9-F2W-M8B",
-    BETA_KEY = "8SR-N3S-WWE",
     KEY_FILE = "Key/key.json",
 }
 
 local Library
 local HttpService = game:GetService("HttpService")
+local RbxAnalyticsService = game:GetService("RbxAnalyticsService")
+
+local function trim(s)
+    return tostring(s or ""):gsub("^%s+", ""):gsub("%s+$", "")
+end
+
+local function getHWID()
+    if type(gethwid) == "function" then
+        return tostring(gethwid())
+    elseif type(get_hwid) == "function" then
+        return tostring(get_hwid())
+    end
+    return tostring(RbxAnalyticsService:GetClientId())
+end
+
+local function httpRequest(opts)
+    local req = (syn and syn.request)
+        or (http and http.request)
+        or http_request
+        or request
+        or (fluxus and fluxus.request)
+
+    if type(req) ~= "function" then
+        error("Executor does not support custom HTTP requests")
+    end
+
+    return req(opts)
+end
 
 local function safeReadKey()
     if type(isfile) ~= "function" or type(readfile) ~= "function" then
@@ -30,7 +61,7 @@ local function safeReadKey()
     end)
 
     if success and type(value) == "string" then
-        return value:gsub("^%s+", ""):gsub("%s+$", "")
+        return trim(value)
     end
 
     return ""
@@ -41,30 +72,45 @@ local function safeSaveKey(key)
         return false
     end
 
-    local success = pcall(function()
+    return pcall(function()
         if type(makefolder) == "function" and (type(isfolder) ~= "function" or not isfolder("Key")) then
             makefolder("Key")
         end
-
         writefile(CONSTANTS.KEY_FILE, HttpService:JSONEncode({ key = key }))
     end)
-
-    return success
 end
 
-local savedKey = safeReadKey()
-if savedKey ~= CONSTANTS.VALID_KEY and savedKey ~= CONSTANTS.BETA_KEY then
-    savedKey = ""
-end
+local function verifyWithApi(key, hwid)
+    local headers = {
+        ["Content-Type"] = "application/json",
+    }
+    if CONSTANTS.API_SECRET ~= "" then
+        headers["X-Api-Secret"] = CONSTANTS.API_SECRET
+    end
 
-local function getScriptUrlForKey(key)
-    if key == CONSTANTS.BETA_KEY then
-        return CONSTANTS.BETA_SCRIPT, "Beta"
+    local res = httpRequest({
+        Url = CONSTANTS.API_URL,
+        Method = "POST",
+        Headers = headers,
+        Body = HttpService:JSONEncode({
+            key = key,
+            hwid = hwid,
+        }),
+    })
+
+    local status = tonumber(res.StatusCode or res.Status or res.status_code or 0) or 0
+    local body = res.Body or res.body or ""
+
+    local decoded
+    local ok = pcall(function()
+        decoded = HttpService:JSONDecode(body)
+    end)
+
+    if not ok or type(decoded) ~= "table" then
+        error("Bad API response (" .. tostring(status) .. "): " .. tostring(body))
     end
-    if key == CONSTANTS.VALID_KEY then
-        return CONSTANTS.MAIN_SCRIPT, "Main"
-    end
-    return nil, nil
+
+    return decoded, status
 end
 
 pcall(function()
@@ -101,8 +147,7 @@ InfoGroupbox:AddLabel('Join Discord for key', true)
 InfoGroupbox:AddLabel('Click "Get key" to copy the Discord link to clipboard.')
 InfoGroupbox:AddLabel('Made by SkyQred and Petrosyanhvh')
 
-
-
+local savedKey = safeReadKey()
 
 local keyInput = KeyGroupbox:AddInput('KeyInput', {
     Text = 'Enter key',
@@ -111,21 +156,28 @@ local keyInput = KeyGroupbox:AddInput('KeyInput', {
     Finished = false,
 })
 
-local statusLabel = KeyGroupbox:AddLabel('Status: Waiting for key...')
+local statusLabel = KeyGroupbox:AddLabel('Waiting for key...', true)
 local isLoading = false
+
+local function setInfo(text)
+    if statusLabel and statusLabel.SetText then
+        statusLabel:SetText(tostring(text or ""))
+    end
+end
+
+local function setError(text)
+    if statusLabel and statusLabel.SetText then
+        statusLabel:SetText("Error: " .. tostring(text or "Unknown error"))
+    end
+end
 
 KeyGroupbox:AddButton({
     Text = 'Get key',
     Func = function()
-        if type(setclipboard) == "function" then
-            local success = pcall(setclipboard, CONSTANTS.DISCORD_URL)
-            if success then
-                statusLabel.Text = 'Status: Link copied to clipboard!'
-            else
-                statusLabel.Text = 'Status: Copy this link: ' .. CONSTANTS.DISCORD_URL
-            end
+        if type(setclipboard) == "function" and pcall(setclipboard, CONSTANTS.DISCORD_URL) then
+            setInfo('Link copied to clipboard')
         else
-            statusLabel.Text = 'Status: Copy this link: ' .. CONSTANTS.DISCORD_URL
+            setError('No link')
         end
     end,
 })
@@ -139,48 +191,80 @@ KeyGroupbox:AddButton({
 
         local enteredKey = keyInput and keyInput.Value
         if enteredKey == nil then
-            statusLabel.Text = 'Status: Unable to read key input.'
+            setError('Unable to read key input')
             return
         end
 
-        local trimmed = tostring(enteredKey):gsub("^%s+", ""):gsub("%s+$", "")
-        local scriptUrl, scriptName = getScriptUrlForKey(trimmed)
-
-        if scriptUrl then
-            isLoading = true
-            safeSaveKey(trimmed)
-            statusLabel.Text = 'Status: Key verified! Loading ' .. scriptName .. '...'
-
-            -- Полностью и корректно выгружаем интерфейс кей-системы
-            if Library then
-                pcall(function()
-                    Library:Unload()
-                end)
-            end
-
-            task.wait(0.5)
-
-            -- Безопасный запуск скрипта по ключу
-            local success, err = pcall(function()
-                local source = game:HttpGet(scriptUrl)
-                local loader = loadstring(source)
-                if type(loader) ~= "function" then
-                    error(scriptName .. " script did not return executable code")
-                end
-                loader()
-            end)
-
-            if not success then
-                warn("Violity Loader Error: " .. tostring(err))
-            end
-        else
-            statusLabel.Text = 'Status: Invalid key!'
+        local trimmed = trim(enteredKey)
+        if trimmed == "" then
+            setError('Enter a key first')
+            return
         end
+
+        if CONSTANTS.API_URL:find("YOUR_SUBDOMAIN", 1, true) then
+            setError('API URL is not set')
+            return
+        end
+
+        isLoading = true
+        setInfo('Loading...')
+
+        local hwid = getHWID()
+        local ok, result = pcall(verifyWithApi, trimmed, hwid)
+
+        if not ok then
+            isLoading = false
+            setError(tostring(result))
+            warn("Violity Loader Error: " .. tostring(result))
+            return
+        end
+
+        if not result.ok then
+            isLoading = false
+            setError(tostring(result.error or "Invalid key"))
+            return
+        end
+
+        if type(result.script) ~= "string" or result.script == "" then
+            isLoading = false
+            setError('Empty script from API')
+            return
+        end
+
+        safeSaveKey(trimmed)
+        setInfo('Success')
+
+        task.wait(0.8)
+
+        if Library then
+            pcall(function()
+                Library:Unload()
+            end)
+        end
+
+        task.wait(0.2)
+
+        local runOk, runErr = pcall(function()
+            local chunk = loadstring(result.script)
+            if type(chunk) ~= "function" then
+                error("Script did not return executable code")
+            end
+            chunk()
+        end)
+
+        if not runOk then
+            warn("Violity Loader Error: " .. tostring(runErr))
+            setError(tostring(runErr))
+        end
+
+        isLoading = false
     end,
 })
 
 getgenv().ValenokKeySystemUnload = function()
     pcall(function()
-        if Library then Library:Unload() end
+        if Library then
+            Library:Unload()
+        end
     end)
 end
