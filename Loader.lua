@@ -3,8 +3,12 @@ if getgenv().ValenokKeySystemUnload then
 end
 
 local CONSTANTS = {
-
+    -- После деплоя Worker вставь свой URL:
+    -- https://violity-key-api.<твой-сабдомен>.workers.dev/verify
     API_URL = "https://violity.bdimka251212.workers.dev/verify",
+    TIME_URL = "https://violity.bdimka251212.workers.dev/time",
+
+    -- Если задал API_SECRET в Cloudflare — впиши тот же сюда. Иначе оставь "".
     API_SECRET = "",
 
     GITHUB_LIB_URL = "https://raw.githubusercontent.com/sixodicor-byte/1337/refs/heads/main/NewLib.lua",
@@ -77,6 +81,43 @@ local function safeSaveKey(key)
     end)
 end
 
+local function mapApiError(err, status)
+    local msg = trim(err)
+    if msg == "" then
+        msg = "Unknown error"
+    end
+
+    local lower = msg:lower()
+    if lower:find("expired", 1, true) or msg:find("не действителен", 1, true) or msg:find("истёк", 1, true) then
+        return "Ключ больше не действителен (истёк срок)"
+    end
+    if lower:find("banned", 1, true) or msg:find("заблокирован", 1, true) then
+        if lower:find("hwid", 1, true) or msg:find("HWID", 1, true) then
+            return "Ваш HWID заблокирован"
+        end
+        return "Ключ заблокирован"
+    end
+    if lower:find("invalid key", 1, true) or msg:find("Неверный ключ", 1, true) then
+        return "Неверный ключ"
+    end
+    if lower:find("another key", 1, true) or msg:find("другому ключу", 1, true) then
+        return "Ваш HWID привязан к другому ключу"
+    end
+    if lower:find("another device", 1, true) or msg:find("другом устройстве", 1, true) then
+        return "Этот ключ уже активирован на другом устройстве"
+    end
+    if lower:find("unauthorized", 1, true) then
+        return "Нет доступа (API secret)"
+    end
+    if status == 404 then
+        return "API не найден (проверь URL)"
+    end
+    if status == 500 then
+        return "Ошибка сервера: " .. msg
+    end
+    return msg
+end
+
 local function verifyWithApi(key, hwid)
     local headers = {
         ["Content-Type"] = "application/json",
@@ -104,10 +145,70 @@ local function verifyWithApi(key, hwid)
     end)
 
     if not ok or type(decoded) ~= "table" then
-        error("Bad API response (" .. tostring(status) .. "): " .. tostring(body))
+        error("Плохой ответ API (" .. tostring(status) .. ")")
     end
 
     return decoded, status
+end
+
+local function checkKeyTimeWithApi(key)
+    local headers = {
+        ["Content-Type"] = "application/json",
+    }
+    if CONSTANTS.API_SECRET ~= "" then
+        headers["X-Api-Secret"] = CONSTANTS.API_SECRET
+    end
+
+    local res = httpRequest({
+        Url = CONSTANTS.TIME_URL,
+        Method = "POST",
+        Headers = headers,
+        Body = HttpService:JSONEncode({
+            key = key,
+        }),
+    })
+
+    local status = tonumber(res.StatusCode or res.Status or res.status_code or 0) or 0
+    local body = res.Body or res.body or ""
+
+    local decoded
+    local ok = pcall(function()
+        decoded = HttpService:JSONDecode(body)
+    end)
+
+    if not ok or type(decoded) ~= "table" then
+        error("Плохой ответ API (" .. tostring(status) .. ")")
+    end
+
+    return decoded, status
+end
+
+local function formatTimeLeftLocal(expiresAt, fallbackText)
+    local exp = tonumber(expiresAt)
+    if not exp then
+        return fallbackText or "lifetime"
+    end
+
+    local left = math.floor(exp - os.time())
+    if left <= 0 then
+        return "истёк"
+    end
+
+    local days = math.floor(left / 86400)
+    local hours = math.floor((left % 86400) / 3600)
+    local mins = math.floor((left % 3600) / 60)
+    local secs = left % 60
+
+    if days > 0 then
+        return ("%dд %dч"):format(days, hours)
+    end
+    if hours > 0 then
+        return ("%dч %dм"):format(hours, mins)
+    end
+    if mins > 0 then
+        return ("%dм %dс"):format(mins, secs)
+    end
+    return ("%dс"):format(math.max(1, secs))
 end
 
 pcall(function()
@@ -137,12 +238,23 @@ if not windowSuccess or not Window then
 end
 
 local MainTab = Window:AddTab('Key System')
+local KeyInfoTab = Window:AddTab('Key Info')
+
 local KeyGroupbox = MainTab:AddLeftGroupbox('Authentication')
 local InfoGroupbox = MainTab:AddRightGroupbox('Information')
 
 InfoGroupbox:AddLabel('Join Discord for key', true)
-InfoGroupbox:AddLabel('Click "Get key" to copy the Discord link to clipboard.')
+InfoGroupbox:AddLabel('1) Check time / Verify  2) Inject', true)
+InfoGroupbox:AddLabel('See Key Info tab for details', true)
 InfoGroupbox:AddLabel('Made by SkyQred and Petrosyanhvh')
+
+local KeyInfoBox = KeyInfoTab:AddLeftGroupbox('Key details')
+local keyInfoKeyLabel = KeyInfoBox:AddLabel('Key: —', true)
+local keyInfoTypeLabel = KeyInfoBox:AddLabel('Type: —', true)
+local keyInfoDurationLabel = KeyInfoBox:AddLabel('Duration: —', true)
+local keyInfoTimeLabel = KeyInfoBox:AddLabel('Time left: —', true)
+local keyInfoActivatedLabel = KeyInfoBox:AddLabel('Activated: —', true)
+local keyInfoStatusLabel = KeyInfoBox:AddLabel('Status: waiting', true)
 
 local savedKey = safeReadKey()
 
@@ -154,17 +266,140 @@ local keyInput = KeyGroupbox:AddInput('KeyInput', {
 })
 
 local statusLabel = KeyGroupbox:AddLabel('Waiting for key...', true)
-local isLoading = false
+local isBusy = false
+local pendingScript = nil
+local pendingMeta = nil
+local lastKeyInfo = nil
+local timeLeftLoop = true
 
-local function setInfo(text)
-    if statusLabel and statusLabel.SetText then
-        statusLabel:SetText(tostring(text or ""))
+local function setLabel(label, text)
+    if label and label.SetText then
+        label:SetText(tostring(text or ""):gsub("\n", "<br/>"))
     end
 end
 
+local function setInfo(text)
+    setLabel(statusLabel, text)
+end
+
 local function setError(text)
-    if statusLabel and statusLabel.SetText then
-        statusLabel:SetText("Error: " .. tostring(text or "Unknown error"))
+    setLabel(statusLabel, "Error: " .. tostring(text or "Unknown error"))
+    setLabel(keyInfoStatusLabel, "Status: error")
+end
+
+local function isExpiredMeta(meta)
+    if type(meta) ~= "table" then
+        return false
+    end
+    local exp = tonumber(meta.expiresAt)
+    if not exp then
+        return false
+    end
+    return (exp - os.time()) <= 0
+end
+
+local function resolveTimeLeftText(meta)
+    if type(meta) ~= "table" then
+        return "—"
+    end
+    if isExpiredMeta(meta) or meta.expired then
+        return "Expired"
+    end
+    if meta.activated == false then
+        return meta.timeLeftText or "не активирован"
+    end
+    if meta.expiresAt then
+        local text = formatTimeLeftLocal(meta.expiresAt, meta.timeLeftText)
+        if text == "истёк" then
+            return "Expired"
+        end
+        return text
+    end
+    return meta.timeLeftText or "lifetime"
+end
+
+local function updateKeyInfoPanel(meta, statusText)
+    lastKeyInfo = type(meta) == "table" and meta or nil
+
+    if type(meta) ~= "table" then
+        setLabel(keyInfoKeyLabel, "Key: —")
+        setLabel(keyInfoTypeLabel, "Type: —")
+        setLabel(keyInfoDurationLabel, "Duration: —")
+        setLabel(keyInfoTimeLabel, "Time left: —")
+        setLabel(keyInfoActivatedLabel, "Activated: —")
+        setLabel(keyInfoStatusLabel, "Status: " .. tostring(statusText or "waiting"))
+        return
+    end
+
+    local expired = isExpiredMeta(meta) or meta.expired
+    local activatedText
+    if expired then
+        activatedText = "Yes"
+    elseif meta.activated == false then
+        activatedText = "No"
+    elseif meta.activated == true or meta.expiresAt then
+        activatedText = "Yes"
+    else
+        activatedText = "—"
+    end
+
+    setLabel(keyInfoKeyLabel, "Key: " .. tostring(meta.key or "—"))
+    setLabel(keyInfoTypeLabel, "Type: " .. tostring(meta.type or "—"))
+    setLabel(keyInfoDurationLabel, "Duration: " .. tostring(meta.duration or "—"))
+    setLabel(keyInfoTimeLabel, "Time left: " .. resolveTimeLeftText(meta))
+    setLabel(keyInfoActivatedLabel, "Activated: " .. activatedText)
+    setLabel(
+        keyInfoStatusLabel,
+        "Status: " .. tostring(statusText or (expired and "Expired" or "ok"))
+    )
+end
+
+local function updateInfoPanel()
+    if type(pendingMeta) ~= "table" then
+        updateKeyInfoPanel(nil, "waiting")
+        return
+    end
+    updateKeyInfoPanel(pendingMeta, "verified — press Inject")
+end
+
+local function runInject()
+    if isBusy then
+        return
+    end
+    if type(pendingScript) ~= "string" or pendingScript == "" then
+        setError("Сначала нажми Verify key")
+        return
+    end
+
+    isBusy = true
+    setInfo("Injecting...")
+    updateKeyInfoPanel(pendingMeta or lastKeyInfo, "injecting")
+
+    local scriptSource = pendingScript
+    pendingScript = nil
+
+    task.wait(0.2)
+
+    if Library then
+        pcall(function()
+            Library:Unload()
+        end)
+    end
+
+    task.wait(0.2)
+
+    local runOk, runErr = pcall(function()
+        local chunk = loadstring(scriptSource)
+        if type(chunk) ~= "function" then
+            error("Script did not return executable code")
+        end
+        chunk()
+    end)
+
+    if not runOk then
+        warn("Violity Loader Error: " .. tostring(runErr))
+        setError(tostring(runErr))
+        isBusy = false
     end
 end
 
@@ -172,9 +407,9 @@ KeyGroupbox:AddButton({
     Text = 'Get key',
     Func = function()
         if type(setclipboard) == "function" and pcall(setclipboard, CONSTANTS.DISCORD_URL) then
-            setInfo('Link copied to clipboard')
+            setInfo('Discord link copied')
         else
-            setError('No link')
+            setError('Не удалось скопировать ссылку')
         end
     end,
 })
@@ -182,83 +417,209 @@ KeyGroupbox:AddButton({
 KeyGroupbox:AddButton({
     Text = 'Verify key',
     Func = function()
-        if isLoading then
+        if isBusy then
             return
         end
 
         local enteredKey = keyInput and keyInput.Value
         if enteredKey == nil then
-            setError('Unable to read key input')
+            setError('Не удалось прочитать ключ')
             return
         end
 
         local trimmed = trim(enteredKey)
         if trimmed == "" then
-            setError('Enter a key first')
+            setError('Сначала введи ключ')
             return
         end
 
         if CONSTANTS.API_URL:find("YOUR_SUBDOMAIN", 1, true) then
-            setError('API URL is not set')
+            setError('API URL не задан')
             return
         end
 
-        isLoading = true
-        setInfo('Loading...')
+        isBusy = true
+        pendingScript = nil
+        pendingMeta = nil
+        setInfo('Verifying...')
+        updateKeyInfoPanel({ key = trimmed }, "verifying")
 
         local hwid = getHWID()
-        local ok, result = pcall(verifyWithApi, trimmed, hwid)
+        local callOk, decoded, httpStatus = pcall(verifyWithApi, trimmed, hwid)
 
-        if not ok then
-            isLoading = false
-            setError(tostring(result))
-            warn("Violity Loader Error: " .. tostring(result))
+        if not callOk then
+            isBusy = false
+            setError(tostring(decoded))
+            warn("Violity Loader Error: " .. tostring(decoded))
             return
         end
 
-        if not result.ok then
-            isLoading = false
-            setError(tostring(result.error or "Invalid key"))
+        if type(decoded) ~= "table" then
+            isBusy = false
+            setError("Плохой ответ API")
             return
         end
 
-        if type(result.script) ~= "string" or result.script == "" then
-            isLoading = false
-            setError('Empty script from API')
+        if not decoded.ok then
+            isBusy = false
+            local errText = tostring(decoded.error or "")
+            local lower = errText:lower()
+            local info = {
+                key = trimmed,
+                type = decoded.type,
+                duration = decoded.duration,
+                expiresAt = decoded.expiresAt,
+                timeLeftText = decoded.timeLeftText,
+                activated = decoded.activated,
+                expired = false,
+            }
+            if lower:find("expired", 1, true)
+                or errText:find("не действителен", 1, true)
+                or errText:find("истёк", 1, true)
+            then
+                info.expired = true
+                info.timeLeftText = "Expired"
+                updateKeyInfoPanel(info, "Expired")
+                setError("Expired")
+            else
+                updateKeyInfoPanel(info, "error")
+                setError(mapApiError(decoded.error, httpStatus))
+            end
+            return
+        end
+
+        if type(decoded.script) ~= "string" or decoded.script == "" then
+            isBusy = false
+            setError("Пустой скрипт от API")
             return
         end
 
         safeSaveKey(trimmed)
-        setInfo('Success')
+        pendingScript = decoded.script
+        pendingMeta = {
+            key = trimmed,
+            type = decoded.type or "Unknown",
+            duration = decoded.duration or "lifetime",
+            expiresAt = decoded.expiresAt,
+            timeLeftText = decoded.timeLeftText or "lifetime",
+            activated = decoded.expiresAt ~= nil or decoded.duration == "lifetime" or decoded.duration == nil,
+        }
 
-        task.wait(0.8)
-
-        if Library then
-            pcall(function()
-                Library:Unload()
-            end)
-        end
-
-        task.wait(0.2)
-
-        local runOk, runErr = pcall(function()
-            local chunk = loadstring(result.script)
-            if type(chunk) ~= "function" then
-                error("Script did not return executable code")
-            end
-            chunk()
-        end)
-
-        if not runOk then
-            warn("Violity Loader Error: " .. tostring(runErr))
-            setError(tostring(runErr))
-        end
-
-        isLoading = false
+        updateInfoPanel()
+        setInfo("Key verified. Press Inject")
+        isBusy = false
     end,
 })
 
+KeyGroupbox:AddButton({
+    Text = 'Inject',
+    Func = runInject,
+})
+
+KeyGroupbox:AddButton({
+    Text = 'Check time left',
+    Func = function()
+        if isBusy then
+            return
+        end
+
+        local enteredKey = keyInput and keyInput.Value
+        if enteredKey == nil then
+            setError('Не удалось прочитать ключ')
+            return
+        end
+
+        local trimmed = trim(enteredKey)
+        if trimmed == "" then
+            setError('Сначала введи ключ')
+            return
+        end
+
+        isBusy = true
+        setInfo('Checking time...')
+        updateKeyInfoPanel({ key = trimmed }, "checking time")
+
+        local callOk, decoded, httpStatus = pcall(checkKeyTimeWithApi, trimmed)
+
+        if not callOk then
+            isBusy = false
+            setError(tostring(decoded))
+            return
+        end
+
+        if type(decoded) ~= "table" then
+            isBusy = false
+            setError("Плохой ответ API")
+            return
+        end
+
+        local info = {
+            key = trimmed,
+            type = decoded.type,
+            duration = decoded.duration,
+            expiresAt = decoded.expiresAt,
+            timeLeftText = decoded.timeLeftText,
+            activated = decoded.activated,
+            expired = false,
+        }
+
+        if not decoded.ok then
+            isBusy = false
+            local errText = tostring(decoded.error or "")
+            local lower = errText:lower()
+            if lower:find("expired", 1, true)
+                or errText:find("не действителен", 1, true)
+                or errText:find("истёк", 1, true)
+                or decoded.timeLeftText == "истёк"
+            then
+                info.expired = true
+                info.timeLeftText = "Expired"
+                updateKeyInfoPanel(info, "Expired")
+                setError("Expired")
+            else
+                updateKeyInfoPanel(info, "error")
+                setError(mapApiError(decoded.error, httpStatus))
+            end
+            return
+        end
+
+        if info.activated == false then
+            info.timeLeftText = decoded.timeLeftText or "не активирован"
+        elseif info.expiresAt and (tonumber(info.expiresAt) - os.time()) <= 0 then
+            info.expired = true
+            info.timeLeftText = "Expired"
+        end
+
+        updateKeyInfoPanel(info, info.expired and "Expired" or (info.activated and "activated" or "not activated"))
+        setInfo("Time left: " .. resolveTimeLeftText(info))
+        isBusy = false
+    end,
+})
+
+task.spawn(function()
+    while timeLeftLoop do
+        local meta = pendingMeta or lastKeyInfo
+        if type(meta) == "table" and meta.expiresAt and not meta.expired then
+            local left = tonumber(meta.expiresAt) - os.time()
+            if left <= 0 then
+                pendingScript = nil
+                meta.expired = true
+                meta.timeLeftText = "Expired"
+                if pendingMeta == meta then
+                    pendingMeta = nil
+                end
+                updateKeyInfoPanel(meta, "Expired")
+                setError("Expired")
+            else
+                setLabel(keyInfoTimeLabel, "Time left: " .. formatTimeLeftLocal(meta.expiresAt, meta.timeLeftText))
+            end
+        end
+        task.wait(1)
+    end
+end)
+
 getgenv().ValenokKeySystemUnload = function()
+    timeLeftLoop = false
     pcall(function()
         if Library then
             Library:Unload()
