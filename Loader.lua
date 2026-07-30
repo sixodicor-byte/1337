@@ -3,11 +3,8 @@ if getgenv().ValenokKeySystemUnload then
 end
 
 local CONSTANTS = {
-    -- После деплоя Worker вставь свой URL:
-    -- https://violity-key-api.<твой-сабдомен>.workers.dev/verify
-    API_URL = "https://violity.bdimka251212.workers.dev/verify",
 
-    -- Если задал API_SECRET в Cloudflare — впиши тот же сюда. Иначе оставь "".
+    API_URL = "https://violity.bdimka251212.workers.dev/verify",
     API_SECRET = "",
 
     GITHUB_LIB_URL = "https://raw.githubusercontent.com/sixodicor-byte/1337/refs/heads/main/NewLib.lua",
