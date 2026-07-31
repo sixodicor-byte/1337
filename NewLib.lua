@@ -1157,10 +1157,11 @@ do
 
                 local Key = KeyPicker.Value;
 
-                if Key == 'MB1' or Key == 'MB2' or Key == 'MB3' then
-                    return Key == 'MB1' and InputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
-                        or Key == 'MB2' and InputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
-                        or Key == 'MB3' and InputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton3);
+                if Key == 'MB1' or Key == 'MB2' or Key == 'MB3'
+                    or Key == 'MB4' or Key == 'MB5' then
+                    local ButtonName = 'MouseButton' .. Key:sub(3)
+                    local ButtonType = Enum.UserInputType[ButtonName]
+                    return ButtonType and InputService:IsMouseButtonPressed(ButtonType) or false;
                 else
                     local KeyCode = Enum.KeyCode[KeyPicker.Value];
                     if KeyCode then
@@ -1243,9 +1244,20 @@ do
                         Key = 'MB1';
                     elseif Input.UserInputType == Enum.UserInputType.MouseButton2 then
                         Key = 'MB2';
-                    elseif Input.UserInputType == Enum.UserInputType.MouseButton3 then
-                        Key = 'MB3';
+                    elseif tostring(Input.UserInputType):match('MouseButton[1-5]$') then
+                        Key = 'MB' .. tostring(Input.UserInputType):match('MouseButton([1-5])$');
+                    elseif Input.KeyCode and tostring(Input.KeyCode.Name) ~= 'Unknown' then
+                        -- Some executors report F13+ with a non-Keyboard UserInputType.
+                        Key = Input.KeyCode.Name;
                     end;
+
+                    if not Key then
+                        Break = true;
+                        Picking = false;
+                        DisplayLabel.Text = 'None';
+                        Event:Disconnect();
+                        return;
+                    end
 
                     Break = true;
                     Picking = false;
@@ -1270,10 +1282,11 @@ do
                 if KeyPicker.Mode == 'Toggle' then
                     local Key = KeyPicker.Value;
 
-                    if Key == 'MB1' or Key == 'MB2' or Key == 'MB3' then
-                        if Key == 'MB1' and Input.UserInputType == Enum.UserInputType.MouseButton1
-                        or Key == 'MB2' and Input.UserInputType == Enum.UserInputType.MouseButton2
-                        or Key == 'MB3' and Input.UserInputType == Enum.UserInputType.MouseButton3 then
+                    if Key == 'MB1' or Key == 'MB2' or Key == 'MB3'
+                        or Key == 'MB4' or Key == 'MB5' then
+                        local ButtonName = 'MouseButton' .. Key:sub(3)
+                        local ButtonType = Enum.UserInputType[ButtonName]
+                        if ButtonType and Input.UserInputType == ButtonType then
                             KeyPicker.Toggled = not KeyPicker.Toggled
                             KeyPicker:DoClick()
                         end;
