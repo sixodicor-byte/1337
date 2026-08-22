@@ -85,7 +85,7 @@ local function GetTeamsString()
     end;
 
     table.sort(TeamList, function(str1, str2) return str1 < str2 end);
-
+    
     return TeamList;
 end;
 
@@ -588,7 +588,7 @@ do
         });
 
         local TransparencyBoxOuter, TransparencyBoxInner;
-
+        
         if Info.Transparency then 
             TransparencyBoxOuter = Library:Create('Frame', {
                 BorderColor3 = Color3.new(0, 0, 0);
@@ -1157,10 +1157,6 @@ do
 
                 local Key = KeyPicker.Value;
 
-                if Key == 'MB1' or Key == 'MB2' or Key == 'MB3' then
-                    return Key == 'MB1' and InputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
-                        or Key == 'MB2' and InputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
-                        or Key == 'MB3' and InputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton3);
                 if Key == 'MB1' or Key == 'MB2' or Key == 'MB3'
                     or Key == 'MB4' or Key == 'MB5' then
                     local ButtonName = 'MouseButton' .. Key:sub(3)
@@ -1248,8 +1244,6 @@ do
                         Key = 'MB1';
                     elseif Input.UserInputType == Enum.UserInputType.MouseButton2 then
                         Key = 'MB2';
-                    elseif Input.UserInputType == Enum.UserInputType.MouseButton3 then
-                        Key = 'MB3';
                     elseif tostring(Input.UserInputType):match('MouseButton[1-5]$') then
                         Key = 'MB' .. tostring(Input.UserInputType):match('MouseButton([1-5])$');
                     elseif Input.KeyCode and tostring(Input.KeyCode.Name) ~= 'Unknown' then
@@ -1288,10 +1282,6 @@ do
                 if KeyPicker.Mode == 'Toggle' then
                     local Key = KeyPicker.Value;
 
-                    if Key == 'MB1' or Key == 'MB2' or Key == 'MB3' then
-                        if Key == 'MB1' and Input.UserInputType == Enum.UserInputType.MouseButton1
-                        or Key == 'MB2' and Input.UserInputType == Enum.UserInputType.MouseButton2
-                        or Key == 'MB3' and Input.UserInputType == Enum.UserInputType.MouseButton3 then
                     if Key == 'MB1' or Key == 'MB2' or Key == 'MB3'
                         or Key == 'MB4' or Key == 'MB5' then
                         local ButtonName = 'MouseButton' .. Key:sub(3)
@@ -2605,7 +2595,7 @@ do
         local Depbox = {
             Dependencies = {};
         };
-
+        
         local Groupbox = self;
         local Container = Groupbox.Container;
 
