@@ -2000,8 +2000,29 @@ getgenv().Loaded = true
                 Cfg.Callback(Flags[Cfg.Flag])
             end
             
+            local SliderCal = nil
+
+            Items.Holder.MouseMoved:Connect(function(x, y)
+                local gl = InputService:GetMouseLocation()
+                SliderCal = {gl = vec2(gl.X, gl.Y), gui = vec2(x, y)}
+            end)
+
+            local function SliderMouseGuiX()
+                if not SliderCal then
+                    return nil
+                end
+
+                local gl = InputService:GetMouseLocation()
+                return (SliderCal.gui + (vec2(gl.X, gl.Y) - SliderCal.gl)).X
+            end
+
             Items.Holder.MouseButton1Down:Connect(function()
-                Cfg.Dragging = true 
+                Cfg.Dragging = true
+
+                local mx = SliderMouseGuiX()
+                if mx then
+                    Cfg.Set((mx - Items.Holder.AbsolutePosition.X) / Items.Holder.AbsoluteSize.X * (Cfg.Max - Cfg.Min) + Cfg.Min)
+                end
             end)
 
             Items.Minus.MouseButton1Down:Connect(function()
@@ -2017,10 +2038,11 @@ getgenv().Loaded = true
             end)
 
             Library:Connection(InputService.InputChanged, function(input)
-                if Cfg.Dragging and input.UserInputType == Enum.UserInputType.MouseMovement then 
-                    local Size = (input.Position.X - Items.Holder.AbsolutePosition.X) / Items.Holder.AbsoluteSize.X
-                    local Value = ((Cfg.Max - Cfg.Min) * Size) + Cfg.Min
-                    Cfg.Set(Value)
+                if Cfg.Dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+                    local mx = SliderMouseGuiX()
+                    if mx then
+                        Cfg.Set((mx - Items.Holder.AbsolutePosition.X) / Items.Holder.AbsoluteSize.X * (Cfg.Max - Cfg.Min) + Cfg.Min)
+                    end
                 end
             end)
 
