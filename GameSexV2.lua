@@ -647,18 +647,21 @@ getgenv().Loaded = true
                         Parent = Items.HuePicker;
                         LineJoinMode = Enum.LineJoinMode.Miter
                     });
-                
+
+                Items.Colorpicker.ZIndex = 10000
+
+                for _,obj in Items.Colorpicker:GetDescendants() do
+                    if obj:IsA("GuiObject") then
+                        obj.ZIndex += 10000
+                    end
+                end
+
             end;
             
             function Cfg.SetVisible(bool)
                 Items.Colorpicker.Visible = bool
                 Items.Colorpicker.Parent = bool and Library.Items or Library.Other
-
-                local pos = Items.ColorpickerObject.AbsolutePosition
-                local x = math.clamp(pos.X, 0, Camera.ViewportSize.X - 190)
-                local y = math.clamp(pos.Y + Items.ColorpickerObject.AbsoluteSize.Y + 4, 0, Camera.ViewportSize.Y - 185)
-
-                Items.Colorpicker.Position = dim2(0, x, 0, y)
+                Items.Colorpicker.Position = dim2(0, Items.ColorpickerObject.AbsolutePosition.X, 0, Items.ColorpickerObject.AbsolutePosition.Y + 74)
             end
             
             function Cfg.Set(color, alpha)
@@ -2671,6 +2674,14 @@ getgenv().Loaded = true
 
                             Cfg.Set(mode)
                         end)
+                    end
+
+                    Items.KeybindOutline.ZIndex = 10000
+
+                    for _,obj in Items.KeybindOutline:GetDescendants() do
+                        if obj:IsA("GuiObject") then
+                            obj.ZIndex += 10000
+                        end
                     end
                 
             end 
