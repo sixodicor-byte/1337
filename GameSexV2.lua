@@ -653,7 +653,12 @@ getgenv().Loaded = true
             function Cfg.SetVisible(bool)
                 Items.Colorpicker.Visible = bool
                 Items.Colorpicker.Parent = bool and Library.Items or Library.Other
-                Items.Colorpicker.Position = dim2(0, Items.ColorpickerObject.AbsolutePosition.X, 0, Items.ColorpickerObject.AbsolutePosition.Y + 74)
+
+                local pos = Items.ColorpickerObject.AbsolutePosition
+                local x = math.clamp(pos.X, 0, Camera.ViewportSize.X - 190)
+                local y = math.clamp(pos.Y + Items.ColorpickerObject.AbsoluteSize.Y + 4, 0, Camera.ViewportSize.Y - 185)
+
+                Items.Colorpicker.Position = dim2(0, x, 0, y)
             end
             
             function Cfg.Set(color, alpha)
