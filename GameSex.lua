@@ -695,7 +695,9 @@ getgenv().Loaded = true
                 local Boost = 5000
                 Items.Colorpicker.ZIndex = Boost
                 for _, obj in Items.Colorpicker:GetDescendants() do
-                    obj.ZIndex += Boost
+                    if obj:IsA("GuiObject") then
+                        obj.ZIndex += Boost
+                    end
                 end
             end
 
