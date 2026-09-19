@@ -1144,10 +1144,20 @@ getgenv().Loaded = true
                 
             end
 
-            do 
+            do
                 Library:Draggify(Items.Window)
                 Library:Resizify(Items.Window)
             end
+
+            Library:Connection(InputService.InputBegan, function(input, game_event)
+                if game_event then
+                    return
+                end
+
+                if input.KeyCode == Enum.KeyCode.RightShift or input.KeyCode == Enum.KeyCode.Insert then
+                    Cfg.ToggleMenu(not Items.Window.Visible)
+                end
+            end)
 
             function Cfg.ToggleMenu(bool)
                 if Cfg.Tweening then
