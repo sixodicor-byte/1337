@@ -1154,8 +1154,10 @@ getgenv().Loaded = true
                     return
                 end
 
-                if input.KeyCode == Enum.KeyCode.RightShift or input.KeyCode == Enum.KeyCode.Insert then
+                if input.KeyCode == Enum.KeyCode.Insert then
                     Cfg.ToggleMenu(not Items.Window.Visible)
+                elseif input.KeyCode == Enum.KeyCode.Delete then
+                    Cfg.ToggleMenu(false)
                 end
             end)
 
