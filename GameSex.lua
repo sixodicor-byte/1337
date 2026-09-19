@@ -2303,6 +2303,7 @@ getgenv().Loaded = true
                 Max = properties.Max or 100,
                 Intervals = properties.Decimal or 1,
                 Value = properties.Default or 10, 
+                Live = properties.Live == nil and true or properties.Live,
 
                 
                 Dragging = false,
@@ -2445,14 +2446,16 @@ getgenv().Loaded = true
                 });                                         
             end 
 
-            function Cfg.Set(value)
+            function Cfg.Set(value, fireCallback)
                 Cfg.Value = math.clamp(Library:Round(value, Cfg.Intervals), Cfg.Min, Cfg.Max)
 
                 Items.Accent.Size = dim2((Cfg.Value - Cfg.Min) / (Cfg.Max - Cfg.Min), Cfg.Value == Cfg.Min and 0 or -2, 1, -2)
                 Items.Value.Text = tostring(Cfg.Value) .. Cfg.Suffix
 
                 Flags[Cfg.Flag] = Cfg.Value
-                Cfg.Callback(Flags[Cfg.Flag])
+                if fireCallback ~= false then
+                    Cfg.Callback(Flags[Cfg.Flag])
+                end
             end
             
             Items.Holder.MouseButton1Down:Connect(function()
@@ -2475,13 +2478,18 @@ getgenv().Loaded = true
                 if Cfg.Dragging and input.UserInputType == Enum.UserInputType.MouseMovement then 
                     local Size = (input.Position.X - Items.Holder.AbsolutePosition.X) / Items.Holder.AbsoluteSize.X
                     local Value = ((Cfg.Max - Cfg.Min) * Size) + Cfg.Min
-                    Cfg.Set(Value)
+                    Cfg.Set(Value, Cfg.Live)
                 end
             end)
 
             Library:Connection(InputService.InputEnded, function(input)
                 if input.UserInputType == Enum.UserInputType.MouseButton1 then
-                    Cfg.Dragging = false
+                    if Cfg.Dragging then
+                        Cfg.Dragging = false
+                        if not Cfg.Live then
+                            Cfg.Callback(Flags[Cfg.Flag])
+                        end
+                    end
                 end 
             end)
 
