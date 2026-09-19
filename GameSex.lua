@@ -1173,7 +1173,23 @@ getgenv().Loaded = true
                     if Items.MenuBlocker then Items.MenuBlocker.Visible = bool end
                 end)
             end
-            
+
+            -- The library owns the menu visibility now: open on creation and bind a
+            -- default toggle key, so callers don't have to call ToggleMenu themselves.
+            Library:Connection(InputService.InputBegan, function(input, gameEvent)
+                if gameEvent then
+                    return
+                end
+                if InputService:GetFocusedTextBox() then
+                    return
+                end
+                if input.KeyCode == Enum.KeyCode.Insert or input.KeyCode == Enum.KeyCode.RightShift then
+                    Cfg.ToggleMenu(not Items.Window.Visible)
+                end
+            end)
+
+            Cfg.ToggleMenu(true)
+
             return setmetatable(Cfg, Library)
         end 
 
