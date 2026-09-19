@@ -585,7 +585,7 @@ getgenv().Loaded = true
 
                     Library:Create( "UIGradient" , {
                         Rotation = 0;
-                        Transparency = numseq{numkey(0, 0), numkey(0.97, 1)};
+                        Transparency = numseq{numkey(0, 0), numkey(1, 1)};
                         Parent = Items.AlphaInline;
                         Color = rgbseq{rgbkey(0, rgb(255, 255, 255)), rgbkey(1, rgb(255, 255, 255))}
                     });
