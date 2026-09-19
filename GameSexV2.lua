@@ -570,7 +570,7 @@ getgenv().Loaded = true
                         Size = dim2(1, -20, 0, 12);
                         Selectable = false;
                         BorderSizePixel = 0;
-                        BackgroundColor3 = rgb(0, 0, 0)
+                        BackgroundColor3 = rgb(70, 70, 70)
                     });
 
                     Items.AlphaInline = Library:Create( "Frame" , {
@@ -581,6 +581,13 @@ getgenv().Loaded = true
                         Size = dim2(1, -2, 1, -2);
                         BorderSizePixel = 0;
                         BackgroundColor3 = rgb(0, 221, 255)
+                    });
+
+                    Library:Create( "UIGradient" , {
+                        Rotation = 0;
+                        Transparency = numseq{numkey(0, 0), numkey(0.97, 1)};
+                        Parent = Items.AlphaInline;
+                        Color = rgbseq{rgbkey(0, rgb(255, 255, 255)), rgbkey(1, rgb(255, 255, 255))}
                     });
                     
                     Items.AlphaPicker = Library:Create( "Frame" , {
