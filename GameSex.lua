@@ -3174,9 +3174,11 @@ getgenv().Loaded = true
                         PaddingLeft = dim(0, 5)
                     });
 
-                    for _,mode in {"Always", "Toggle", "Hold"} do 
+                    for index,mode in {"Always", "Toggle", "Hold"} do 
                         Items[mode].FontFace = Font.new("rbxasset://fonts/families/SourceSansPro.json", Enum.FontWeight.Regular, Enum.FontStyle.Normal)
                         Items[mode].BackgroundTransparency = 0;
+                        Items[mode].BackgroundColor3 = rgb(26, 26, 26)
+                        Items[mode].LayoutOrder = index
                         Items[mode].TextColor3 = rgb(205, 205, 205)
 
                         Items[mode].MouseButton1Click:Connect(function()
