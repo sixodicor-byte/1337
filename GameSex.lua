@@ -548,7 +548,6 @@ getgenv().Loaded = true
                         BorderColor3 = rgb(0, 0, 0);
                         Text = "";
                         AutoButtonColor = false;
-                        Rotation = 180;
                         Name = "\0";
                         Parent = Items.Inner;
                         Size = dim2(1, 0, 1, 0);
@@ -583,9 +582,48 @@ getgenv().Loaded = true
                         BorderColor3 = rgb(0, 0, 0);
                         Size = dim2(1, -2, 1, -2);
                         BorderSizePixel = 0;
-                        BackgroundColor3 = rgb(0, 221, 255)
+                        BackgroundColor3 = rgb(163, 163, 163)
                     });
-                    
+
+                    Items.AlphaChecker = Library:Create( "Frame" , {
+                        Parent = Items.AlphaInline;
+                        Name = "\0";
+                        Size = dim2(1, 0, 1, 0);
+                        ClipsDescendants = true;
+                        BorderSizePixel = 0;
+                        BackgroundColor3 = rgb(163, 163, 163)
+                    });
+
+                    do
+                        local Tiles = 30
+                        for row = 0, 1 do
+                            for col = 0, Tiles - 1 do
+                                Library:Create( "Frame" , {
+                                    Parent = Items.AlphaChecker;
+                                    Name = "\0";
+                                    Position = dim2(col / Tiles, 0, row / 2, 0);
+                                    Size = dim2(1 / Tiles, 0, 0.5, 0);
+                                    BorderSizePixel = 0;
+                                    BackgroundColor3 = (row + col) % 2 == 0 and rgb(200, 200, 200) or rgb(255, 255, 255)
+                                });
+                            end
+                        end
+                    end
+
+                    Items.AlphaOverlay = Library:Create( "Frame" , {
+                        Parent = Items.AlphaChecker;
+                        Name = "\0";
+                        Size = dim2(1, 0, 1, 0);
+                        BorderSizePixel = 0;
+                        ZIndex = 3;
+                        BackgroundColor3 = rgb(255, 0, 0)
+                    });
+
+                    Library:Create( "UIGradient" , {
+                        Parent = Items.AlphaOverlay;
+                        Transparency = numseq{numkey(0, 1), numkey(1, 0)}
+                    });
+
                     Items.AlphaPicker = Library:Create( "Frame" , {
                         BorderMode = Enum.BorderMode.Inset;
                         BorderColor3 = rgb(12, 12, 12);
@@ -595,6 +633,7 @@ getgenv().Loaded = true
                         Name = "\0";
                         Size = dim2(0, 2, 1, -2);
                         BorderSizePixel = 0;
+                        ZIndex = 4;
                         BackgroundColor3 = rgb(255, 255, 255)
                     });
                     
@@ -651,7 +690,15 @@ getgenv().Loaded = true
                     });
                 
             end;
-            
+
+            do
+                local Boost = 5000
+                Items.Colorpicker.ZIndex = Boost
+                for _, obj in Items.Colorpicker:GetDescendants() do
+                    obj.ZIndex += Boost
+                end
+            end
+
             function Cfg.SetVisible(bool)
                 Items.Colorpicker.Visible = bool
                 Items.Colorpicker.Parent = bool and Library.Items or Library.Other
@@ -678,7 +725,7 @@ getgenv().Loaded = true
                 Items.HuePicker.Position = dim2(0, 1, h, -1)
                 
                 Items.Inner.BackgroundColor3 = hsv(h, 1, 1)
-                Items.AlphaInline.BackgroundColor3 = hsv(h, 1, 1)
+                Items.AlphaOverlay.BackgroundColor3 = hsv(h, 1, 1)
                 Items.InnerObject.BackgroundColor3 = Color
                 Items.InnerObject.BackgroundTransparency = a
 
