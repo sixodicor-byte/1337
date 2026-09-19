@@ -4,11 +4,25 @@
 
 
 
-if getgenv().Loaded then 
-    getgenv().Library:Unload()
-end 
+if getgenv().Loaded and typeof(getgenv().Library) == "table" then
+    pcall(function()
+        getgenv().Library:Unload()
+    end)
 
-getgenv().Loaded = true 
+    pcall(function()
+        if getgenv().Library.Items then
+            getgenv().Library.Items:Destroy()
+        end
+        if getgenv().Library.Other then
+            getgenv().Library.Other:Destroy()
+        end
+        for _, connection in getgenv().Library.Connections or {} do
+            pcall(function() connection:Disconnect() end)
+        end
+    end)
+end
+
+getgenv().Loaded = true
 
 
     
