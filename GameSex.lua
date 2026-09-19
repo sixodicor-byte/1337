@@ -1509,6 +1509,8 @@ getgenv().Loaded = true
 
             -- Update loop
             local lastWatermarkUpdate = os.clock()
+            local lastKeybindUpdate = os.clock()
+            local lastFpsUpdate = os.clock()
             local frameCount = 0
             local currentFps = 60
             local currentPing = 0
@@ -1516,10 +1518,11 @@ getgenv().Loaded = true
             Library:Connection(RunService.RenderStepped, function()
                 frameCount = frameCount + 1
                 local now = os.clock()
-                if now - lastWatermarkUpdate >= 0.5 then
-                    currentFps = math.floor(frameCount / (now - lastWatermarkUpdate))
+
+                if now - lastFpsUpdate >= 0.5 then
+                    currentFps = math.floor(frameCount / (now - lastFpsUpdate))
                     frameCount = 0
-                    lastWatermarkUpdate = now
+                    lastFpsUpdate = now
 
                     pcall(function()
                         local item = Stats.Network.ServerStatsItem["Data Ping"]
@@ -1527,6 +1530,10 @@ getgenv().Loaded = true
                             currentPing = math.floor(item:GetValue())
                         end
                     end)
+                end
+
+                if now - lastKeybindUpdate >= 0.01 then
+                    lastKeybindUpdate = now
 
                     if (KeybindsWindow.Visible or Library.ShowKeybindList) and KeybindsContainer then
                         local activeFlags = {}
@@ -1577,6 +1584,10 @@ getgenv().Loaded = true
                             TweenService:Create(KeybindsWindow, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Size = dim2(0, maxWidth, 0, 0)}):Play()
                         end
                     end
+                end
+
+                if now - lastWatermarkUpdate >= 1 / 60 then
+                    lastWatermarkUpdate = now
 
                     if (WatermarkWindow.Visible or Library.ShowWatermark) and WatermarkText then
                         local parts = {}
