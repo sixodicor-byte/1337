@@ -1508,8 +1508,6 @@ getgenv().Loaded = true
 
             -- Update loop
             local lastWatermarkUpdate = os.clock()
-            local lastKeybindUpdate = os.clock()
-            local lastFpsUpdate = os.clock()
             local frameCount = 0
             local currentFps = 60
             local currentPing = 0
@@ -1517,11 +1515,10 @@ getgenv().Loaded = true
             Library:Connection(RunService.RenderStepped, function()
                 frameCount = frameCount + 1
                 local now = os.clock()
-
-                if now - lastFpsUpdate >= 0.5 then
-                    currentFps = math.floor(frameCount / (now - lastFpsUpdate))
+                if now - lastWatermarkUpdate >= 0.5 then
+                    currentFps = math.floor(frameCount / (now - lastWatermarkUpdate))
                     frameCount = 0
-                    lastFpsUpdate = now
+                    lastWatermarkUpdate = now
 
                     pcall(function()
                         local item = Stats.Network.ServerStatsItem["Data Ping"]
@@ -1529,10 +1526,6 @@ getgenv().Loaded = true
                             currentPing = math.floor(item:GetValue())
                         end
                     end)
-                end
-
-                if now - lastKeybindUpdate >= 0.01 then
-                    lastKeybindUpdate = now
 
                     if (KeybindsWindow.Visible or Library.ShowKeybindList) and KeybindsContainer then
                         local activeFlags = {}
@@ -1583,10 +1576,6 @@ getgenv().Loaded = true
                             TweenService:Create(KeybindsWindow, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Size = dim2(0, maxWidth, 0, 0)}):Play()
                         end
                     end
-                end
-
-                if now - lastWatermarkUpdate >= 1 / 60 then
-                    lastWatermarkUpdate = now
 
                     if (WatermarkWindow.Visible or Library.ShowWatermark) and WatermarkText then
                         local parts = {}
@@ -2582,7 +2571,6 @@ getgenv().Loaded = true
                         Position = dim2(0, 1, 0, 1);
                         BorderColor3 = rgb(0, 0, 0);
                         Size = dim2(1, -2, 1, -2);
-                        ClipsDescendants = true;
                         BorderSizePixel = 0;
                         BackgroundColor3 = rgb(255, 255, 255)
                     });
@@ -2600,10 +2588,10 @@ getgenv().Loaded = true
                         Text = "-";
                         Parent = Items.Accent;
                         Name = "\0";
+                        AutomaticSize = Enum.AutomaticSize.XY;
                         Size = dim2(1, 0, 1, 0);
                         BackgroundTransparency = 1;
                         TextXAlignment = Enum.TextXAlignment.Left;
-                        TextTruncate = Enum.TextTruncate.AtEnd;
                         BorderSizePixel = 0;
                         ZIndex = 2;
                         TextSize = 13;
@@ -3185,11 +3173,9 @@ getgenv().Loaded = true
                         PaddingLeft = dim(0, 5)
                     });
 
-                    for index,mode in {"Always", "Toggle", "Hold"} do 
+                    for _,mode in {"Always", "Toggle", "Hold"} do 
                         Items[mode].FontFace = Font.new("rbxasset://fonts/families/SourceSansPro.json", Enum.FontWeight.Regular, Enum.FontStyle.Normal)
                         Items[mode].BackgroundTransparency = 0;
-                        Items[mode].BackgroundColor3 = rgb(26, 26, 26)
-                        Items[mode].LayoutOrder = index
                         Items[mode].TextColor3 = rgb(205, 205, 205)
 
                         Items[mode].MouseButton1Click:Connect(function()
