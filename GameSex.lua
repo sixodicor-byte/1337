@@ -3490,11 +3490,86 @@ getgenv().Loaded = true
                 return Cfg:SetVisibility(not Cfg.Visible)
             end
 
-            Library.KeybindsWindow = Items.Window
-            Library.KeybindsContainer = Items.Container
+        Library.KeybindsWindow = Items.Window
+        Library.KeybindsContainer = Items.Container
 
-            return setmetatable(Cfg, Library)
+        return setmetatable(Cfg, Library)
+    end
+
+    Library.WatermarkOptions = {
+        gamesense = true,
+        fps = true,
+        ping = true,
+        time = true,
+        config = false,
+    }
+
+    function Library:UpdateWatermarkText(dt)
+        local opts = Library.WatermarkOptions
+        local parts = {}
+
+        if opts.gamesense then
+            table.insert(parts, "gamesense")
         end
+
+        if opts.config then
+            table.insert(parts, tostring(Library.ConfigName or "none"))
+        end
+
+        if opts.fps then
+            table.insert(parts, string.format("%dfps", math.floor(1 / math.max(dt, 1/1000))))
+        end
+
+        if opts.ping then
+            local ok, ping = pcall(function()
+                return Stats.Network.ServerStatsItem["Data Ping"]:GetValue()
+            end)
+
+            table.insert(parts, ok and string.format("%dms", math.floor(ping)) or "0ms")
+        end
+
+        if opts.time then
+            table.insert(parts, os.date("%H:%M:%S"))
+        end
+
+        if Library.WatermarkText then
+            Library.WatermarkText.Text = table.concat(parts, " | ")
+        end
+    end
+
+    function Library:ToggleWatermark(bool)
+        if not Library.WatermarkInstance then
+            Library.WatermarkInstance = Library:Watermark()
+        end
+
+        Library.WatermarkInstance:SetVisibility(bool)
+
+        if bool and not Library.WatermarkLoop then
+            local last = 0
+
+            Library.WatermarkLoop = Library:Connection(RunService.Heartbeat, function(dt)
+                last += dt
+
+                if last < 0.25 then
+                    return
+                end
+
+                Library:UpdateWatermarkText(last)
+                last = 0
+            end)
+        elseif not bool and Library.WatermarkLoop then
+            Library.WatermarkLoop:Disconnect()
+            Library.WatermarkLoop = nil
+        end
+    end
+
+    function Library:ToggleKeybindList(bool)
+        if not Library.KeybindListInstance then
+            Library.KeybindListInstance = Library:KeybindList()
+        end
+
+        Library.KeybindListInstance:SetVisibility(bool)
+    end
 
 
 return Library
