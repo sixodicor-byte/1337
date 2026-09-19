@@ -703,6 +703,25 @@ getgenv().Loaded = true
             end
 
             local LastMouse = nil
+            local HoverCal = nil
+
+            local function TrackCal(guiPos)
+                local gl = InputService:GetMouseLocation()
+                HoverCal = {gl = vec2(gl.X, gl.Y), gui = guiPos}
+            end
+
+            Items.Val.MouseMoved:Connect(function(x, y) TrackCal(vec2(x, y)) end)
+            Items.Hue.MouseMoved:Connect(function(x, y) TrackCal(vec2(x, y)) end)
+            Items.Alpha.MouseMoved:Connect(function(x, y) TrackCal(vec2(x, y)) end)
+
+            local function MouseGuiPos()
+                if not HoverCal then
+                    return nil
+                end
+
+                local gl = InputService:GetMouseLocation()
+                return HoverCal.gui + (gl - HoverCal.gl)
+            end
 
             function Cfg.UpdateColor(input)
                 local m = input.Position
@@ -786,16 +805,35 @@ getgenv().Loaded = true
             Items.Alpha.MouseButton1Down:Connect(function()
                 DraggingAlpha = true
                 LastMouse = nil
+
+                local mp = MouseGuiPos()
+                if mp then
+                    a = math.clamp((mp.X - Items.Alpha.AbsolutePosition.X) / Items.Alpha.AbsoluteSize.X, 0, 1)
+                    Cfg.Set()
+                end
             end)
 
             Items.Hue.MouseButton1Down:Connect(function()
                 DraggingHue = true
                 LastMouse = nil
+
+                local mp = MouseGuiPos()
+                if mp then
+                    h = math.clamp((mp.Y - Items.Hue.AbsolutePosition.Y) / Items.Hue.AbsoluteSize.Y, 0, 1)
+                    Cfg.Set()
+                end
             end)
 
             Items.Val.MouseButton1Down:Connect(function()
                 DraggingSat = true
                 LastMouse = nil
+
+                local mp = MouseGuiPos()
+                if mp then
+                    s = math.clamp((mp.X - Items.Val.AbsolutePosition.X) / Items.Val.AbsoluteSize.X, 0, 1)
+                    v = 1 - math.clamp((mp.Y - Items.Val.AbsolutePosition.Y) / Items.Val.AbsoluteSize.Y, 0, 1)
+                    Cfg.Set()
+                end
             end)
 
             Cfg.Set(Cfg.Color, Cfg.Alpha)
