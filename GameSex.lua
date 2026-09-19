@@ -417,7 +417,7 @@ getgenv().Loaded = true
                         Text = "";
                         AutoButtonColor = false;
                         Name = "\0";
-                        Parent = self.Items.Components;
+                        Parent = self.Items.Components or self.Items.Elements;
                         Size = dim2(0, 17, 0, 9);
                         Selectable = false;
                         BorderSizePixel = 0;
@@ -2518,7 +2518,7 @@ getgenv().Loaded = true
                 Ignore = properties.Ignore or false;
             }   
 
-            Cfg.Default = properties.Default or (Cfg.Multi and {Cfg.Items[1]}) or Cfg.Items[1] or "None"
+            Cfg.Default = properties.Default or (Cfg.Multi and {Cfg.Options[1]}) or Cfg.Options[1] or "None"
             Flags[Cfg.Flag] = Cfg.Default
             
             local Items = Cfg.Items; do 
@@ -2889,7 +2889,7 @@ getgenv().Loaded = true
                 Items = {};
             }
 
-            Flags[Cfg.Flag] = Cfg.default
+            Flags[Cfg.Flag] = Cfg.Default
 
             local Items = Cfg.Items; do 
                 Items.List = Library:Create( "TextButton" , {
