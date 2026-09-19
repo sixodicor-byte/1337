@@ -407,9 +407,9 @@ getgenv().Loaded = true
                 Items = {};
             }
 
-            local DraggingSat = false 
-            local DraggingHue = false 
-            local DraggingAlpha = false 
+            local DraggingSat = false
+            local DraggingHue = false
+            local DraggingAlpha = false
 
             local h, s, v = Cfg.Color:ToHSV() 
             local a = Cfg.Alpha 
@@ -702,72 +702,20 @@ getgenv().Loaded = true
                 Cfg.Callback(Color, a)
             end
 
-            local LastMouse = nil
-            local HoverCal = nil
+            function Cfg.UpdateColor()
+                local relX = (mouse.X - Items.Val.AbsolutePosition.X) / Items.Val.AbsoluteSize.X
+                local relY = (mouse.Y - Items.Val.AbsolutePosition.Y) / Items.Val.AbsoluteSize.Y
 
-            Items.Debug = Library:Create("TextLabel", {
-                Parent = Items.Colorpicker;
-                Size = dim2(1, 0, 0, 12);
-                Position = dim2(0, 0, 0, 0);
-                BackgroundColor3 = rgb(0, 0, 0);
-                BackgroundTransparency = 0.3;
-                TextColor3 = rgb(0, 255, 0);
-                TextSize = 10;
-                FontFace = Font.new("rbxasset://fonts/families/SourceSansPro.json", Enum.FontWeight.Regular, Enum.FontStyle.Normal);
-                TextXAlignment = Enum.TextXAlignment.Left;
-                Text = "no hover yet";
-                ZIndex = 20000;
-                BorderSizePixel = 0;
-                Name = "\0"
-            });
-
-            local function TrackCal(guiPos)
-                local gl = InputService:GetMouseLocation()
-                HoverCal = {gl = vec2(gl.X, gl.Y), gui = guiPos}
-
-                if Items.Debug then
-                    Items.Debug.Text = string.format(
-                        "MM %d,%d | GL %d,%d | VAL %d,%d %dx%d",
-                        guiPos.X, guiPos.Y,
-                        gl.X, gl.Y,
-                        Items.Val.AbsolutePosition.X, Items.Val.AbsolutePosition.Y,
-                        Items.Val.AbsoluteSize.X, Items.Val.AbsoluteSize.Y
-                    )
-                end
-            end
-
-            Items.Val.MouseMoved:Connect(function(x, y) TrackCal(vec2(x, y)) end)
-            Items.Hue.MouseMoved:Connect(function(x, y) TrackCal(vec2(x, y)) end)
-            Items.Alpha.MouseMoved:Connect(function(x, y) TrackCal(vec2(x, y)) end)
-
-            local function MouseGuiPos()
-                if not HoverCal then
-                    return nil
+                if DraggingSat then
+                    s = math.clamp(relX, 0, 1)
+                    v = 1 - math.clamp(relY, 0, 1)
+                elseif DraggingHue then
+                    h = math.clamp((mouse.Y - Items.Hue.AbsolutePosition.Y) / Items.Hue.AbsoluteSize.Y, 0, 1)
+                elseif DraggingAlpha then
+                    a = math.clamp((mouse.X - Items.Alpha.AbsolutePosition.X) / Items.Alpha.AbsoluteSize.X, 0, 1)
                 end
 
-                local gl = InputService:GetMouseLocation()
-                return HoverCal.gui + (gl - HoverCal.gl)
-            end
-
-            function Cfg.UpdateColor(input)
-                local m = input.Position
-
-                if LastMouse then
-                    local dx, dy = m.X - LastMouse.X, m.Y - LastMouse.Y
-
-                    if DraggingSat then
-                        s = math.clamp(s + dx / Items.Val.AbsoluteSize.X, 0, 1)
-                        v = math.clamp(v - dy / Items.Val.AbsoluteSize.Y, 0, 1)
-                    elseif DraggingHue then
-                        h = math.clamp(h + dy / Items.Hue.AbsoluteSize.Y, 0, 1)
-                    elseif DraggingAlpha then
-                        a = math.clamp(a + dx / Items.Alpha.AbsoluteSize.X, 0, 1)
-                    end
-
-                    Cfg.Set()
-                end
-
-                LastMouse = m
+                Cfg.Set()
             end
 
             Items.ColorpickerObject.MouseButton1Click:Connect(function()
@@ -777,7 +725,7 @@ getgenv().Loaded = true
 
             InputService.InputChanged:Connect(function(input)
                 if (DraggingSat or DraggingHue or DraggingAlpha) and input.UserInputType == Enum.UserInputType.MouseMovement then
-                    Cfg.UpdateColor(input)
+                    Cfg.UpdateColor()
                 end
             end)
 
@@ -830,36 +778,14 @@ getgenv().Loaded = true
 
             Items.Alpha.MouseButton1Down:Connect(function()
                 DraggingAlpha = true
-                LastMouse = nil
-
-                local mp = MouseGuiPos()
-                if mp then
-                    a = math.clamp((mp.X - Items.Alpha.AbsolutePosition.X) / Items.Alpha.AbsoluteSize.X, 0, 1)
-                    Cfg.Set()
-                end
             end)
 
             Items.Hue.MouseButton1Down:Connect(function()
                 DraggingHue = true
-                LastMouse = nil
-
-                local mp = MouseGuiPos()
-                if mp then
-                    h = math.clamp((mp.Y - Items.Hue.AbsolutePosition.Y) / Items.Hue.AbsoluteSize.Y, 0, 1)
-                    Cfg.Set()
-                end
             end)
 
             Items.Val.MouseButton1Down:Connect(function()
                 DraggingSat = true
-                LastMouse = nil
-
-                local mp = MouseGuiPos()
-                if mp then
-                    s = math.clamp((mp.X - Items.Val.AbsolutePosition.X) / Items.Val.AbsoluteSize.X, 0, 1)
-                    v = 1 - math.clamp((mp.Y - Items.Val.AbsolutePosition.Y) / Items.Val.AbsoluteSize.Y, 0, 1)
-                    Cfg.Set()
-                end
             end)
 
             Cfg.Set(Cfg.Color, Cfg.Alpha)
@@ -2000,29 +1926,8 @@ getgenv().Loaded = true
                 Cfg.Callback(Flags[Cfg.Flag])
             end
             
-            local SliderCal = nil
-
-            Items.Holder.MouseMoved:Connect(function(x, y)
-                local gl = InputService:GetMouseLocation()
-                SliderCal = {gl = vec2(gl.X, gl.Y), gui = vec2(x, y)}
-            end)
-
-            local function SliderMouseGuiX()
-                if not SliderCal then
-                    return nil
-                end
-
-                local gl = InputService:GetMouseLocation()
-                return (SliderCal.gui + (vec2(gl.X, gl.Y) - SliderCal.gl)).X
-            end
-
             Items.Holder.MouseButton1Down:Connect(function()
                 Cfg.Dragging = true
-
-                local mx = SliderMouseGuiX()
-                if mx then
-                    Cfg.Set((mx - Items.Holder.AbsolutePosition.X) / Items.Holder.AbsoluteSize.X * (Cfg.Max - Cfg.Min) + Cfg.Min)
-                end
             end)
 
             Items.Minus.MouseButton1Down:Connect(function()
@@ -2039,10 +1944,9 @@ getgenv().Loaded = true
 
             Library:Connection(InputService.InputChanged, function(input)
                 if Cfg.Dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-                    local mx = SliderMouseGuiX()
-                    if mx then
-                        Cfg.Set((mx - Items.Holder.AbsolutePosition.X) / Items.Holder.AbsoluteSize.X * (Cfg.Max - Cfg.Min) + Cfg.Min)
-                    end
+                    local Size = (input.Position.X - Items.Holder.AbsolutePosition.X) / Items.Holder.AbsoluteSize.X
+                    local Value = ((Cfg.Max - Cfg.Min) * Size) + Cfg.Min
+                    Cfg.Set(Value)
                 end
             end)
 
