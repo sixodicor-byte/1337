@@ -698,7 +698,7 @@ getgenv().Loaded = true
 
             function Cfg.UpdateColor() 
                 local Mouse = InputService:GetMouseLocation()
-                local offset = vec2(Mouse.X, Mouse.Y - gui_offset) 
+                local offset = vec2(Mouse.X, Mouse.Y)
                 
                 if DraggingSat then	
                     s = math.clamp((offset - Items.Val.AbsolutePosition).X / Items.Val.AbsoluteSize.X, 0, 1)
