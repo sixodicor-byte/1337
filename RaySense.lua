@@ -1,4 +1,4 @@
-local Library = loadstring(httpget("https://raw.githubusercontent.com/sixodicor-byte/1337/refs/heads/main/GameSex.lua?v=" .. tostring(os.time())))()
+local Library = loadstring(httpget("https://raw.githubusercontent.com/sixodicor-byte/1337/refs/heads/main/GameSexV2.lua?v=" .. tostring(os.time())))()
 
 
 
