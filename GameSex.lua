@@ -787,6 +787,9 @@ getgenv().Loaded = true
         end 
         
         function Library:Round(num, float) 
+            if type(num) == "string" then
+                num = tonumber(num:match("%-?%d+%.?%d*")) or 0
+            end
             local Multiplier = 1 / (float or 1)
             return math.floor(num * Multiplier + 0.5) / Multiplier
         end
@@ -882,8 +885,13 @@ getgenv().Loaded = true
                 Items = {};
             }
             
+            local parentGui = CoreGui
+            if gethui then
+                pcall(function() parentGui = gethui() end)
+            end
+
             Library.Items = Library:Create( "ScreenGui" , {
-                Parent = CoreGui;
+                Parent = parentGui;
                 Name = "\0";
                 Enabled = true;
                 ZIndexBehavior = Enum.ZIndexBehavior.Global;
@@ -891,7 +899,7 @@ getgenv().Loaded = true
             });
             
             Library.Other = Library:Create( "ScreenGui" , {
-                Parent = CoreGui;
+                Parent = parentGui;
                 Name = "\0";
                 Enabled = false;
                 ZIndexBehavior = Enum.ZIndexBehavior.Sibling;
@@ -900,16 +908,20 @@ getgenv().Loaded = true
 
             local Items = Cfg.Items; do
                 
+                    local cam = Workspace.CurrentCamera
+                    local vp = (cam and cam.ViewportSize) or vec2(1920, 1080)
+                    local initialPos = dim2(0, math.max(10, math.floor((vp.X - Cfg.Size.X.Offset) / 2)), 0, math.max(10, math.floor((vp.Y - Cfg.Size.Y.Offset) / 2)))
+
                     Items.Window = Library:Create( "Frame" , {
                         Parent = Library.Items;
                         Name = "\0";
-                        Visible = false;
-                        Position = dim2(0.5, -Cfg.Size.X.Offset / 2, 0.5, -Cfg.Size.Y.Offset / 2);
+                        Visible = true;
+                        Position = initialPos;
                         BorderColor3 = rgb(0, 0, 0);
                         Size = Cfg.Size;
                         BorderSizePixel = 0;
                         BackgroundColor3 = rgb(12, 12, 12)
-                    }); Items.Window.Position = dim2(0, Items.Window.AbsolutePosition.X, 0, Items.Window.AbsolutePosition.Y);
+                    });
                     
                     Items.MenuBlocker = Library:Create("TextButton", {
                         Parent = Library.Items;
@@ -1642,6 +1654,70 @@ getgenv().Loaded = true
             Library.Watermark = function(_, options) return Cfg:Watermark(options) end
             Library.KeybindList = function(_, options) return Cfg:KeybindList(options) end
 
+            -- Auto-open menu & keybind handling
+            local menuOpen = true
+            Library.MenuOpen = true
+            Library.ToggleMenu = Cfg.ToggleMenu
+
+            pcall(function()
+                Items.Window.Visible = true
+                Cfg.ToggleMenu(true)
+            end)
+
+            if getgenv().GS_ToggleMenuConn then
+                pcall(function() getgenv().GS_ToggleMenuConn:Disconnect() end)
+            end
+            getgenv().GS_ToggleMenuConn = InputService.InputBegan:Connect(function(input)
+                if InputService:GetFocusedTextBox() then return end
+                if input.KeyCode == Enum.KeyCode.Insert or input.KeyCode == Enum.KeyCode.Delete or input.KeyCode == Enum.KeyCode.RightShift then
+                    if not Cfg.Tweening then
+                        menuOpen = not menuOpen
+                        Library.MenuOpen = menuOpen
+                        Cfg.ToggleMenu(menuOpen)
+                        if not menuOpen and Library.CloseElement then
+                            pcall(function() Library:CloseElement() end)
+                        end
+                    end
+                end
+            end)
+            table.insert(Library.Connections, getgenv().GS_ToggleMenuConn)
+
+            -- Mouse wheel scrolling for sections
+            if getgenv().GS_MouseWheelConn then
+                pcall(function() getgenv().GS_MouseWheelConn:Disconnect() end)
+            end
+            getgenv().GS_MouseWheelConn = InputService.InputChanged:Connect(function(input)
+                if input.UserInputType ~= Enum.UserInputType.MouseWheel then return end
+                if not Library.MenuOpen then return end
+                local mouse = InputService:GetMouseLocation()
+                local direction = input.Position.Z > 0 and -1 or 1
+
+                for _, obj in ipairs(Library.Items:GetDescendants()) do
+                    if obj:IsA("ScrollingFrame") and obj.Visible and obj.AbsoluteSize.Y > 0 then
+                        local pos = obj.AbsolutePosition
+                        local sz = obj.AbsoluteSize
+                        if mouse.X >= pos.X and mouse.X <= pos.X + sz.X and mouse.Y >= pos.Y and mouse.Y <= pos.Y + sz.Y then
+                            local maxScroll = math.max(obj.CanvasSize.Y.Offset - sz.Y, 0)
+                            if maxScroll > 0 then
+                                obj.CanvasPosition = vec2(obj.CanvasPosition.X, math.clamp(obj.CanvasPosition.Y + direction * 40, 0, maxScroll))
+                                break
+                            end
+                        end
+                    end
+                end
+            end)
+            table.insert(Library.Connections, getgenv().GS_MouseWheelConn)
+
+            if Notifications and Notifications.Create then
+                task.spawn(function()
+                    task.wait(0.1)
+                    Notifications:Create({
+                        Name = (Cfg.Name or "Gamesense") .. " Loaded! [INSERT]",
+                        LifeTime = 4
+                    })
+                end)
+            end
+
             return setmetatable(Cfg, Library)
         end 
 
@@ -2050,9 +2126,22 @@ getgenv().Loaded = true
                     BackgroundColor3 = rgb(255, 255, 255)
                 });
                 
-                Items.Elements:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+                Items.Holder.ClipsDescendants = true
+                Items.Holder.ScrollingEnabled = true
+                Items.Holder.AutomaticCanvasSize = Enum.AutomaticSize.None
+
+                local function syncCanvas()
+                    if not (Items.Holder and Items.Elements and Items.Holder.Visible) then return end
+                    if Items.Holder.AbsoluteSize.Y <= 0 or Items.Elements.AbsoluteSize.Y <= 0 then return end
+                    local contentHeight = Items.Holder.CanvasPosition.Y + (Items.Elements.AbsolutePosition.Y - Items.Holder.AbsolutePosition.Y) + Items.Elements.AbsoluteSize.Y + 8
+                    if Items.Holder.CanvasSize.Y.Offset ~= contentHeight then
+                        Items.Holder.CanvasSize = dim2(0, Items.Holder.CanvasSize.X.Offset, 0, contentHeight)
+                    end
                     Items.ScrollbarFill.Visible = Items.Elements.AbsoluteSize.Y > Items.Holder.AbsoluteSize.Y
-                end)
+                end
+
+                Items.Elements:GetPropertyChangedSignal("AbsoluteSize"):Connect(syncCanvas)
+                Library:Connection(RunService.RenderStepped, syncCanvas)
             end 
 
             return setmetatable(Cfg, Library)
