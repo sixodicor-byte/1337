@@ -442,7 +442,7 @@ getgenv().Loaded = true
                 
                 
                 
-                    Items.Colorpicker = Library:Create( "TextButton" , {
+                    Items.Colorpicker = Library:Create("TextButton", {
                         Active = false;
                         BorderColor3 = rgb(0, 0, 0);
                         Text = "";
@@ -450,11 +450,13 @@ getgenv().Loaded = true
                         Parent = Library.Items;
                         Visible = false;
                         Name = "\0";
-                        Position = dim2(0, 800, 0, 54);
+                        Position = dim_offset(0, 0);
                         Size = dim2(0, 180, 0, 175);
                         Selectable = false;
                         BorderSizePixel = 0;
-                        BackgroundColor3 = rgb(12, 12, 12)
+                        ZIndex = 100;
+                        BackgroundTransparency = 0;
+                        BackgroundColor3 = rgb(12, 12, 12);
                     });
                     
                     Items.Inline = Library:Create( "Frame" , {
@@ -642,10 +644,23 @@ getgenv().Loaded = true
                 
             end;
             
+            for _, child in ipairs(Items.Colorpicker:GetDescendants()) do
+                if child:IsA("GuiObject") then
+                    child.ZIndex = child.ZIndex + 100
+                end
+            end
+
             function Cfg.SetVisible(bool)
                 Items.Colorpicker.Visible = bool
                 Items.Colorpicker.Parent = bool and Library.Items or Library.Other
-                Items.Colorpicker.Position = dim2(0, Items.ColorpickerObject.AbsolutePosition.X, 0, Items.ColorpickerObject.AbsolutePosition.Y + 74)
+
+                if bool then
+                    Library:PlacePopup(
+                        Items.Colorpicker,
+                        Items.ColorpickerObject,
+                        4
+                    )
+                end
             end
             
             function Cfg.Set(color, alpha)
