@@ -454,8 +454,7 @@ getgenv().Loaded = true
                         Size = dim2(0, 180, 0, 175);
                         Selectable = false;
                         BorderSizePixel = 0;
-                        ZIndex = 100;
-                        BackgroundTransparency = 0;
+                        ZIndex = 1000;
                         BackgroundColor3 = rgb(12, 12, 12);
                     });
                     
@@ -644,12 +643,6 @@ getgenv().Loaded = true
                 
             end;
             
-            for _, child in ipairs(Items.Colorpicker:GetDescendants()) do
-                if child:IsA("GuiObject") then
-                    child.ZIndex = child.ZIndex + 100
-                end
-            end
-
             function Cfg.SetVisible(bool)
                 Items.Colorpicker.Visible = bool
                 Items.Colorpicker.Parent = bool and Library.Items or Library.Other
