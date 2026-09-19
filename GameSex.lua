@@ -2313,7 +2313,6 @@ getgenv().Loaded = true
                 Max = properties.Max or 100,
                 Intervals = properties.Decimal or 1,
                 Value = properties.Default or 10, 
-                Live = properties.Live == nil and true or properties.Live,
 
                 
                 Dragging = false,
@@ -2432,7 +2431,7 @@ getgenv().Loaded = true
                 });
                 
                 Items.Value = Library:Create( "TextBox" , {
-                    Parent = Items.Holder;
+                    Parent = Items.Accent;
                     FontFace = Font.new("rbxasset://fonts/families/SourceSansPro.json", Enum.FontWeight.SemiBold, Enum.FontStyle.Normal);
                     Name = "\0";
                     TextColor3 = rgb(205, 205, 205);
@@ -2440,10 +2439,10 @@ getgenv().Loaded = true
                     Text = "100%";
                     AutomaticSize = Enum.AutomaticSize.XY;
                     Selectable = false;
-                    AnchorPoint = vec2(1, 0);
+                    AnchorPoint = vec2(0.5, 0);
                     BorderSizePixel = 0;
                     BackgroundTransparency = 1;
-                    Position = dim2(1, 0, 1, 2);
+                    Position = dim2(1, 0, 0.10000000149011612, 0);
                     Active = false;
                     ZIndex = 2;
                     TextSize = 13;
@@ -2456,16 +2455,14 @@ getgenv().Loaded = true
                 });                                         
             end 
 
-            function Cfg.Set(value, fireCallback)
+            function Cfg.Set(value)
                 Cfg.Value = math.clamp(Library:Round(value, Cfg.Intervals), Cfg.Min, Cfg.Max)
 
                 Items.Accent.Size = dim2((Cfg.Value - Cfg.Min) / (Cfg.Max - Cfg.Min), Cfg.Value == Cfg.Min and 0 or -2, 1, -2)
                 Items.Value.Text = tostring(Cfg.Value) .. Cfg.Suffix
 
                 Flags[Cfg.Flag] = Cfg.Value
-                if fireCallback ~= false then
-                    Cfg.Callback(Flags[Cfg.Flag])
-                end
+                Cfg.Callback(Flags[Cfg.Flag])
             end
             
             Items.Holder.MouseButton1Down:Connect(function()
@@ -2488,18 +2485,13 @@ getgenv().Loaded = true
                 if Cfg.Dragging and input.UserInputType == Enum.UserInputType.MouseMovement then 
                     local Size = (input.Position.X - Items.Holder.AbsolutePosition.X) / Items.Holder.AbsoluteSize.X
                     local Value = ((Cfg.Max - Cfg.Min) * Size) + Cfg.Min
-                    Cfg.Set(Value, Cfg.Live)
+                    Cfg.Set(Value)
                 end
             end)
 
             Library:Connection(InputService.InputEnded, function(input)
                 if input.UserInputType == Enum.UserInputType.MouseButton1 then
-                    if Cfg.Dragging then
-                        Cfg.Dragging = false
-                        if not Cfg.Live then
-                            Cfg.Callback(Flags[Cfg.Flag])
-                        end
-                    end
+                    Cfg.Dragging = false
                 end 
             end)
 
