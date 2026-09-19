@@ -2432,7 +2432,7 @@ getgenv().Loaded = true
                 });
                 
                 Items.Value = Library:Create( "TextBox" , {
-                    Parent = Items.Accent;
+                    Parent = Items.Holder;
                     FontFace = Font.new("rbxasset://fonts/families/SourceSansPro.json", Enum.FontWeight.SemiBold, Enum.FontStyle.Normal);
                     Name = "\0";
                     TextColor3 = rgb(205, 205, 205);
@@ -2440,7 +2440,7 @@ getgenv().Loaded = true
                     Text = "100%";
                     AutomaticSize = Enum.AutomaticSize.XY;
                     Selectable = false;
-                    AnchorPoint = vec2(0.5, 0);
+                    AnchorPoint = vec2(1, 0);
                     BorderSizePixel = 0;
                     BackgroundTransparency = 1;
                     Position = dim2(1, 0, 1, 2);
