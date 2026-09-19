@@ -885,10 +885,23 @@ getgenv().Loaded = true
                 Items = {};
             }
             
-            local parentGui = CoreGui
+            local parentGui = nil
             if gethui then
                 pcall(function() parentGui = gethui() end)
             end
+            if not parentGui then
+                local ok = pcall(function()
+                    local t = Instance.new("Folder")
+                    t.Parent = CoreGui
+                    t:Destroy()
+                end)
+                if ok then
+                    parentGui = CoreGui
+                else
+                    pcall(function() parentGui = Players.LocalPlayer:WaitForChild("PlayerGui") end)
+                end
+            end
+            if not parentGui then parentGui = CoreGui end
 
             Library.Items = Library:Create( "ScreenGui" , {
                 Parent = parentGui;
@@ -909,7 +922,7 @@ getgenv().Loaded = true
             local Items = Cfg.Items; do
                 
                     local cam = Workspace.CurrentCamera
-                    local vp = (cam and cam.ViewportSize) or vec2(1920, 1080)
+                    local vp = (cam and cam.ViewportSize and cam.ViewportSize.X > 200 and cam.ViewportSize) or vec2(1920, 1080)
                     local initialPos = dim2(0, math.max(10, math.floor((vp.X - Cfg.Size.X.Offset) / 2)), 0, math.max(10, math.floor((vp.Y - Cfg.Size.Y.Offset) / 2)))
 
                     Items.Window = Library:Create( "Frame" , {
