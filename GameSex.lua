@@ -2679,6 +2679,7 @@ getgenv().Loaded = true
                 
             return setmetatable(Cfg, Library)
         end
+        Library.Listbox = Library.Dropdown
 
         function Library:Label(properties)
             local Cfg = {
