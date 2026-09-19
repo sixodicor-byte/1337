@@ -546,7 +546,6 @@ getgenv().Loaded = true
                         BorderColor3 = rgb(0, 0, 0);
                         Text = "";
                         AutoButtonColor = false;
-                        Rotation = 180;
                         Name = "\0";
                         Parent = Items.Inner;
                         Size = dim2(1, 0, 1, 0);
@@ -582,6 +581,13 @@ getgenv().Loaded = true
                         Size = dim2(1, -2, 1, -2);
                         BorderSizePixel = 0;
                         BackgroundColor3 = rgb(0, 221, 255)
+                    });
+
+                    Library:Create( "UIGradient" , {
+                        Rotation = 0;
+                        Transparency = numseq{numkey(0, 0), numkey(1, 1)};
+                        Parent = Items.AlphaInline;
+                        Color = rgbseq{rgbkey(0, rgb(255, 255, 255)), rgbkey(1, rgb(255, 255, 255))}
                     });
                     
                     Items.AlphaPicker = Library:Create( "Frame" , {
