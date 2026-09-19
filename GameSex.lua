@@ -12,7 +12,7 @@ getgenv().Loaded = true
 
 
     
-    local InputService, HttpService, GuiService, RunService, Stats, CoreGui, TweenService, SoundService, Workspace, Players = game:GetService("UserInputService"), game:GetService("HttpService"), game:GetService("GuiService"), game:GetService("RunService"), game:GetService("Stats"), game:GetService("CoreGui"), game:GetService("TweenService"), game:GetService("SoundService"), game:GetService("Workspace"), game:GetService("Players")
+    local InputService, HttpService, GuiService, RunService, Stats, CoreGui, TweenService, SoundService, Workspace, Players, TextService = game:GetService("UserInputService"), game:GetService("HttpService"), game:GetService("GuiService"), game:GetService("RunService"), game:GetService("Stats"), game:GetService("CoreGui"), game:GetService("TweenService"), game:GetService("SoundService"), game:GetService("Workspace"), game:GetService("Players"), game:GetService("TextService")
     local Camera, lp, gui_offset = Workspace.CurrentCamera, Players.LocalPlayer, GuiService:GetGuiInset().Y
     local mouse = lp:GetMouse()
 
@@ -36,6 +36,15 @@ getgenv().Loaded = true
         Notifications = {Notifs = {}},
         OpenElement = {}; 
         EasingStyle = Enum.EasingStyle.Quint;
+        ShowWatermark = true,
+        ShowKeybindList = false,
+        WatermarkOptions = {
+            gamesense = true,
+            fps = true,
+            ping = true,
+            time = true
+        },
+        MenuOpen = true,
         TweeningSpeed = 0.25
     }
 
@@ -1103,6 +1112,7 @@ getgenv().Loaded = true
                 end 
 
                 Cfg.Tweening = true 
+                Library.MenuOpen = bool
 
                 if bool then 
                     Items.Window.Visible = true
@@ -1134,7 +1144,504 @@ getgenv().Loaded = true
                     if Items.MenuBlocker then Items.MenuBlocker.Visible = bool end
                 end)
             end
-            
+
+            -- Watermark Window
+            local WatermarkWindow = Library:Create("Frame", {
+                Parent = Library.Items,
+                Name = "\0",
+                AnchorPoint = vec2(1, 0),
+                Position = dim2(1, -20, 0, 15),
+                BorderColor3 = rgb(0, 0, 0),
+                BorderSizePixel = 0,
+                BackgroundColor3 = rgb(12, 12, 12),
+                AutomaticSize = Enum.AutomaticSize.XY,
+                Active = true,
+                Visible = Library.ShowWatermark,
+                ZIndex = 10
+            })
+
+            Library:Create("UIPadding", {
+                Parent = WatermarkWindow,
+                PaddingTop = dim(0, 1),
+                PaddingBottom = dim(0, 1),
+                PaddingLeft = dim(0, 1),
+                PaddingRight = dim(0, 1)
+            })
+
+            local WatermarkInline1 = Library:Create("Frame", {
+                Parent = WatermarkWindow,
+                Name = "\0",
+                BorderColor3 = rgb(0, 0, 0),
+                BorderSizePixel = 0,
+                BackgroundColor3 = rgb(61, 61, 61),
+                AutomaticSize = Enum.AutomaticSize.XY,
+                ZIndex = 11
+            })
+
+            Library:Create("UIPadding", {
+                Parent = WatermarkInline1,
+                PaddingTop = dim(0, 1),
+                PaddingBottom = dim(0, 1),
+                PaddingLeft = dim(0, 1),
+                PaddingRight = dim(0, 1)
+            })
+
+            local WatermarkHollow = Library:Create("Frame", {
+                Parent = WatermarkInline1,
+                Name = "\0",
+                BorderColor3 = rgb(0, 0, 0),
+                BorderSizePixel = 0,
+                BackgroundColor3 = rgb(43, 43, 43),
+                AutomaticSize = Enum.AutomaticSize.XY,
+                ZIndex = 12
+            })
+
+            Library:Create("UIPadding", {
+                Parent = WatermarkHollow,
+                PaddingTop = dim(0, 2),
+                PaddingBottom = dim(0, 2),
+                PaddingLeft = dim(0, 2),
+                PaddingRight = dim(0, 2)
+            })
+
+            local WatermarkInline2 = Library:Create("Frame", {
+                Parent = WatermarkHollow,
+                Name = "\0",
+                BorderColor3 = rgb(0, 0, 0),
+                BorderSizePixel = 0,
+                BackgroundColor3 = rgb(61, 61, 61),
+                AutomaticSize = Enum.AutomaticSize.XY,
+                ZIndex = 13
+            })
+
+            Library:Create("UIPadding", {
+                Parent = WatermarkInline2,
+                PaddingTop = dim(0, 1),
+                PaddingBottom = dim(0, 1),
+                PaddingLeft = dim(0, 1),
+                PaddingRight = dim(0, 1)
+            })
+
+            local WatermarkBackground = Library:Create("Frame", {
+                Parent = WatermarkInline2,
+                Name = "\0",
+                BorderColor3 = rgb(0, 0, 0),
+                BorderSizePixel = 0,
+                BackgroundColor3 = rgb(12, 12, 12),
+                AutomaticSize = Enum.AutomaticSize.XY,
+                ZIndex = 14
+            })
+
+            Library:Create("ImageLabel", {
+                Parent = WatermarkBackground,
+                Name = "\0",
+                Size = dim2(1, 0, 0, 2),
+                Position = dim2(0, 0, 0, 0),
+                Image = "rbxassetid://8508019876",
+                BackgroundTransparency = 1,
+                BorderSizePixel = 0,
+                ZIndex = 15
+            })
+
+            local WatermarkText = Library:Create("TextLabel", {
+                Parent = WatermarkBackground,
+                Name = "\0",
+                BackgroundTransparency = 1,
+                RichText = true,
+                AutomaticSize = Enum.AutomaticSize.XY,
+                FontFace = Font.new("rbxasset://fonts/families/SourceSansPro.json", Enum.FontWeight.Regular, Enum.FontStyle.Normal),
+                TextColor3 = rgb(205, 205, 205),
+                TextSize = 13,
+                Text = '<font color="rgb(255, 255, 255)">game</font><font color="rgb(168, 219, 85)">sense</font>',
+                ZIndex = 16
+            })
+
+            Library:Create("UIPadding", {
+                Parent = WatermarkText,
+                PaddingTop = dim(0, 4),
+                PaddingBottom = dim(0, 6),
+                PaddingLeft = dim(0, 8),
+                PaddingRight = dim(0, 8)
+            })
+
+            -- Keybinds Window
+            local KeybindsWindow = Library:Create("Frame", {
+                Parent = Library.Items,
+                Name = " ",
+                AnchorPoint = vec2(0, 0.5),
+                Position = dim2(0, 15, 0.5, 0),
+                Size = dim2(0, 150, 0, 0),
+                BorderColor3 = rgb(0, 0, 0),
+                BorderSizePixel = 0,
+                BackgroundColor3 = rgb(12, 12, 12),
+                AutomaticSize = Enum.AutomaticSize.Y,
+                Active = true,
+                Visible = Library.ShowKeybindList,
+                ZIndex = 10
+            })
+
+            Library:Create("UIPadding", {
+                Parent = KeybindsWindow,
+                PaddingTop = dim(0, 1),
+                PaddingBottom = dim(0, 1),
+                PaddingLeft = dim(0, 1),
+                PaddingRight = dim(0, 1)
+            })
+
+            local KeybindsInline1 = Library:Create("Frame", {
+                Parent = KeybindsWindow,
+                Name = " ",
+                Size = dim2(1, 0, 0, 0),
+                BorderColor3 = rgb(0, 0, 0),
+                BorderSizePixel = 0,
+                BackgroundColor3 = rgb(61, 61, 61),
+                AutomaticSize = Enum.AutomaticSize.Y,
+                ZIndex = 11
+            })
+
+            Library:Create("UIPadding", {
+                Parent = KeybindsInline1,
+                PaddingTop = dim(0, 1),
+                PaddingBottom = dim(0, 1),
+                PaddingLeft = dim(0, 1),
+                PaddingRight = dim(0, 1)
+            })
+
+            local KeybindsHollow = Library:Create("Frame", {
+                Parent = KeybindsInline1,
+                Name = " ",
+                Size = dim2(1, 0, 0, 0),
+                BorderColor3 = rgb(0, 0, 0),
+                BorderSizePixel = 0,
+                BackgroundColor3 = rgb(43, 43, 43),
+                AutomaticSize = Enum.AutomaticSize.Y,
+                ZIndex = 12
+            })
+
+            Library:Create("UIPadding", {
+                Parent = KeybindsHollow,
+                PaddingTop = dim(0, 2),
+                PaddingBottom = dim(0, 2),
+                PaddingLeft = dim(0, 2),
+                PaddingRight = dim(0, 2)
+            })
+
+            local KeybindsInline2 = Library:Create("Frame", {
+                Parent = KeybindsHollow,
+                Name = " ",
+                Size = dim2(1, 0, 0, 0),
+                BorderColor3 = rgb(0, 0, 0),
+                BorderSizePixel = 0,
+                BackgroundColor3 = rgb(61, 61, 61),
+                AutomaticSize = Enum.AutomaticSize.Y,
+                ZIndex = 13
+            })
+
+            Library:Create("UIPadding", {
+                Parent = KeybindsInline2,
+                PaddingTop = dim(0, 1),
+                PaddingBottom = dim(0, 1),
+                PaddingLeft = dim(0, 1),
+                PaddingRight = dim(0, 1)
+            })
+
+            local KeybindsBackground = Library:Create("Frame", {
+                Parent = KeybindsInline2,
+                Name = " ",
+                Size = dim2(1, 0, 0, 0),
+                BorderColor3 = rgb(0, 0, 0),
+                BorderSizePixel = 0,
+                BackgroundColor3 = rgb(12, 12, 12),
+                AutomaticSize = Enum.AutomaticSize.Y,
+                ZIndex = 14
+            })
+
+            Library:Create("ImageLabel", {
+                Parent = KeybindsBackground,
+                Name = " ",
+                Size = dim2(1, 0, 0, 2),
+                Position = dim2(0, 0, 0, 0),
+                Image = "rbxassetid://8508019876",
+                BackgroundTransparency = 1,
+                BorderSizePixel = 0,
+                ZIndex = 15
+            })
+
+            local KeybindsTitle = Library:Create("TextLabel", {
+                Parent = KeybindsBackground,
+                Name = " ",
+                BackgroundTransparency = 1,
+                AutomaticSize = Enum.AutomaticSize.XY,
+                FontFace = Font.new("rbxasset://fonts/families/SourceSansPro.json", Enum.FontWeight.Regular, Enum.FontStyle.Normal),
+                TextColor3 = rgb(205, 205, 205),
+                TextSize = 13,
+                Text = 'keybinds',
+                ZIndex = 16
+            })
+
+            Library:Create("UIPadding", {
+                Parent = KeybindsTitle,
+                PaddingTop = dim(0, 4),
+                PaddingBottom = dim(0, 2),
+                PaddingLeft = dim(0, 8),
+                PaddingRight = dim(0, 8)
+            })
+
+            local KeybindsContainer = Library:Create("Frame", {
+                Parent = KeybindsBackground,
+                Name = " ",
+                BackgroundTransparency = 1,
+                Position = dim2(0, 0, 0, 20),
+                AutomaticSize = Enum.AutomaticSize.XY,
+                ZIndex = 16
+            })
+
+            Library:Create("UIListLayout", {
+                Parent = KeybindsContainer,
+                SortOrder = Enum.SortOrder.LayoutOrder,
+                Padding = dim(0, 2)
+            })
+
+            Library:Create("UIPadding", {
+                Parent = KeybindsContainer,
+                PaddingTop = dim(0, 2),
+                PaddingBottom = dim(0, 6),
+                PaddingLeft = dim(0, 8),
+                PaddingRight = dim(0, 8)
+            })
+
+            -- Position persistence & ConfigFlags
+            local function encodePosition(frame)
+                local p = frame.Position
+                return {XS = p.X.Scale, XO = p.X.Offset, YS = p.Y.Scale, YO = p.Y.Offset}
+            end
+
+            local function applyPosition(frame, value)
+                if type(value) ~= "table" then return end
+                frame.Position = dim2(value.XS or 0, value.XO or 0, value.YS or 0, value.YO or 0)
+            end
+
+            Flags["GS_Watermark_Position"] = encodePosition(WatermarkWindow)
+            ConfigFlags["GS_Watermark_Position"] = function(value) applyPosition(WatermarkWindow, value) end
+
+            Flags["GS_Keybinds_Position"] = encodePosition(KeybindsWindow)
+            ConfigFlags["GS_Keybinds_Position"] = function(value) applyPosition(KeybindsWindow, value) end
+
+            -- Dragging
+            local dragging = false
+            local dragStart, startPos
+
+            local kbDragging = false
+            local kbDragStart, kbStartPos
+
+            Library:Connection(KeybindsWindow.InputBegan, function(input)
+                if (Items.Window.Visible or Library.MenuOpen) and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
+                    kbDragging = true
+                    kbDragStart = input.Position
+                    kbStartPos = KeybindsWindow.Position
+                end
+            end)
+
+            Library:Connection(InputService.InputChanged, function(input)
+                if kbDragging and (Items.Window.Visible or Library.MenuOpen) and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+                    local delta = input.Position - kbDragStart
+                    KeybindsWindow.Position = dim2(kbStartPos.X.Scale, kbStartPos.X.Offset + delta.X, kbStartPos.Y.Scale, kbStartPos.Y.Offset + delta.Y)
+                end
+            end)
+
+            Library:Connection(InputService.InputEnded, function(input)
+                if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                    if kbDragging then
+                        Flags["GS_Keybinds_Position"] = encodePosition(KeybindsWindow)
+                    end
+                    kbDragging = false
+                end
+            end)
+
+            Library:Connection(WatermarkWindow.InputBegan, function(input)
+                if (Items.Window.Visible or Library.MenuOpen) and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
+                    dragging = true
+                    dragStart = input.Position
+                    startPos = WatermarkWindow.Position
+                end
+            end)
+
+            Library:Connection(InputService.InputChanged, function(input)
+                if dragging and (Items.Window.Visible or Library.MenuOpen) and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+                    local delta = input.Position - dragStart
+                    WatermarkWindow.Position = dim2(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+                end
+            end)
+
+            Library:Connection(InputService.InputEnded, function(input)
+                if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                    if dragging then
+                        Flags["GS_Watermark_Position"] = encodePosition(WatermarkWindow)
+                    end
+                    dragging = false
+                end
+            end)
+
+            -- Update loop
+            local lastWatermarkUpdate = os.clock()
+            local frameCount = 0
+            local currentFps = 60
+            local currentPing = 0
+
+            Library:Connection(RunService.RenderStepped, function()
+                frameCount = frameCount + 1
+                local now = os.clock()
+                if now - lastWatermarkUpdate >= 0.5 then
+                    currentFps = math.floor(frameCount / (now - lastWatermarkUpdate))
+                    frameCount = 0
+                    lastWatermarkUpdate = now
+
+                    pcall(function()
+                        local item = Stats.Network.ServerStatsItem["Data Ping"]
+                        if item then
+                            currentPing = math.floor(item:GetValue())
+                        end
+                    end)
+
+                    if (KeybindsWindow.Visible or Library.ShowKeybindList) and KeybindsContainer then
+                        local activeFlags = {}
+                        local currentFlags = Library.Flags or Flags or {}
+                        for flagName, flagData in pairs(currentFlags) do
+                            if type(flagData) == "table" and flagData.Key and flagData.Name and flagData.Active then
+                                activeFlags[flagName] = flagData
+                            end
+                        end
+                        
+                        for _, child in ipairs(KeybindsContainer:GetChildren()) do
+                            if child:IsA("TextLabel") then
+                                local flagName = child.Name:sub(6)
+                                if not activeFlags[flagName] then
+                                    child:Destroy()
+                                end
+                            end
+                        end
+                        
+                        local maxWidth = 150
+                        local font = Font.new("rbxasset://fonts/families/SourceSansPro.json", Enum.FontWeight.Regular, Enum.FontStyle.Normal)
+                        
+                        for flagName, flagData in pairs(activeFlags) do
+                            local textStr = string.format("[%s] %s", tostring(flagData.Mode), tostring(flagData.Name))
+                            local textSize = TextService:GetTextSize(textStr, 13, Enum.Font.SourceSans, vec2(10000, 10000))
+                            maxWidth = math.max(maxWidth, textSize.X + 24)
+                            
+                            local child = KeybindsContainer:FindFirstChild("Item_" .. tostring(flagName))
+                            if not child then
+                                Library:Create("TextLabel", {
+                                    Parent = KeybindsContainer,
+                                    Name = "Item_" .. tostring(flagName),
+                                    BackgroundTransparency = 1,
+                                    AutomaticSize = Enum.AutomaticSize.XY,
+                                    FontFace = font,
+                                    TextColor3 = rgb(205, 205, 205),
+                                    TextSize = 13,
+                                    Text = textStr,
+                                    TextXAlignment = Enum.TextXAlignment.Left,
+                                    ZIndex = 16
+                                })
+                            else
+                                child.Text = textStr
+                            end
+                        end
+                        
+                        if KeybindsWindow.Size.X.Offset ~= maxWidth then
+                            TweenService:Create(KeybindsWindow, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Size = dim2(0, maxWidth, 0, 0)}):Play()
+                        end
+                    end
+
+                    if (WatermarkWindow.Visible or Library.ShowWatermark) and WatermarkText then
+                        local parts = {}
+                        local opts = Library.WatermarkOptions or {}
+                        if opts.gamesense ~= false then
+                            table.insert(parts, '<font color="rgb(255, 255, 255)">game</font><font color="rgb(168, 219, 85)">sense</font>')
+                        end
+                        if opts.fps ~= false then
+                            table.insert(parts, string.format("%d fps", currentFps))
+                        end
+                        if opts.ping ~= false then
+                            table.insert(parts, string.format("%d ms", currentPing))
+                        end
+                        if opts.time ~= false then
+                            table.insert(parts, os.date("%X"))
+                        end
+
+                        if #parts == 0 then
+                            WatermarkText.Text = '<font color="rgb(255, 255, 255)">game</font><font color="rgb(168, 219, 85)">sense</font>'
+                        else
+                            WatermarkText.Text = table.concat(parts, "  ")
+                        end
+                    end
+                end
+            end)
+
+            -- Public references
+            Cfg.WatermarkWindow = WatermarkWindow
+            Cfg.WatermarkText = WatermarkText
+            Cfg.KeybindsWindow = KeybindsWindow
+            Cfg.KeybindsContainer = KeybindsContainer
+
+            Library.WatermarkWindow = WatermarkWindow
+            Library.WatermarkText = WatermarkText
+            Library.KeybindsWindow = KeybindsWindow
+            Library.KeybindsContainer = KeybindsContainer
+
+            function Cfg.ToggleWatermark(val)
+                if val == nil then val = not WatermarkWindow.Visible end
+                Library.ShowWatermark = val
+                WatermarkWindow.Visible = val
+                return val
+            end
+
+            function Cfg.ToggleKeybindList(val)
+                if val == nil then val = not KeybindsWindow.Visible end
+                Library.ShowKeybindList = val
+                KeybindsWindow.Visible = val
+                return val
+            end
+
+            function Cfg.SetWatermarkElements(selected)
+                if type(selected) == "table" then
+                    Library.WatermarkOptions.gamesense = (selected["gamesense"] ~= nil and selected["gamesense"]) or table.find(selected, "gamesense") ~= nil
+                    Library.WatermarkOptions.fps = (selected["fps"] ~= nil and selected["fps"]) or table.find(selected, "fps") ~= nil
+                    Library.WatermarkOptions.ping = (selected["ping"] ~= nil and selected["ping"]) or table.find(selected, "ping") ~= nil
+                    Library.WatermarkOptions.time = (selected["time"] ~= nil and selected["time"]) or table.find(selected, "time") ~= nil
+                end
+            end
+
+            function Cfg:Watermark(options)
+                if options and type(options) == "table" then
+                    if options.Visible ~= nil then Cfg.ToggleWatermark(options.Visible) end
+                    if options.Elements then Cfg.SetWatermarkElements(options.Elements) end
+                end
+                return {
+                    Window = WatermarkWindow,
+                    Text = WatermarkText,
+                    Toggle = Cfg.ToggleWatermark,
+                    SetElements = Cfg.SetWatermarkElements
+                }
+            end
+
+            function Cfg:KeybindList(options)
+                if options and type(options) == "table" then
+                    if options.Visible ~= nil then Cfg.ToggleKeybindList(options.Visible) end
+                end
+                return {
+                    Window = KeybindsWindow,
+                    Container = KeybindsContainer,
+                    Toggle = Cfg.ToggleKeybindList
+                }
+            end
+
+            Library.ToggleWatermark = Cfg.ToggleWatermark
+            Library.ToggleKeybindList = Cfg.ToggleKeybindList
+            Library.SetWatermarkElements = Cfg.SetWatermarkElements
+            Library.Watermark = function(_, options) return Cfg:Watermark(options) end
+            Library.KeybindList = function(_, options) return Cfg:KeybindList(options) end
+
             return setmetatable(Cfg, Library)
         end 
 
