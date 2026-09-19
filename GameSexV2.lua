@@ -582,13 +582,6 @@ getgenv().Loaded = true
                         BorderSizePixel = 0;
                         BackgroundColor3 = rgb(0, 221, 255)
                     });
-
-                    Library:Create( "UIGradient" , {
-                        Rotation = 0;
-                        Transparency = numseq{numkey(0, 0), numkey(1, 1)};
-                        Parent = Items.AlphaInline;
-                        Color = rgbseq{rgbkey(0, rgb(255, 255, 255)), rgbkey(1, rgb(255, 255, 255))}
-                    });
                     
                     Items.AlphaPicker = Library:Create( "Frame" , {
                         BorderMode = Enum.BorderMode.Inset;
