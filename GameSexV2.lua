@@ -705,9 +705,35 @@ getgenv().Loaded = true
             local LastMouse = nil
             local HoverCal = nil
 
+            Items.Debug = Library:Create("TextLabel", {
+                Parent = Items.Colorpicker;
+                Size = dim2(1, 0, 0, 12);
+                Position = dim2(0, 0, 0, 0);
+                BackgroundColor3 = rgb(0, 0, 0);
+                BackgroundTransparency = 0.3;
+                TextColor3 = rgb(0, 255, 0);
+                TextSize = 10;
+                FontFace = Font.new("rbxasset://fonts/families/SourceSansPro.json", Enum.FontWeight.Regular, Enum.FontStyle.Normal);
+                TextXAlignment = Enum.TextXAlignment.Left;
+                Text = "no hover yet";
+                ZIndex = 20000;
+                BorderSizePixel = 0;
+                Name = "\0"
+            });
+
             local function TrackCal(guiPos)
                 local gl = InputService:GetMouseLocation()
                 HoverCal = {gl = vec2(gl.X, gl.Y), gui = guiPos}
+
+                if Items.Debug then
+                    Items.Debug.Text = string.format(
+                        "MM %d,%d | GL %d,%d | VAL %d,%d %dx%d",
+                        guiPos.X, guiPos.Y,
+                        gl.X, gl.Y,
+                        Items.Val.AbsolutePosition.X, Items.Val.AbsolutePosition.Y,
+                        Items.Val.AbsoluteSize.X, Items.Val.AbsoluteSize.Y
+                    )
+                end
             end
 
             Items.Val.MouseMoved:Connect(function(x, y) TrackCal(vec2(x, y)) end)
