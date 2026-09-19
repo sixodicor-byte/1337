@@ -539,7 +539,6 @@ getgenv().Loaded = true
                         BorderColor3 = rgb(0, 0, 0);
                         Text = "";
                         AutoButtonColor = false;
-                        Rotation = 180;
                         Name = "\0";
                         Parent = Items.Inner;
                         Size = dim2(1, 0, 1, 0);
