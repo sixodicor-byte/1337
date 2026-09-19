@@ -621,7 +621,7 @@ getgenv().Loaded = true
 
                     Library:Create( "UIGradient" , {
                         Parent = Items.AlphaOverlay;
-                        Transparency = numseq{numkey(0, 1), numkey(1, 0)}
+                        Transparency = numseq{numkey(0, 0), numkey(1, 1)}
                     });
 
                     Items.AlphaPicker = Library:Create( "Frame" , {
