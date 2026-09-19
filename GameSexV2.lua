@@ -702,20 +702,27 @@ getgenv().Loaded = true
                 Cfg.Callback(Color, a)
             end
 
-            function Cfg.UpdateColor() 
-                local Mouse = InputService:GetMouseLocation()
-                local offset = vec2(Mouse.X, Mouse.Y - gui_offset)
-                
-                if DraggingSat then	
-                    s = math.clamp((offset - Items.Val.AbsolutePosition).X / Items.Val.AbsoluteSize.X, 0, 1)
-                    v = 1 - math.clamp((offset - Items.Val.AbsolutePosition).Y / Items.Val.AbsoluteSize.Y, 0, 1)
-                elseif DraggingHue then
-                    h = math.clamp((offset - Items.Hue.AbsolutePosition).Y / Items.Hue.AbsoluteSize.Y, 0, 1)
-                elseif DraggingAlpha then
-                    a = math.clamp((offset - Items.Alpha.AbsolutePosition).X / Items.Alpha.AbsoluteSize.X, 0, 1)
+            local LastMouse = nil
+
+            function Cfg.UpdateColor(input)
+                local m = input.Position
+
+                if LastMouse then
+                    local dx, dy = m.X - LastMouse.X, m.Y - LastMouse.Y
+
+                    if DraggingSat then
+                        s = math.clamp(s + dx / Items.Val.AbsoluteSize.X, 0, 1)
+                        v = math.clamp(v - dy / Items.Val.AbsoluteSize.Y, 0, 1)
+                    elseif DraggingHue then
+                        h = math.clamp(h + dy / Items.Hue.AbsoluteSize.Y, 0, 1)
+                    elseif DraggingAlpha then
+                        a = math.clamp(a + dx / Items.Alpha.AbsoluteSize.X, 0, 1)
+                    end
+
+                    Cfg.Set()
                 end
 
-                Cfg.Set()
+                LastMouse = m
             end
 
             Items.ColorpickerObject.MouseButton1Click:Connect(function()
@@ -725,7 +732,7 @@ getgenv().Loaded = true
 
             InputService.InputChanged:Connect(function(input)
                 if (DraggingSat or DraggingHue or DraggingAlpha) and input.UserInputType == Enum.UserInputType.MouseMovement then
-                    Cfg.UpdateColor() 
+                    Cfg.UpdateColor(input)
                 end
             end)
 
@@ -777,15 +784,18 @@ getgenv().Loaded = true
             end)
 
             Items.Alpha.MouseButton1Down:Connect(function()
-                DraggingAlpha = true 
+                DraggingAlpha = true
+                LastMouse = nil
             end)
-            
+
             Items.Hue.MouseButton1Down:Connect(function()
-                DraggingHue = true 
+                DraggingHue = true
+                LastMouse = nil
             end)
-            
+
             Items.Val.MouseButton1Down:Connect(function()
-                DraggingSat = true  
+                DraggingSat = true
+                LastMouse = nil
             end)
 
             Cfg.Set(Cfg.Color, Cfg.Alpha)
