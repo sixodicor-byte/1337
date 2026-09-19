@@ -36,7 +36,18 @@ getgenv().Loaded = true
         Notifications = {Notifs = {}},
         OpenElement = {}; 
         EasingStyle = Enum.EasingStyle.Quint;
-        TweeningSpeed = 0.25
+        TweeningSpeed = 0.25;
+
+        -- Set by the caller when a config is loaded/saved; shown by the watermark.
+        ConfigName = nil;
+        -- Which watermark sections are drawn. Mutate directly or via Cfg.Options.
+        WatermarkOptions = {
+            gamesense = true;
+            fps = true;
+            ping = true;
+            time = true;
+            config = false;
+        };
     }
 
     local themes = {
@@ -2939,6 +2950,10 @@ getgenv().Loaded = true
                 Ping = properties.Ping or false;
                 Time = properties.Time or false;
 
+                -- Shared table read on every refresh, so external code can flip parts
+                -- at runtime (Main mutates Library.WatermarkOptions directly).
+                Options = properties.Options or Library.WatermarkOptions or {};
+
                 FpsValue = 0;
                 PingValue = 0;
 
@@ -3077,15 +3092,24 @@ getgenv().Loaded = true
 
             function Cfg.Refresh()
                 local parts = {}
+                local options = Cfg.Options or {}
 
-                if Cfg.Name and Cfg.Name ~= "" then
+                if options.gamesense ~= false and Cfg.Name and Cfg.Name ~= "" then
                     table.insert(parts, formatName(Cfg.Name))
                 end
-                if Cfg.Fps then table.insert(parts, string.format("%d fps", Cfg.FpsValue)) end
-                if Cfg.Ping then table.insert(parts, string.format("%d ms", Cfg.PingValue)) end
-                if Cfg.Time then table.insert(parts, os.date("%X")) end
+                if options.fps then table.insert(parts, string.format("%d fps", Cfg.FpsValue)) end
+                if options.ping then table.insert(parts, string.format("%d ms", Cfg.PingValue)) end
+                if options.time then table.insert(parts, os.date("%X")) end
+                if options.config and Library.ConfigName and Library.ConfigName ~= "" then
+                    table.insert(parts, tostring(Library.ConfigName))
+                end
 
                 Items.Text.Text = table.concat(parts, "  ")
+            end
+
+            function Cfg.SetOptions(options)
+                Cfg.Options = options or {}
+                Cfg.Refresh()
             end
 
             -- Custom title: Cfg.Name (constructor), Cfg.Set("name") / Cfg.SetName("name").
@@ -3122,7 +3146,8 @@ getgenv().Loaded = true
                 end
             end)
 
-            if Cfg.Fps or Cfg.Ping or Cfg.Time then
+            -- Always ticks so option changes / the config name reflect live.
+            do
                 local frameCount, lastUpdate = 0, os.clock()
 
                 Library:Connection(RunService.Heartbeat, function()
@@ -3418,6 +3443,42 @@ getgenv().Loaded = true
             end)
 
             return setmetatable(Cfg, Library)
+        end
+
+        -- Lazily create + show/hide the watermark. `Library.WatermarkOptions` decides
+        -- which parts render, `Library.ConfigName` fills the "config name" part, and
+        -- `Library.WatermarkTitle` (or `Library.WatermarkInstance:Set("name")`) sets the title.
+        function Library:ToggleWatermark(enabled)
+            if not Library.Items then
+                return
+            end
+
+            if not Library.WatermarkInstance then
+                Library.WatermarkInstance = Library:Watermark({
+                    Name = Library.WatermarkTitle or "gamesense";
+                })
+            end
+
+            if Library.WatermarkInstance then
+                Library.WatermarkInstance:SetVisible(enabled ~= false)
+            end
+        end
+
+        -- Lazily create + show/hide the keybind list.
+        function Library:ToggleKeybindList(enabled)
+            if not Library.Items then
+                return
+            end
+
+            if not Library.KeybindListInstance then
+                Library.KeybindListInstance = Library:KeybindList({
+                    Name = "keybinds";
+                })
+            end
+
+            if Library.KeybindListInstance then
+                Library.KeybindListInstance:SetVisible(enabled ~= false)
+            end
         end
 
         function Notifications:RefreshNotifications() 
